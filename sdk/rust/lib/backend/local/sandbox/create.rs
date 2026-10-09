@@ -231,7 +231,9 @@ impl LocalBackend {
         let mut pinned_manifest_digest: Option<String> = None;
         let mut pinned_reference: Option<String> = None;
 
-        config.apply_runtime_defaults();
+        if config.snapshot_archive_source.is_none() {
+            config.apply_runtime_defaults();
+        }
         validate_hostname(config.spec.runtime.hostname.as_deref())?;
         self.validate_sandbox_name_for_runtime(&config.spec.name)?;
         Self::validate_rootfs_source(&config.spec.image)?;
@@ -279,10 +281,8 @@ impl LocalBackend {
                 config.restore_boot_overrides,
             ))
             .await?;
+            crate::sandbox::snapshot_metadata::apply(&mut config, &materialized.manifest)?;
             config.spec.image = RootfsSource::oci(materialized.manifest.image.reference.clone());
-            if config.spec.runtime.user.is_none() {
-                config.spec.runtime.user = materialized.manifest.restore_defaults()?.user;
-            }
             crate::sandbox::apply_snapshot_guest_clock(&mut config, &materialized.manifest)?;
             crate::sandbox::require_recorded_mounts(&config, &materialized.manifest)?;
             crate::sandbox::require_guest_mounts(&config, materialized.required_bind_paths)?;
@@ -349,12 +349,17 @@ impl LocalBackend {
                 ));
             }
 
+            config.apply_runtime_defaults();
             // Archive metadata is now available. Check policy against captured state
             // before admitting it or touching the replacement target. The archive path
             // stays set so this check sees a disk-only restore's snapshot source.
             config = SandboxBuilder::from(config).finish(Some(&self.config), None)?;
             // Keep launch-time restore intent in this check, not just cold-start state.
             launch_contract::validate_runtime_config(&config, self.config()).await?;
+            // The request is consumed only after its materialized state passes validation.
+            // Keep disk-only intent intact; it must never masquerade as a full resume.
+            config.snapshot_archive_source = None;
+            config.snapshot_base = None;
             archive_stage = Some(stage);
         }
 

@@ -68,6 +68,7 @@ struct FileSnapshotMetadata<'a> {
     user: Option<String>,
     /// Guest paths of source mounts whose host-side backing this snapshot does not carry.
     external_mounts: Vec<String>,
+    snapshot_metadata: microsandbox_types::snapshot::SnapshotMetadataV1,
 }
 
 #[derive(Clone)]
@@ -344,8 +345,18 @@ async fn capture_installed(
         ));
     }
 
-    let sandbox_config: SandboxConfig = serde_json::from_str(&current.config)?;
-    LocalBackend::validate_completed_restore(&sandbox_config)?;
+    let saved_config: SandboxConfig = serde_json::from_str(&current.config)?;
+    LocalBackend::validate_completed_restore(&saved_config)?;
+    let sandbox_config = if live {
+        current
+            .active_config
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()?
+            .unwrap_or(saved_config)
+    } else {
+        saved_config
+    };
 
     // Only OCI-rooted sandboxes can be snapshotted today; non-OCI
     // rootfs (passthrough, disk-image-rootfs) are out of scope.
@@ -409,6 +420,7 @@ async fn capture_installed(
             root_disk,
             user: sandbox_config.spec.runtime.user.clone(),
             external_mounts,
+            snapshot_metadata: crate::sandbox::snapshot_metadata::capture(&sandbox_config),
         },
     )
     .await;
@@ -685,8 +697,18 @@ pub(super) async fn create_snapshot_archive(
     {
         return Err(MicrosandboxError::SnapshotSandboxRunning(source_sandbox));
     }
-    let sandbox_config: SandboxConfig = serde_json::from_str(&current.config)?;
-    LocalBackend::validate_completed_restore(&sandbox_config)?;
+    let saved_config: SandboxConfig = serde_json::from_str(&current.config)?;
+    LocalBackend::validate_completed_restore(&saved_config)?;
+    let sandbox_config = if live {
+        current
+            .active_config
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()?
+            .unwrap_or(saved_config)
+    } else {
+        saved_config
+    };
     let manifest_digest = sandbox_config.manifest_digest.clone().ok_or_else(|| {
         MicrosandboxError::InvalidConfig(
             "only OCI-rooted sandboxes with a pinned image can be snapshotted".into(),
@@ -727,6 +749,7 @@ pub(super) async fn create_snapshot_archive(
     manifest.parent = lineage.parent.clone();
     manifest.set_restore_defaults(microsandbox_image::snapshot::RestoreDefaults {
         user: sandbox_config.spec.runtime.user.clone(),
+        config: Some(crate::sandbox::snapshot_metadata::capture(&sandbox_config)),
     })?;
     let external_mounts = uncaptured_mount_paths(&sandbox_config.spec.mounts)?;
     manifest.set_external_mounts(external_mounts)?;
@@ -890,8 +913,14 @@ async fn capture_full_snapshot(
             UnsupportedReason::NotAvailable("full snapshots require a running sandbox".into()),
         ));
     }
-    let sandbox_config: SandboxConfig = serde_json::from_str(&model.config)?;
-    LocalBackend::validate_completed_restore(&sandbox_config)?;
+    let saved_config: SandboxConfig = serde_json::from_str(&model.config)?;
+    LocalBackend::validate_completed_restore(&saved_config)?;
+    let sandbox_config: SandboxConfig = model
+        .active_config
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()?
+        .unwrap_or(saved_config);
     let manifest_digest = sandbox_config.manifest_digest.clone().ok_or_else(|| {
         MicrosandboxError::InvalidConfig(format!(
             "sandbox '{source_sandbox}' has no OCI image pinned; full snapshots require an OCI root"
@@ -991,6 +1020,7 @@ async fn capture_full_snapshot(
         };
         manifest.set_restore_defaults(microsandbox_image::snapshot::RestoreDefaults {
             user: sandbox_config.spec.runtime.user.clone(),
+            config: Some(crate::sandbox::snapshot_metadata::capture(&sandbox_config)),
         })?;
         // Captured execution carries its own guest timeline; keep the source's clock policy
         // so restores do not step that timeline to host time unless they ask to.
@@ -1090,6 +1120,7 @@ async fn build_artifact(
         root_disk,
         user,
         external_mounts,
+        snapshot_metadata,
     } = metadata;
     let total_started = Instant::now();
     let snapshot_id = SnapshotId::new(format!("snap_{:032x}", rand::random::<u128>()))
@@ -1163,7 +1194,10 @@ async fn build_artifact(
         source_sandbox,
         root_disk,
     )?;
-    manifest.set_restore_defaults(microsandbox_image::snapshot::RestoreDefaults { user })?;
+    manifest.set_restore_defaults(microsandbox_image::snapshot::RestoreDefaults {
+        user,
+        config: Some(snapshot_metadata),
+    })?;
     manifest.set_external_mounts(external_mounts)?;
     let canonical = manifest
         .to_canonical_bytes()
@@ -2202,6 +2236,7 @@ mod tests {
             root_disk,
             user: None,
             external_mounts: Vec::new(),
+            snapshot_metadata: crate::sandbox::snapshot_metadata::capture(&SandboxConfig::default()),
         }
     }
 
@@ -2668,6 +2703,196 @@ mod tests {
                 crate::test_support::DEFAULT_FS_STATE_LIMIT,
             )
             .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn live_capture_rejects_pending_restore_even_with_clean_active_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let local = crate::test_support::local_backend_builder(temp.path().join("home"))
+            .build()
+            .await
+            .unwrap();
+        let mut saved = SandboxConfig::default();
+        saved.spec.name = "box".into();
+        saved.checkpoint_restore = Some(microsandbox_runtime::launch::CheckpointRestoreConfig {
+            memory_descriptor: false,
+            network_gateway_mac: None,
+            external_mount_policy: Default::default(),
+            external_mounts: Vec::new(),
+            unavailable_disks: Default::default(),
+            local_branch: false,
+            forked: true,
+            closure: temp.path().join("checkpoint"),
+            checkpoint_root: "blake3:pending".into(),
+            checkpoint_id: "pending".into(),
+        });
+        std::fs::create_dir_all(local.sandboxes_dir().join("box")).unwrap();
+        sandbox_entity::ActiveModel {
+            name: Set("box".into()),
+            config: Set(serde_json::to_string(&saved).unwrap()),
+            active_config: Set(Some(
+                serde_json::to_string(&saved.clone_for_persistence()).unwrap(),
+            )),
+            status: Set(SandboxStatus::Running),
+            ephemeral: Set(false),
+            ..Default::default()
+        }
+        .insert(local.db().await.unwrap().write())
+        .await
+        .unwrap();
+        for full in [false, true] {
+            for archive in [false, true] {
+                let config = SnapshotConfig {
+                    name: "pending-check".into(),
+                    source_sandbox: "box".into(),
+                    full,
+                    group: None,
+                    dest_dir: None,
+                    labels: Vec::new(),
+                    force: false,
+                    record_integrity: false,
+                    guest_flush: Default::default(),
+                };
+                let result = if archive {
+                    create_snapshot_archive(&local, config, &temp.path().join("out.tar"), true)
+                        .await
+                        .map(|_| ())
+                } else {
+                    create_snapshot(&local, config).await.map(|_| ())
+                };
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("incomplete restore")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn capture_accepts_materialized_script_names_and_zero_size_tmpfs() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("upper.ext4"), b"root bytes").unwrap();
+        let disk = snapshot_disk_closure(temp.path(), &SnapshotRootDisk::Managed).unwrap();
+        for script in ["bin/hello", "a\\b"] {
+            let source = crate::Sandbox::builder("source")
+                .image("alpine")
+                .script(script, "echo retained")
+                .volume("/ram", |v| v.tmpfs().size(0))
+                .volume(r"/ram\cache", |v| v.tmpfs().size(4))
+                .finish(None, None)
+                .unwrap();
+            let mut manifest = new_file_manifest(
+                &disk,
+                vec![None],
+                "alpine".into(),
+                format!("sha256:{}", "a".repeat(64)),
+                "source",
+                SnapshotRootDisk::Managed,
+            )
+            .unwrap();
+            manifest
+                .set_restore_defaults(microsandbox_types::snapshot::RestoreDefaults {
+                    user: None,
+                    config: Some(crate::sandbox::snapshot_metadata::capture(&source)),
+                })
+                .unwrap();
+            let reopened = Manifest::from_bytes(&manifest.to_canonical_bytes().unwrap()).unwrap();
+            let mut restored = SandboxConfig::default();
+            crate::sandbox::snapshot_metadata::apply(&mut restored, &reopened).unwrap();
+            let name = Path::new(script).file_name().unwrap().to_str().unwrap();
+            assert_eq!(restored.spec.runtime.scripts[name], "echo retained");
+            assert!(
+                restored
+                    .spec
+                    .mounts
+                    .iter()
+                    .any(|mount| mount.guest() == r"/ram\cache")
+            );
+            assert!(restored.spec.mounts.iter().any(|mount| matches!(
+                mount,
+                crate::sandbox::VolumeMount::Tmpfs {
+                    size_mib: Some(0),
+                    ..
+                }
+            )));
+        }
+    }
+
+    #[test]
+    fn restore_tmpfs_overrides_follow_restore_scope() {
+        use crate::sandbox::{MountBuilder, VolumeMount};
+
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("upper.ext4"), b"root bytes").unwrap();
+        let disk = snapshot_disk_closure(temp.path(), &SnapshotRootDisk::Managed).unwrap();
+        let mut manifest = new_file_manifest(
+            &disk,
+            vec![None],
+            "alpine".into(),
+            format!("sha256:{}", "a".repeat(64)),
+            "source",
+            SnapshotRootDisk::Managed,
+        )
+        .unwrap();
+        let mut source = SandboxConfig::default();
+        source
+            .spec
+            .mounts
+            .push(MountBuilder::new("/ram").tmpfs().build().unwrap());
+        manifest
+            .set_restore_defaults(microsandbox_image::snapshot::RestoreDefaults {
+                user: None,
+                config: Some(crate::sandbox::snapshot_metadata::capture(&source)),
+            })
+            .unwrap();
+
+        for guest in ["/ram", "/ram/", "//ram/./"] {
+            let mut destination = SandboxConfig::default();
+            destination
+                .spec
+                .mounts
+                .push(MountBuilder::new(guest).bind(temp.path()).build().unwrap());
+            crate::sandbox::snapshot_metadata::apply(&mut destination, &manifest).unwrap();
+            crate::sandbox::validate_volume_mounts(&mut destination.spec.mounts).unwrap();
+            assert_eq!(destination.spec.mounts.len(), 1);
+            assert!(matches!(
+                &destination.spec.mounts[0],
+                VolumeMount::Bind { guest, host, .. } if guest == "/ram" && host == temp.path()
+            ));
+        }
+
+        manifest.scope = crate::snapshot::SnapshotScope::Full;
+        manifest.state = crate::snapshot::SnapshotState::Checkpoint(
+            microsandbox_types::snapshot::CheckpointSnapshotState {
+                checkpoint_id: "captured".into(),
+                checkpoint_root: format!("sha256:{}", "b".repeat(64)),
+                restore_intents: vec!["resume".into()],
+                requirements_summary: Default::default(),
+            },
+        );
+        manifest.validate().unwrap();
+        for (path, size, allowed) in [
+            ("//ram/./", None, true),
+            ("/ram", Some(8), false),
+            ("/new-ram", None, false),
+        ] {
+            let mut destination = SandboxConfig::default();
+            let mut mount = MountBuilder::new(path).tmpfs();
+            if let Some(size) = size {
+                mount = mount.size(size);
+            }
+            destination.spec.mounts.push(mount.build().unwrap());
+            let result = crate::sandbox::snapshot_metadata::apply(&mut destination, &manifest);
+            if allowed {
+                result.unwrap();
+                assert_eq!(destination.spec.mounts.len(), 1);
+                assert_eq!(destination.spec.mounts[0].guest(), "/ram");
+            } else {
+                assert!(result.unwrap_err().to_string().contains("tmpfs"));
+            }
         }
     }
 

@@ -153,15 +153,17 @@ mod guest_clock;
 pub mod legacy;
 /// Canonical portable snapshot descriptor.
 pub mod manifest;
+mod metadata;
 /// Pure owned-storage snapshot inventory.
 pub mod owned;
-mod restore_defaults;
 
 pub use external_mounts::EXTERNAL_MOUNTS_EXTENSION;
 pub use guest_clock::GUEST_CLOCK_EXTENSION;
 pub use manifest::*;
+pub use metadata::{
+    GuestRlimitV1, GuestTmpfsV1, RESTORE_DEFAULTS_EXTENSION, RestoreDefaults, SnapshotMetadataV1,
+};
 pub use owned::{
     OWNED_VOLUMES_EXTENSION, OwnedDirectoryPayload, OwnedMountSnapshot, OwnedVolumeCapture,
     OwnedVolumeData, validate_owned_volumes,
 };
-pub use restore_defaults::{RESTORE_DEFAULTS_EXTENSION, RestoreDefaults};

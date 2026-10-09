@@ -299,6 +299,7 @@ msb snap restore ./saved.msb --name disk-copy --disk-only
 | `-m`, `--memory` | Memory for disk boot, e.g. `2G`; full restore requires the captured size |
 | `--security` | `default` or `restricted`, applied at disk boot; rejected for full execution restore |
 | `--guest-clock` | `sync` or `off`; inherits the snapshot's setting unless overridden. Supports full restores |
+| `--init`, `--init-arg`, `--init-env` | Replace PID 1 configuration for cold disk restore; arguments and environment require `--init` |
 | `--no-net` | Deny traffic in both directions by default; keeps the captured device and accepts explicit allow rules |
 | `--net-default` | Set both traffic defaults to `allow` or `deny` |
 | `--net-rule` | Repeatable host-policy rule; requires `--net-default` or `--no-net` |
@@ -314,6 +315,8 @@ Progress is shown by default. Memory preparation has no fixed timeout and does n
 Full restore must keep captured CPU and memory settings and cannot apply a guest security profile. Use `--disk-only` to change them.
 
 Network flags replace the destination policy. `--net-rule` requires `--net-default` or `--no-net`; omitting all policy flags keeps configured defaults. Restore requires a new name and does not accept a startup command.
+
+Local snapshot restore retains [guest settings](/sandboxes/snapshots#retained-guest-settings), including init, scripts, limits, and guest security, for later restarts.
 
 Supply host resources explicitly when restoring or forking:
 
