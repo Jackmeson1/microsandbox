@@ -1331,6 +1331,11 @@ impl SandboxBuilder {
             .and(self.config.spec.image.as_ref())
             .and_then(RootfsSource::oci_root_disk)
             .cloned();
+        if let Some(captured) = &captured_resources {
+            // Preserve an omitted ordinary setting as an explicit patch clear,
+            // so defaults cannot re-enable nesting while layers are reapplied.
+            self.config.spec.resources.nested_virt = Some(captured.nested_virt);
+        }
         let mut sandbox = SandboxConfig::default();
         sandbox.apply_layers(
             backend_config,
@@ -1340,6 +1345,11 @@ impl SandboxBuilder {
 
         if let Some(captured) = captured_resources {
             let effective = &sandbox.spec.resources;
+            if effective.nested_virt.unwrap_or(false) != captured.nested_virt.unwrap_or(false) {
+                return Err(MicrosandboxError::InvalidConfig(
+                    "managed settings conflict with the snapshot's captured nested virtualization setting".into(),
+                ));
+            }
             if (
                 effective.cpus,
                 effective.max_cpus,
@@ -3920,6 +3930,47 @@ mod tests {
                         .to_string()
                         .contains("captured CPU and memory geometry")
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn restored_nesting_cannot_be_changed_by_managed_layers() {
+        for nested in [None, Some(false), Some(true)] {
+            let mut captured = SandboxBuilder::new("restore")
+                .image("alpine")
+                .config
+                .into_config();
+            captured.spec.resources.nested_virt = nested;
+            captured.suppress_launch_for_full_restore();
+
+            for managed in [None, Some(false), Some(true)] {
+                let policy = managed.map_or_else(
+                    || serde_json::json!({}),
+                    |enabled| serde_json::json!({"sandbox_defaults":{"nested_virt":enabled}}),
+                );
+                let sources = BackendConfig::new(
+                    serde_json::from_value(serde_json::json!({
+                        "sandbox_defaults":{"nested_virt": !nested.unwrap_or(false)}
+                    }))
+                    .unwrap(),
+                    serde_json::from_value(policy).unwrap(),
+                );
+                let result = SandboxBuilder::from(captured.clone()).finish(Some(&sources), None);
+
+                if managed.is_some_and(|enabled| enabled != nested.unwrap_or(false)) {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .to_string()
+                            .contains("captured nested virtualization")
+                    );
+                } else {
+                    assert_eq!(
+                        result.unwrap().spec.resources.nested_virt,
+                        managed.or(nested)
+                    );
+                }
             }
         }
     }
