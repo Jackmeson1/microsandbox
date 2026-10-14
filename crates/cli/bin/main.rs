@@ -305,6 +305,7 @@ fn main() {
                     http_connect_proxy: cfg!(feature = "net"),
                     guest_clock: true,
                     nested_virt: true,
+                    nested_virt_auto: true,
                 })
                 .expect("serialize capabilities")
             );

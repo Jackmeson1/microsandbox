@@ -229,25 +229,33 @@ impl LaunchContract {
         Ok(value)
     }
 
-    /// Preserve explicit off for capable runtimes, while keeping older strict readers compatible.
+    /// Negotiate automatic nesting and explicit off without changing older launcher semantics.
     pub(crate) async fn encode_for_runtime(
         self,
         path: &Path,
         launch: &LaunchConfig,
     ) -> MicrosandboxResult<Value> {
         let mut value = self.encode(launch)?;
-        if self.machine && launch.nested_virt == Some(false) {
+
+        if self.machine && launch.nested_virt != Some(true) {
             let output = bounded_probe(path, "__launch-protocol").await?;
             let capabilities: LaunchCapabilities = serde_json::from_slice(&output)?;
             if !capabilities.protocols.contains(&2) {
+                if launch.nested_virt.is_none() {
+                    return Ok(value);
+                }
                 return Err(MicrosandboxError::Runtime(upgrade_required(
                     "nested virtualization policy",
                 )));
             }
-            if capabilities.nested_virt {
+
+            if launch.nested_virt == Some(false) && capabilities.nested_virt {
                 value["nested_virt"] = false.into();
+            } else if launch.nested_virt.is_none() && capabilities.nested_virt_auto {
+                value["nested_virt_auto"] = true.into();
             }
         }
+
         Ok(value)
     }
 
@@ -283,6 +291,7 @@ impl LaunchContract {
             "checkpoint_restore",
             "memory_cache_dir",
             "nested_virt",
+            "nested_virt_auto",
         ] {
             fields.remove(key);
         }
@@ -454,6 +463,7 @@ impl LaunchContract {
             placement_profile_name: resources.placement_profile.clone(),
             thp: resources.thp,
             nested_virt: resources.nested_virt,
+            nested_virt_auto: None,
             guest_clock: config.spec.runtime.guest_clock.unwrap_or_default(),
             vsock: config.spec.vsock.routes.clone(),
             owned_volumes: config
@@ -1192,6 +1202,7 @@ mod tests {
                         .await
                         .unwrap();
                     assert!(payload.get("nested_virt").is_none());
+                    assert!(payload.get("nested_virt_auto").is_none());
                 } else {
                     assert!(
                         result
@@ -1206,7 +1217,7 @@ mod tests {
         let path = script(
             dir.path(),
             "nested-supported",
-            r#"printf '%s' '{"protocols":[2,1],"nested_virt":true}'"#,
+            r#"printf '%s' '{"protocols":[2,1],"nested_virt":true,"nested_virt_auto":true}'"#,
         );
         for requested in [None, Some(false), Some(true)] {
             let mut config = crate::test_support::fixtures::decode(include_str!(
@@ -1231,6 +1242,12 @@ mod tests {
             assert_eq!(
                 payload.get("nested_virt"),
                 requested.map(serde_json::Value::Bool).as_ref()
+            );
+            assert_eq!(
+                payload.get("nested_virt_auto"),
+                requested
+                    .is_none()
+                    .then_some(&serde_json::Value::Bool(true))
             );
         }
     }
