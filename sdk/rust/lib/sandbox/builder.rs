@@ -1332,9 +1332,10 @@ impl SandboxBuilder {
             .and_then(RootfsSource::oci_root_disk)
             .cloned();
         if let Some(captured) = &captured_resources {
-            // Preserve an omitted ordinary setting as an explicit patch clear,
-            // so defaults cannot re-enable nesting while layers are reapplied.
-            self.config.spec.resources.nested_virt = Some(captured.nested_virt);
+            // Old ordinary snapshots omit this field. Pin them to off so the
+            // automatic host default cannot change their captured execution mode.
+            self.config.spec.resources.nested_virt =
+                Some(Some(captured.nested_virt.unwrap_or(false)));
         }
         let mut sandbox = SandboxConfig::default();
         sandbox.apply_layers(
@@ -2258,11 +2259,8 @@ pub(crate) fn apply_checkpoint_restore_constraints(
             "a full snapshot must restore with its captured nested virtualization setting".into(),
         ));
     }
-    // Preserve omission for ordinary snapshots unless a configured default
-    // needs replacing. Nesting is immutable execution state, not a boot default.
-    if nested || config.spec.resources.nested_virt.is_some() {
-        config.spec.resources.nested_virt = Some(nested);
-    }
+    // Nesting is immutable execution state, not an automatic boot default.
+    config.spec.resources.nested_virt = Some(nested);
 
     apply_checkpoint_resources(config, state, overrides)?;
     apply_capture_network(config, &checkpoint.resources)
@@ -3968,7 +3966,7 @@ mod tests {
                 } else {
                     assert_eq!(
                         result.unwrap().spec.resources.nested_virt,
-                        managed.or(nested)
+                        Some(nested.unwrap_or(false))
                     );
                 }
             }
@@ -4140,11 +4138,7 @@ mod tests {
                         assert!(matches!(result, Err(MicrosandboxError::InvalidConfig(_))));
                     } else {
                         result.unwrap();
-                        let expected = if captured || configured.is_some() {
-                            Some(captured)
-                        } else {
-                            None
-                        };
+                        let expected = Some(captured);
                         assert_eq!(config.spec.resources.nested_virt, expected);
                     }
                 }

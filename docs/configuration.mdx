@@ -244,7 +244,7 @@ For workload effects, host requirements, filesystem expectations, and verificati
 | `memory_mib` | `512` | Guest memory in MiB |
 | `cpu_placement` | `"inherit"` | Host vCPU placement: `inherit`, `auto`, `spread`, or `compact` |
 | `placement_profile` | `null` | Name of a host-defined entry in `runtime.placement_profiles` |
-| `nested_virt` | unset | Expose hardware virtualization to local guests. When unset, current runtimes disable nesting and older runtimes keep their existing behavior. Explicit settings require a runtime that can honor them. Requires host hypervisor support for nesting and KVM support in the guest kernel. Startup fails if the host cannot honor an enabled setting. |
+| `nested_virt` | unset | Expose hardware virtualization to local guests. When unset, current runtimes enable nesting where the host supports it and disable it elsewhere; older runtimes keep their existing behavior. Explicit settings require a runtime that can honor them. Requires host hypervisor support for nesting and KVM support in the guest kernel. Startup fails if the host cannot honor an enabled setting. |
 | `thp` | `"madvise"` | Guest transparent huge-page policy: `always`, `madvise`, or `never` |
 | `oci` | [reference](#sandbox_defaults-oci) | Defaults for OCI-rooted sandboxes |
 | `shell` | `"/bin/sh"` | Shell for interactive sessions and scripts |

@@ -31,7 +31,7 @@ an independent copy of its captured state. Disk-only snapshots still boot a new 
 | Linux ARM64 | Not currently supported |
 | Windows ARM64 | Not currently supported |
 
-Nesting remains disabled by default. Enable it with the sandbox's `nested_virt` setting
+Nesting defaults to on where the host supports it and off elsewhere. Override it with the sandbox's `nested_virt` setting
 (or `nestedVirt` in TypeScript), the CLI's `--nested-virt`, or
 `sandbox_defaults.nested_virt` in [global configuration](/configuration#sandbox_defaults).
 The host must expose nested virtualization and the guest kernel must include KVM support.

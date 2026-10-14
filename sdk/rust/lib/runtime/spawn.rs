@@ -637,7 +637,7 @@ pub async fn spawn_sandbox(
     if !launch_contract.machine {
         visible[0] = OsString::from("sandbox");
     }
-    let launch_value = match launch_contract.encode(&launch) {
+    let launch_value = match launch_contract.encode_for_runtime(&msb_path, &launch).await {
         Ok(launch) => launch,
         Err(error) => {
             release_metrics_reservation(config, metrics_reservation.as_ref());

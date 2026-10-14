@@ -229,6 +229,28 @@ impl LaunchContract {
         Ok(value)
     }
 
+    /// Preserve explicit off for capable runtimes, while keeping older strict readers compatible.
+    pub(crate) async fn encode_for_runtime(
+        self,
+        path: &Path,
+        launch: &LaunchConfig,
+    ) -> MicrosandboxResult<Value> {
+        let mut value = self.encode(launch)?;
+        if self.machine && launch.nested_virt == Some(false) {
+            let output = bounded_probe(path, "__launch-protocol").await?;
+            let capabilities: LaunchCapabilities = serde_json::from_slice(&output)?;
+            if !capabilities.protocols.contains(&2) {
+                return Err(MicrosandboxError::Runtime(upgrade_required(
+                    "nested virtualization policy",
+                )));
+            }
+            if capabilities.nested_virt {
+                value["nested_virt"] = false.into();
+            }
+        }
+        Ok(value)
+    }
+
     fn to_previous_version(self, launch: &LaunchConfig) -> MicrosandboxResult<Value> {
         if launch.nested_virt.is_some_and(|enabled| {
             enabled != cfg!(all(target_os = "linux", target_arch = "x86_64"))
@@ -1160,10 +1182,14 @@ mod tests {
                 if expected {
                     contract.validate_launch_intent(&config).unwrap();
                     let payload = contract
-                        .encode(&LaunchConfig {
-                            nested_virt: config.spec.resources.nested_virt,
-                            ..Default::default()
-                        })
+                        .encode_for_runtime(
+                            &path,
+                            &LaunchConfig {
+                                nested_virt: config.spec.resources.nested_virt,
+                                ..Default::default()
+                            },
+                        )
+                        .await
                         .unwrap();
                     assert!(payload.get("nested_virt").is_none());
                 } else {
@@ -1189,6 +1215,23 @@ mod tests {
             .unwrap();
             config.spec.resources.nested_virt = requested;
             validate_nested_virt(&path, &config).await.unwrap();
+            let payload = LaunchContract {
+                patch: 18,
+                machine: true,
+            }
+            .encode_for_runtime(
+                &path,
+                &LaunchConfig {
+                    nested_virt: requested,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                payload.get("nested_virt"),
+                requested.map(serde_json::Value::Bool).as_ref()
+            );
         }
     }
 

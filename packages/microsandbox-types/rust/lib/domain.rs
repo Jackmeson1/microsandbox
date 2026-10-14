@@ -1007,7 +1007,7 @@ pub struct SandboxResources {
     pub thp: TransparentHugePagePolicy,
 
     /// Explicit hardware virtualization policy. Omission uses the runtime default:
-    /// disabled on current runtimes, with historical behavior on older runtimes.
+    /// enabled where supported on current runtimes, with historical behavior on older runtimes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[config_patch(nullable)]
     pub nested_virt: Option<bool>,
@@ -2345,7 +2345,8 @@ impl TryFrom<&str> for RlimitResource {
 // Functions
 //--------------------------------------------------------------------------------------------------
 
-/// Default nested virtualization policy for local sandbox hosts.
+/// Legacy fallback when host capabilities cannot be queried.
+/// Current local runtimes resolve automatic nesting from the actual host.
 pub const fn default_nested_virt() -> bool {
     false
 }
