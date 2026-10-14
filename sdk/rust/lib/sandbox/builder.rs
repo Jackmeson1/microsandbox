@@ -1497,6 +1497,7 @@ impl SandboxBuilder {
 
     fn restore_override_intent(&self) -> RestoreOverrideIntent {
         RestoreOverrideIntent {
+            nested_virt: self.config.spec.resources.nested_virt.is_some(),
             cpus: self.config.spec.resources.cpus.is_some(),
             max_cpus: self.config.spec.resources.max_cpus.is_some(),
             memory: self.config.spec.resources.memory_mib.is_some(),
@@ -2239,6 +2240,20 @@ pub(crate) fn apply_checkpoint_restore_constraints(
             )));
         }
     }
+
+    let nested = microsandbox_runtime::checkpoint::captured_nested_virt(&checkpoint.resources)
+        .map_err(MicrosandboxError::SnapshotIntegrity)?;
+    if overrides.nested_virt && config.spec.resources.nested_virt.unwrap_or(false) != nested {
+        return Err(MicrosandboxError::InvalidConfig(
+            "a full snapshot must restore with its captured nested virtualization setting".into(),
+        ));
+    }
+    // Preserve omission for ordinary snapshots unless a configured default
+    // needs replacing. Nesting is immutable execution state, not a boot default.
+    if nested || config.spec.resources.nested_virt.is_some() {
+        config.spec.resources.nested_virt = Some(nested);
+    }
+
     apply_checkpoint_resources(config, state, overrides)?;
     apply_capture_network(config, &checkpoint.resources)
 }
@@ -4012,6 +4027,93 @@ mod tests {
             .into_config();
         super::apply_snapshot_guest_clock(&mut config, &sync).unwrap();
         assert_eq!(config.spec.runtime.guest_clock, Some(GuestClockPolicy::Off));
+    }
+
+    #[test]
+    fn checkpoint_restore_preserves_captured_nesting_over_defaults() {
+        use microsandbox_image::checkpoint::{
+            CaptureIntent, CheckpointGeometry, CheckpointManifest, ObjectId, ResourceDescriptor,
+            ResourceTreatment,
+        };
+
+        use crate::MicrosandboxError;
+
+        let state = checkpoint_state_with_geometry(4, 8, 2048, 4096);
+        let mut checkpoint = CheckpointManifest {
+            schema: "microsandbox.checkpoint/1".into(),
+            checkpoint_id: "checkpoint_test".into(),
+            capture_intent: CaptureIntent::FullSnapshot,
+            architecture: std::env::consts::ARCH.into(),
+            geometry: CheckpointGeometry {
+                vcpus: 4,
+                max_vcpus: 8,
+                memory_mib: 2048,
+                max_memory_mib: 4096,
+            },
+            pause_generation: 1,
+            execution_state: ObjectId::from_bytes(b"execution").unwrap(),
+            memory: ObjectId::from_bytes(b"memory").unwrap(),
+            disks: Vec::new(),
+            owned_volumes: Vec::new(),
+            devices: Vec::new(),
+            resources: Vec::new(),
+            requires: Vec::new(),
+        };
+
+        for captured in [false, true] {
+            checkpoint.resources = if captured {
+                vec![ResourceDescriptor {
+                    id: "vm:nested-virt".into(),
+                    kind: "nested-virt".into(),
+                    treatment: ResourceTreatment::Serialize,
+                    binding: [("enabled".into(), "true".into())].into(),
+                }]
+            } else {
+                Vec::new()
+            };
+            for configured in [None, Some(false), Some(true)] {
+                for explicit in [false, true] {
+                    let mut config = SandboxBuilder::new("restore").config.into_config();
+                    config.spec.resources.nested_virt = configured;
+                    let result = super::apply_checkpoint_restore_constraints(
+                        &mut config,
+                        &state,
+                        &checkpoint,
+                        RestoreOverrideIntent {
+                            nested_virt: explicit,
+                            ..Default::default()
+                        },
+                    );
+
+                    if explicit && configured.unwrap_or(false) != captured {
+                        assert!(matches!(result, Err(MicrosandboxError::InvalidConfig(_))));
+                    } else {
+                        result.unwrap();
+                        let expected = if captured || configured.is_some() {
+                            Some(captured)
+                        } else {
+                            None
+                        };
+                        assert_eq!(config.spec.resources.nested_virt, expected);
+                    }
+                }
+            }
+        }
+
+        // A malformed captured requirement must fail before a restore can proceed.
+        checkpoint.resources[0]
+            .binding
+            .insert("enabled".into(), "false".into());
+        let mut config = SandboxBuilder::new("restore").config.into_config();
+        assert!(matches!(
+            super::apply_checkpoint_restore_constraints(
+                &mut config,
+                &state,
+                &checkpoint,
+                RestoreOverrideIntent::default(),
+            ),
+            Err(MicrosandboxError::SnapshotIntegrity(_))
+        ));
     }
 
     #[test]

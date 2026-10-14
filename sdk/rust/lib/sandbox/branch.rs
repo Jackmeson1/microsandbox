@@ -593,6 +593,11 @@ async fn adopt_capture(
     config.spec.resources.max_cpus = state.max_cpus;
     config.spec.resources.memory_mib = state.memory_mib;
     config.spec.resources.max_memory_mib = state.max_memory_mib;
+    let nested = microsandbox_runtime::checkpoint::captured_nested_virt(&state.resources)
+        .map_err(MicrosandboxError::SnapshotIntegrity)?;
+    if nested || config.spec.resources.nested_virt.is_some() {
+        config.spec.resources.nested_virt = Some(nested);
+    }
     // The captured effective address wins over launch-time pools/defaults. Each user-mode
     // network stack is isolated; host listeners were rejected before source mutation.
     config.spec.network.interface = None;

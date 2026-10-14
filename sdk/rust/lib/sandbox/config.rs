@@ -125,6 +125,7 @@ pub(crate) enum SnapshotRestoreMode {
 /// Explicit resource choices that must not be silently replaced during deferred archive restore.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct RestoreOverrideIntent {
+    pub(crate) nested_virt: bool,
     pub(crate) cpus: bool,
     pub(crate) max_cpus: bool,
     pub(crate) memory: bool,

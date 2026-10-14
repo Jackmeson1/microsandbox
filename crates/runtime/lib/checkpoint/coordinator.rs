@@ -73,7 +73,6 @@ pub(crate) struct CheckpointCoordinator {
     local_baseline: Option<LocalMemoryPin>,
     inherited_memory: Option<LocalMemoryPin>,
     boot_geometry: (u8, u8, u32, u32),
-    nested_virt: bool,
     guest_clock: microsandbox_types::GuestClockPolicy,
 }
 
@@ -489,7 +488,6 @@ impl CheckpointCoordinator {
             local_baseline: None,
             inherited_memory: None,
             boot_geometry: (vm.vcpus, vm.max_cpus, vm.memory_mib, vm.max_memory_mib),
-            nested_virt: vm.nested_virt,
             guest_clock: vm.guest_clock,
         })
     }
@@ -773,13 +771,11 @@ impl CheckpointCoordinator {
         record_integrity: bool,
         guest_flush: Option<microsandbox_types::GuestFlush>,
     ) -> Result<CheckpointResult, CheckpointFailure> {
-        // Capturing ordinary CPU state does not preserve an active nested guest on every
-        // backend. Refuse both snapshots and local forks before mutating the source.
-        if self.nested_virt {
-            return Err(CheckpointFailure::before_pause(
-                "full snapshots and forks are unavailable when nested virtualization is enabled",
-            ));
-        }
+        // The backend owns execution-state support. Refuse unsupported captures
+        // before preparing storage, flushing the guest, or pausing the source.
+        vm.validate_execution_state_capture()
+            .map_err(CheckpointFailure::before_pause)?;
+
         // All RAM captures pass through this executor-owned method. Consume the construction
         // handoff before either durable or local capture can publish a newer token. Dirty
         // tracking has run since the pristine mapping was installed, not since this adoption.
@@ -1364,7 +1360,7 @@ impl CheckpointCoordinator {
         checkpoint_id: &str,
         intent: CaptureIntent,
         inventory: &[(u32, String)],
-        resources: Vec<ResourceDescriptor>,
+        mut resources: Vec<ResourceDescriptor>,
         pause_generation: u64,
         staging: &Path,
         final_path: &Path,
@@ -1568,6 +1564,9 @@ impl CheckpointCoordinator {
             ));
         }
         let execution_bytes = execution.encode().map_err(CheckpointFailure::resumable)?;
+        if execution.nested_enabled() {
+            resources.push(super::execution::nested_execution_resource());
+        }
         let execution_id = if local {
             put_local_object(staging, &execution_bytes).map_err(CheckpointFailure::resumable)?
         } else {

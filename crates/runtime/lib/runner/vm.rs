@@ -1844,11 +1844,6 @@ fn build_vm(
     // as a dedicated bulk port. Once dual-port is selected it returns to the small control queue.
     let agent_queue_size = agent_primary_queue_size(bulk_console_backend.is_some());
     let vm = &config.vm;
-    if vm.nested_virt && vm.checkpoint_restore.is_some() {
-        return Err(RuntimeError::Custom(
-            "execution restore is unavailable when nested virtualization is enabled".into(),
-        ));
-    }
     let mut owned_directory_checkpoints = std::collections::BTreeMap::new();
     // Decode once before constructing devices: unavailable disks need the exact
     // captured capacity/features, never guessed geometry or a temporary backing.
