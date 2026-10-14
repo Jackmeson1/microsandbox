@@ -72,6 +72,13 @@ optimized diagnostic build. Its unoptimized build had hit the 30-second control
 deadline during second-generation capture; isolated recapture succeeded, and
 the optimized full matrix passed without increasing that deadline.
 
+Intel Windows Server 2025 on Azure also passed the complete matrix with an
+optimized diagnostic build after creating `/dev` in the Windows bootstrap
+filesystem. This lets the kernel mount devtmpfs before starting the agent,
+avoiding a pre-main abort when the initial console is late. Normal startup and
+a forced missing-console case each passed eight starts with nesting alternating
+on and off; the missing-console case failed all eight starts before the fix.
+
 On the Windows test host, invoke the runner directly through SSH. PowerShell
 `Start-Process` placed it in a job that disallowed process breakaway, causing
 sandbox creation to fail with `Access is denied` even when nesting was disabled.
