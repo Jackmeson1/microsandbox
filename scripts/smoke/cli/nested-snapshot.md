@@ -51,9 +51,10 @@ python3 scripts/smoke/cli/nested-snapshot.py
 
 `NESTED_ARCH` can override the host architecture when needed.
 `NESTED_KERNEL_ARGS` appends arguments to the inner Linux kernel. For example,
-`NESTED_KERNEL_ARGS=hpet=disable` avoids the early boot delay observed on the
-GCloud N4D AMD test host. Record this as a separate profile: it does not qualify
-the default HPET path or change production guest settings. The result records the
+`NESTED_KERNEL_ARGS=hpet=disable` avoided an early boot delay in the standalone
+GCloud N4D AMD fixture. The managed-disk CLI matrix also passed with default
+kernel arguments on that host. Record overrides as a separate profile: they do
+not qualify the default HPET path or change production defaults. The result records the
 architecture and effective kernel arguments alongside the workload identity.
 
 Results contain
@@ -64,3 +65,15 @@ until evidence has been inspected, then remove it through normal cleanup.
 This does not qualify cross-host migration, networking, external mounts, or
 hardware platforms on which the matrix has not run. A diagnostic pass does not
 open public nested-snapshot admission.
+
+2026-10-14: the complete CLI matrix passed on AMD Linux and AMD Windows Server
+2025 with default guest kernel arguments. Intel Linux also passed with an
+optimized diagnostic build. Its unoptimized build had hit the 30-second control
+deadline during second-generation capture; isolated recapture succeeded, and
+the optimized full matrix passed without increasing that deadline.
+
+On the Windows test host, invoke the runner directly through SSH. PowerShell
+`Start-Process` placed it in a job that disallowed process breakaway, causing
+sandbox creation to fail with `Access is denied` even when nesting was disabled.
+A minimal child-process probe reproduced that job restriction independently of
+Microsandbox. Direct SSH invocation passed the complete matrix.
