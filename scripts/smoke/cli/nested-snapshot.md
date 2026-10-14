@@ -49,7 +49,14 @@ export NESTED_RESULTS=/tmp/nested-snapshot-results
 python3 scripts/smoke/cli/nested-snapshot.py
 ```
 
-`NESTED_ARCH` can override the host architecture when needed. Results contain
+`NESTED_ARCH` can override the host architecture when needed.
+`NESTED_KERNEL_ARGS` appends arguments to the inner Linux kernel. For example,
+`NESTED_KERNEL_ARGS=hpet=disable` avoids the early boot delay observed on the
+GCloud N4D AMD test host. Record this as a separate profile: it does not qualify
+the default HPET path or change production guest settings. The result records the
+architecture and effective kernel arguments alongside the workload identity.
+
+Results contain
 numbered command outputs and a `result.json` only after all checks pass. The
 script stops its uniquely named sandboxes in a `finally` block. Keep the home
 until evidence has been inspected, then remove it through normal cleanup.

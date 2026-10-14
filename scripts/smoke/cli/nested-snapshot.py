@@ -112,6 +112,10 @@ else:
     assert architecture in ("amd64", "x86_64"), architecture
     machine, console, block = "q35,kernel_irqchip=on", "ttyS0", "virtio-blk-pci"
 
+kernel_args = f"console={console} rdinit=/init panic=-1 quiet"
+if extra_args := os.environ.get("NESTED_KERNEL_ARGS"):
+    kernel_args += f" {extra_args}"
+
 try:
     run(
         "run",
@@ -151,7 +155,7 @@ try:
         "-initrd",
         "/inner-initramfs",
         "-append",
-        f"console={console} rdinit=/init panic=-1 quiet",
+        kernel_args,
         "-drive",
         "file=/state.img,format=raw,if=none,id=state,cache=writeback",
         "-device",
@@ -188,7 +192,15 @@ try:
         progressing(archived, before)
         progressing(source, before_fork)
     (results / "result.json").write_text(
-        json.dumps({"result": "pass", "source": source, "identity": before[2]})
+        json.dumps(
+            {
+                "result": "pass",
+                "source": source,
+                "identity": before[2],
+                "architecture": architecture,
+                "kernel_args": kernel_args,
+            }
+        )
     )
 finally:
     for name in names:
