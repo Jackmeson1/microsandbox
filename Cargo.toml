@@ -97,8 +97,8 @@ microsandbox-utils = { version = "=0.7.7", path = "crates/utils" }
 microsandbox-vsock = { version = "=0.7.7", path = "crates/vsock" }
 # Keep runtime APIs and shared metrics types on the same stacked libkrun revision.
 # Replace this qualification pin with the matching published release before shipping.
-msb_krun = { git = "https://github.com/superradcompany/libkrun", rev = "1c1086ebfcba9a79ebf70df527014545e509ac2d" }
-msb_krun_utils = { git = "https://github.com/superradcompany/libkrun", rev = "1c1086ebfcba9a79ebf70df527014545e509ac2d" }
+msb_krun = { git = "https://github.com/superradcompany/libkrun", rev = "b8461c57a5059757e88c0269c717af682c3b49d1" }
+msb_krun_utils = { git = "https://github.com/superradcompany/libkrun", rev = "b8461c57a5059757e88c0269c717af682c3b49d1" }
 test-macros = { path = "crates/testing/macros" }
 test-utils = { path = "crates/testing/utils" }
 

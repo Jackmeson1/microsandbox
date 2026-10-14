@@ -265,7 +265,7 @@ For example, explicitly disable nested virtualization while allowing individual 
 }
 ```
 
-Per-sandbox SDK settings and `--nested-virt=true` override this user default. A managed configuration override takes precedence over both. Full snapshots, execution restore, and forks are unavailable while nesting is enabled; disk-only snapshots remain available.
+Per-sandbox SDK settings and `--nested-virt=true` override this user default. A managed configuration override takes precedence over both. Full snapshots, execution restore, and forks support running nested VMs on qualified Linux x86-64, Windows x86-64, and Apple Silicon macOS hosts. Nested virtualization is not currently supported on Linux ARM64 or Windows ARM64. See [nested VM snapshots](/sandboxes/snapshots#nested-vm-snapshots) for requirements and limits.
 
 ### `sandbox_defaults.oci`
 

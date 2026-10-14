@@ -7,11 +7,12 @@ records for ten seconds after each operation. The source must keep progressing.
 The outer sandbox uses a managed root disk, so this also exercises Microsandbox's
 disk capture and restore integration.
 
-This is a manual hardware qualification test. The public runtime still rejects
-nested execution capture. Set `NESTED_EXPECT_UNSUPPORTED=1` with a public build to
-check rejection of both full snapshots and forks while the source keeps running.
-The positive matrix requires the isolated diagnostic build described in
-libkrun's `tests/nested-restore/README.md`; never ship its admission bypass.
+This is a manual hardware qualification test. Run the positive matrix with the production
+candidate on Linux x86-64, Windows x86-64, or Apple Silicon macOS with nesting support.
+No admission bypass is required. Linux ARM64 and Windows ARM64 nesting are unsupported;
+startup must reject an enabled nesting setting on those platforms.
+`NESTED_EXPECT_UNSUPPORTED=1` remains available to check older runtimes that admit nested
+execution but reject full snapshots and forks while the source keeps running.
 
 ## Fixture
 
@@ -63,8 +64,7 @@ script stops its uniquely named sandboxes in a `finally` block. Keep the home
 until evidence has been inspected, then remove it through normal cleanup.
 
 This does not qualify cross-host migration, networking, external mounts, or
-hardware platforms on which the matrix has not run. A diagnostic pass does not
-open public nested-snapshot admission.
+hardware platforms on which the matrix has not run. The qualified platform policy is enforced by libkrun.
 
 2026-10-14: the complete CLI matrix passed on AMD Linux and AMD Windows Server
 2025 with default guest kernel arguments. Intel Linux also passed with an
