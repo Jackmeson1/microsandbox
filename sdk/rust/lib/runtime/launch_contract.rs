@@ -177,6 +177,25 @@ impl LaunchContract {
 
     /// Encode a launch for the selected executable without discarding unsupported intent.
     pub(crate) fn encode(self, launch: &LaunchConfig) -> MicrosandboxResult<Value> {
+        // Check capabilities before the machine fast path so the gate is applied
+        // uniformly. `header_fields` is true only for the current build, which is
+        // the only contract that can carry the field; every historical contract
+        // drops it and would substitute in every header.
+        #[cfg(feature = "net")]
+        if !self.header_fields()
+            && launch.network.as_ref().is_some_and(|network| {
+                network
+                    .config()
+                    .secrets
+                    .secrets
+                    .iter()
+                    .any(|secret| !secret.substitution.header_fields.is_empty())
+            })
+        {
+            // Historical contracts drop the nested allowlist and would substitute
+            // in every header, silently losing the requested confidentiality scope.
+            return unsupported("per-header secret substitution scope");
+        }
         #[cfg(feature = "net")]
         if let Some(network) = &launch.network {
             self.validate_network(network.config(), launch.deployment_profile)?;
@@ -210,6 +229,9 @@ impl LaunchContract {
         }
         if !launch.guest_clock.is_sync() {
             return unsupported("guest clock policy");
+        }
+        if launch.fs_state_limit_bytes.is_some() {
+            return unsupported("filesystem state budget");
         }
         if !launch.owned_volumes.is_empty() {
             return unsupported("sandbox-owned volumes");
@@ -337,6 +359,18 @@ impl LaunchContract {
         Ok(())
     }
 
+    /// Whether this launch contract supports per-header secret substitution
+    /// scopes (`SecretSubstitution.header_fields`).
+    ///
+    /// The allowlist was added to the machine-protocol launch input, and only
+    /// the exact current build selects that protocol: `from_version` rejects
+    /// every other runtime (including 0.7.0/0.7.1) before encoding, so no
+    /// released 0.7.x contract reaches here without support. If a future
+    /// compatibility range ever admits an older machine-protocol runtime, this
+    /// capability must key off the runtime version instead of `machine`.
+    pub fn header_fields(self) -> bool {
+        self.machine
+    }
     fn from_version(version: &Version) -> MicrosandboxResult<Self> {
         if version.major == 0 && version.minor == 6 && version.patch <= 18 && version.pre.is_empty()
         {
@@ -527,6 +561,7 @@ pub(crate) async fn validate_runtime_config(
         .require_network_capabilities(&runtime.msb_path, &network)
         .await?;
     validate_guest_clock(&runtime.msb_path, config).await?;
+    validate_fs_state_limit(&runtime.msb_path, global).await?;
     Ok(())
 }
 
@@ -649,6 +684,33 @@ pub(crate) async fn validate_guest_clock(
         return Err(MicrosandboxError::unsupported(
             crate::error::Operation::SandboxStart,
             crate::error::UnsupportedReason::NotAvailable(upgrade_required("runtime.guest_clock")),
+        ));
+    }
+    Ok(())
+}
+
+/// Probe filesystem state budget support only when the budget differs from the default.
+/// Runtimes that predate the capability would otherwise keep the default budget silently.
+pub(crate) async fn validate_fs_state_limit(
+    path: &Path,
+    global: &GlobalConfig,
+) -> MicrosandboxResult<()> {
+    if global.fs_state_limit_override().is_none() {
+        return Ok(());
+    }
+    let supported = bounded_probe(path, "__launch-protocol")
+        .await
+        .ok()
+        .and_then(|output| serde_json::from_slice::<LaunchCapabilities>(&output).ok())
+        .is_some_and(|capabilities| {
+            capabilities.protocols.contains(&2) && capabilities.fs_state_limit
+        });
+    if !supported {
+        return Err(MicrosandboxError::unsupported(
+            crate::error::Operation::SandboxStart,
+            crate::error::UnsupportedReason::NotAvailable(upgrade_required(
+                "snapshots.max_filesystem_state_mib",
+            )),
         ));
     }
     Ok(())
@@ -1059,6 +1121,40 @@ mod tests {
             r#"printf '%s' '{"protocols":[2,1],"guest_clock":true}'"#,
         );
         validate_guest_clock(&path, &config).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fs_state_limit_requires_an_explicit_runtime_capability() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut global = GlobalConfig::default();
+        // The default budget must avoid probing, including on an old runtime.
+        validate_fs_state_limit(&dir.path().join("no-probe"), &global)
+            .await
+            .unwrap();
+        global.snapshots.max_filesystem_state_mib = 64;
+        for response in [
+            "exit 1",
+            r#"printf '%s' '{"protocols":[2,1],"guest_clock":true}'"#,
+            r#"printf '%s' '{"protocols":[2,1],"fs_state_limit":false}'"#,
+            r#"printf '%s' '{"protocols":[2,1],"fs_state_limit":"true"}'"#,
+            r#"printf '%s' '{"protocols":[1],"fs_state_limit":true}'"#,
+        ] {
+            let path = script(dir.path(), "unsupported-fs-state", response);
+            let error = validate_fs_state_limit(&path, &global).await.unwrap_err();
+            assert!(matches!(error, MicrosandboxError::Unsupported { .. }));
+            assert!(
+                error
+                    .to_string()
+                    .contains("snapshots.max_filesystem_state_mib")
+            );
+        }
+        let path = script(
+            dir.path(),
+            "supports-fs-state",
+            r#"printf '%s' '{"protocols":[2,1],"fs_state_limit":true}'"#,
+        );
+        validate_fs_state_limit(&path, &global).await.unwrap();
     }
 
     #[cfg(unix)]
@@ -1505,6 +1601,72 @@ mod encoding {
 
     #[cfg(feature = "net")]
     #[test]
+    fn header_fields_require_current_launch_contract() {
+        let network: microsandbox_network::ResolvedNetworkConfig = serde_json::from_value(json!({
+            "config": {
+                "secrets": {
+                    "secrets": [{
+                        "env_var": "TOKEN",
+                        "value": "secret",
+                        "placeholder": "$KEY",
+                        "allowed_hosts": [{"exact": "api.example.com"}],
+                        "substitution": {"headers": true, "header_fields": ["authorization"]},
+                    }],
+                },
+            },
+            "outbound_proxy": null,
+        }))
+        .unwrap();
+        let launch = LaunchConfig {
+            network: Some(network),
+            ..Default::default()
+        };
+
+        // The current contract carries the allowlist as-is.
+        assert!(
+            LaunchContract {
+                patch: 18,
+                machine: true,
+            }
+            .header_fields()
+        );
+        let current = LaunchContract {
+            patch: 18,
+            machine: true,
+        }
+        .encode(&launch)
+        .unwrap();
+        assert_eq!(
+            current["network"]["config"]["secrets"]["secrets"][0]["substitution"]["header_fields"],
+            json!(["authorization"])
+        );
+
+        // Historical runtimes lack the nested allowlist and would fall back to
+        // substituting in every header; refuse instead of broadening the scope.
+        for patch in 0..=18 {
+            assert!(
+                !LaunchContract {
+                    patch,
+                    machine: false,
+                }
+                .header_fields()
+            );
+            let err = LaunchContract {
+                patch,
+                machine: false,
+            }
+            .encode(&launch)
+            .unwrap_err()
+            .to_string();
+            assert!(
+                err.contains("per-header secret substitution scope"),
+                "{err}"
+            );
+        }
+    }
+
+    #[cfg(feature = "net")]
+    #[test]
     fn legacy_network_limits_reject_changed_meanings_before_launch() {
         use microsandbox_network::config::{EnvNetworkSecretResolver, NetworkConfig};
         use microsandbox_types::DeploymentProfile;
@@ -1867,6 +2029,35 @@ mod protocol {
                 .as_object()
                 .unwrap()
                 .contains_key("guest_clock")
+        );
+    }
+
+    #[test]
+    fn legacy_codec_refuses_a_non_default_filesystem_state_budget() {
+        let config = LaunchConfig {
+            fs_state_limit_bytes: Some(64 * 1024 * 1024),
+            ..Default::default()
+        };
+        assert!(
+            encode_bytes(&config, LEGACY)
+                .unwrap_err()
+                .contains("requires a newer runtime launch contract")
+        );
+        let current = LaunchContract {
+            patch: 18,
+            machine: true,
+        };
+        assert_eq!(
+            serde_json::from_slice::<Value>(&encode_bytes(&config, current).unwrap()).unwrap()["fs_state_limit_bytes"],
+            64 * 1024 * 1024
+        );
+        let default = encode_bytes(&LaunchConfig::default(), current).unwrap();
+        assert!(
+            !serde_json::from_slice::<Value>(&default)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("fs_state_limit_bytes")
         );
     }
 

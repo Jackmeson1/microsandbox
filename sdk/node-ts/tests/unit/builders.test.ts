@@ -744,6 +744,7 @@ describe("NetworkBuilder secret passthrough", () => {
         .value("sk-abc")
         .allow("api.github.com")[method]("api.anthropic.com")
         .allowPlaceholderFor("*.anthropic.com")
+        .substituteInHeaderFields(["authorization"])
         .substituteInBody(true)
         .violationAction("block-and-log")
         .build();
@@ -753,6 +754,7 @@ describe("NetworkBuilder secret passthrough", () => {
         "api.anthropic.com",
         "*.anthropic.com",
       ]);
+      expect(secret.substitution.headerFields).toEqual(["authorization"]);
       expect(secret.substitution.body).toBe(true);
     },
   );
@@ -1041,5 +1043,22 @@ describe("restore copy-on-write memory naming", () => {
     } finally {
       warning.mockRestore();
     }
+  });
+});
+
+describe("SandboxBuilder TLS shortcut", () => {
+  it("enables interception through the native builder without resetting TLS options", async () => {
+    const defaults = await Sandbox.builder("tls-defaults").image("alpine")
+      .interceptTls()
+      .build();
+    expect(defaults.network.tls.enabled).toBe(true);
+
+    const config = await Sandbox.builder("tls-shortcut").image("alpine")
+      .network(n => n.tls(t => t.bypass("pinned.example.com")))
+      .interceptTls()
+      .build();
+
+    expect(config.network.tls.enabled).toBe(true);
+    expect(config.network.tls.bypass).toEqual(["pinned.example.com"]);
   });
 });

@@ -37,6 +37,7 @@
 
 mod creation_progress;
 mod exec_adapter;
+mod jobs;
 mod restore;
 mod setup;
 mod storage;
@@ -500,6 +501,8 @@ struct BranchManyRequest {
     source_identity: Option<String>,
     #[serde(default)]
     guest_flush: microsandbox::snapshot::GuestFlush,
+    #[serde(default)]
+    volumes: HashMap<String, MountSpec>,
 }
 
 impl FfiError {
@@ -563,7 +566,8 @@ impl From<MicrosandboxError> for FfiError {
             MicrosandboxError::ExecTimeout(_) => error_kind::EXEC_TIMEOUT,
             MicrosandboxError::StopTimeout { .. } => error_kind::STOP_TIMEOUT,
             MicrosandboxError::NoDefaultCommand => error_kind::NO_DEFAULT_COMMAND,
-            MicrosandboxError::InvalidConfig(_) => error_kind::INVALID_CONFIG,
+            MicrosandboxError::InvalidConfig(_)
+            | MicrosandboxError::MissingRestoreBindings { .. } => error_kind::INVALID_CONFIG,
             MicrosandboxError::SandboxFsOps(_) => error_kind::FILESYSTEM,
             MicrosandboxError::ImageNotFound(_) => error_kind::IMAGE_NOT_FOUND,
             MicrosandboxError::ImageInUse(_) => error_kind::IMAGE_IN_USE,
@@ -1026,6 +1030,8 @@ struct SecretOpts {
 #[derive(serde::Deserialize, Default)]
 struct SecretSubstitutionOpts {
     headers: Option<bool>,
+    #[serde(default)]
+    header_fields: Vec<String>,
     #[serde(default)]
     query: bool,
     #[serde(default)]
@@ -1930,6 +1936,12 @@ fn apply_secret(
         if let Some(req) = require_tls {
             sb = sb.require_tls_identity(req);
         }
+        if !s.substitution.header_fields.is_empty() {
+            sb = sb.substitute_in_header_fields(s.substitution.header_fields.clone());
+        }
+        // Apply the explicit enabled/disabled switch after the header list:
+        // `substitute_in_header_fields` enables header substitution, so a
+        // caller that sets `headers=false` must win regardless of ordering.
         if let Some(headers) = s.substitution.headers {
             sb = sb.substitute_in_headers(headers);
         }
@@ -3567,6 +3579,10 @@ pub unsafe extern "C" fn msb_sandbox_branch_many(
             builder = builder.guest_flush(request.guest_flush);
             if record_integrity {
                 builder = builder.record_integrity();
+            }
+            for (guest, spec) in &request.volumes {
+                let mount = volume_mount(guest, spec)?;
+                builder = builder.volume(guest, |_| mount);
             }
             let outcomes = builder.fork().await.map_err(FfiError::from)?;
             let mut rows = Vec::with_capacity(outcomes.len());
@@ -7758,6 +7774,24 @@ fn agent_error(err: microsandbox::AgentClientError) -> FfiError {
 
 #[cfg(test)]
 mod tests {
+    use microsandbox::{MicrosandboxError, RestoreKind};
+
+    use super::FfiError;
+
+    #[test]
+    fn missing_restore_bindings_keep_the_invalid_config_kind() {
+        let error = MicrosandboxError::MissingRestoreBindings {
+            missing: vec!["mount /data".into()],
+            restore: RestoreKind::Disk,
+        };
+        let message = error.to_string();
+
+        let ffi = FfiError::from(error);
+
+        assert_eq!(ffi.kind, super::error_kind::INVALID_CONFIG);
+        assert_eq!(ffi.message, message);
+    }
+
     #[test]
     fn tcp_network_aliases_are_exclusive() {
         for name in ["max_connections", "max_tcp_connections"] {
@@ -7791,6 +7825,34 @@ mod tests {
         };
         let config = builder.build().await.unwrap();
         assert_eq!(config.spec.network.tcp_accept_queue_size, Some(4096));
+    }
+
+    #[tokio::test]
+    async fn explicit_header_disable_wins_over_header_fields() {
+        // `substitute_in_header_fields` enables header substitution, so the
+        // adapter must apply the explicit `headers` switch last. Otherwise a
+        // caller that sets `headers=false` would silently re-enable it.
+        let secret: super::SecretOpts = serde_json::from_value(serde_json::json!({
+            "env_var": "TOKEN",
+            "value": "synthetic",
+            "allow": ["example.com"],
+            "substitution": {"headers": false, "header_fields": ["authorization"], "query": true},
+        }))
+        .unwrap();
+        let builder = microsandbox::Sandbox::builder("secret-headers").image("alpine");
+        let Ok(builder) = super::apply_secret(builder, &secret) else {
+            panic!("apply_secret rejected valid options");
+        };
+        // The explicit disable must win, so the now-inert allowlist is rejected
+        // by validation. If the adapter re-enabled header substitution by
+        // applying the list last, the config would build successfully instead.
+        let error = builder.build().await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("header field substitutions require header substitution"),
+            "{error}"
+        );
     }
 
     use super::*;
@@ -8006,6 +8068,34 @@ mod tests {
             "got: {}",
             err.message
         );
+    }
+
+    #[test]
+    fn branch_many_request_carries_disk_volumes() {
+        let request: BranchManyRequest = serde_json::from_str(
+            r#"{"names":["a"],"volumes":{"/data":{"disk":"/images/seed.img","fstype":"ext4","readonly":true}}}"#,
+        )
+        .unwrap();
+        assert_eq!(request.volumes.len(), 1);
+        let mount = volume_mount("/data", &request.volumes["/data"])
+            .unwrap_or_else(|error| panic!("{}", error.message));
+        match mount.build().unwrap() {
+            microsandbox::sandbox::VolumeMount::DiskImage {
+                host,
+                guest,
+                fstype,
+                options,
+                ..
+            } => {
+                assert_eq!(host, std::path::Path::new("/images/seed.img"));
+                assert_eq!(guest, "/data");
+                assert_eq!(fstype.as_deref(), Some("ext4"));
+                assert!(options.readonly);
+            }
+            _ => panic!("expected a disk mount"),
+        }
+        let plain: BranchManyRequest = serde_json::from_str(r#"{"names":["a"]}"#).unwrap();
+        assert!(plain.volumes.is_empty());
     }
 
     #[test]

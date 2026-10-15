@@ -1019,6 +1019,21 @@ func WithNetwork(net *NetworkConfig) SandboxOption {
 	return func(o *SandboxConfig) { o.Network = net }
 }
 
+// WithInterceptTLS enables TLS interception while preserving existing network and
+// TLS settings. A later WithNetwork replaces the network configuration.
+func WithInterceptTLS() SandboxOption {
+	return func(o *SandboxConfig) {
+		network := NetworkConfig{}
+		if o.Network != nil {
+			network = *o.Network
+		}
+		if network.TLS == nil {
+			network.TLS = &TLSConfig{}
+		}
+		o.Network = &network
+	}
+}
+
 // WithProxy sets the single proxy used for outbound sandbox connections.
 func WithProxy(proxy *OutboundProxy) SandboxOption {
 	return func(o *SandboxConfig) { o.Proxy = proxy }
@@ -1480,8 +1495,14 @@ type SecretEntry struct {
 // SecretSubstitution selects request locations where substitution is enabled.
 type SecretSubstitution struct {
 	Headers *bool
-	Query   bool
-	Body    bool
+	// HeaderFields restricts header substitution to these field names when
+	// non-empty (for example, []string{"authorization"}). Prefer this over
+	// substituting in every header: an untrusted guest can otherwise place the
+	// placeholder in a header the upstream host reflects back and read the
+	// real secret. An empty slice allows every header field.
+	HeaderFields []string
+	Query        bool
+	Body         bool
 }
 
 // SecretEnvOptions tunes Secret.Env beyond the required envVar and value.
