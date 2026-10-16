@@ -550,7 +550,7 @@ The `--net-ingress-*` flags mirror the egress flags for inbound traffic (`--net-
 
 By default, denied connections close without a response. Enable HTTP denial responses to return `403 Forbidden` with a message your app or agent can act on. This requires a supporting local runtime and is unavailable on cloud.
 
-You can customize the message and use `{host}` for the blocked hostname. Enable denial responses explicitly; setting a message alone leaves them disabled.
+You can customize the message and use `{host}` for the blocked hostname. Enable denial responses explicitly; setting a message alone leaves them disabled. Allow gateway DNS so hostname lookups succeed before HTTP traffic is denied.
 
 <CodeGroup>
 ```typescript TypeScript
@@ -559,7 +559,10 @@ import { NetworkPolicy, Sandbox } from "microsandbox";
 await using sb = await Sandbox.builder("agent")
     .image("python")
     .network((n) => n
-        .policy(NetworkPolicy.none())
+        .policy(NetworkPolicy.builder()
+            .defaultDeny()
+            .egress((e) => e.udp().tcp().port(53).allowHost())
+            .build())
         .tls((t) => t)
         .http((h) => h.denyResponse(true).denyMessage("{host} is blocked. Ask the user to allow it.")))
     .create();
@@ -568,10 +571,15 @@ await using sb = await Sandbox.builder("agent")
 ```rust Rust
 use microsandbox::{NetworkPolicy, Sandbox};
 
+let policy = NetworkPolicy::builder()
+    .default_deny()
+    .egress(|e| e.udp().tcp().port(53).allow_host())
+    .build()?;
+
 let sb = Sandbox::builder("agent")
     .image("python")
     .network(|n| n
-        .policy(NetworkPolicy::none())
+        .policy(policy)
         .tls(|t| t.enabled(true))
         .http(|h| h.deny_response(true).deny_message("{host} is blocked. Ask the user to allow it.")))
     .create()
@@ -579,13 +587,17 @@ let sb = Sandbox::builder("agent")
 ```
 
 ```python Python
-from microsandbox import HttpConfig, Network, NetworkPolicy, Sandbox, TlsConfig
+from microsandbox import Action, HttpConfig, Network, NetworkPolicy, Rule, Sandbox, TlsConfig
 
 sb = await Sandbox.create(
     "agent",
     image="python",
     network=Network(
-        policy=NetworkPolicy.none(),
+        policy=NetworkPolicy(
+            default_egress=Action.DENY,
+            default_ingress=Action.DENY,
+            rules=Rule.allow_dns(),
+        ),
         tls=TlsConfig(),
         http=HttpConfig(deny_response=True, deny_message="{host} is blocked. Ask the user to allow it."),
     ),
@@ -597,6 +609,7 @@ sb, err := m.CreateSandbox(ctx, "agent",
     m.WithImage("python"),
     m.WithNetwork(&m.NetworkConfig{
         DefaultEgress:   m.PolicyActionDeny,
+        Rules:           []m.PolicyRule{m.Rule.AllowDNS()},
         TLS:             &m.TLSConfig{},
         HTTP: &m.HTTPConfig{DenyResponse: true, DenyMessage: "{host} is blocked. Ask the user to allow it."},
     }),
