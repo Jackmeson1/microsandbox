@@ -132,6 +132,7 @@
                 "expanded": false,
                 "pages": [
                   "sdk/rust/sandbox",
+                  "sdk/rust/configuration",
                   "sdk/rust/execution",
                   "sdk/rust/ssh",
                   "sdk/rust/filesystem",
