@@ -59,7 +59,7 @@ class KernelVariantsTest(unittest.TestCase):
             self.assertEqual(macos_manifest["library_asset"], "libkrunfw-darwin-aarch64-m05.dylib")
 
             (firmware / "kernel.c").write_text("different kernel bundle\n")
-            with self.assertRaisesRegex(ValueError, "does not match"):
+            with self.assertRaisesRegex(ValueError, "kernel_c_sha256"):
                 kernel_variants.record_link(
                     kernel_manifest, firmware / "kernel.c", linked, "darwin-aarch64", kernel_variants.PROFILES
                 )
@@ -81,7 +81,7 @@ class KernelVariantsTest(unittest.TestCase):
                         "groups": names,
                         "host_target": target,
                         "requested_y": sorted(symbols),
-                        "profile_sha256": kernel_variants.sha256(kernel_variants.PROFILES),
+                        "profile_sha256": kernel_variants.profile_sha256(kernel_variants.PROFILES),
                         "library_asset": kernel_variants.asset_name(target, mask),
                     }
                     path = manifests / f"manifest-{target}-m{mask:02d}.json"
@@ -92,6 +92,17 @@ class KernelVariantsTest(unittest.TestCase):
             (manifests / "manifest-windows-aarch64-m31.json").unlink()
             with self.assertRaisesRegex(ValueError, "incomplete"):
                 kernel_variants.index(manifests, kernel_variants.PROFILES)
+
+    def test_profile_identity_ignores_line_endings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            windows_copy = Path(directory) / "profiles.json"
+            text = kernel_variants.PROFILES.read_text()
+            windows_copy.write_bytes(text.replace("\n", "\r\n").encode())
+
+            self.assertEqual(
+                kernel_variants.profile_sha256(kernel_variants.PROFILES),
+                kernel_variants.profile_sha256(windows_copy),
+            )
 
 
 if __name__ == "__main__":

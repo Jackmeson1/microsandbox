@@ -74,14 +74,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          prerelease=()
-          if [[ "${GITHUB_REF_NAME}" =~ -(rc|alpha|beta|dev) ]]; then
-            prerelease=(--prerelease)
+          existing=$(gh release view "${GITHUB_REF_NAME}" --json isDraft --jq .isDraft 2>/dev/null || true)
+          if [[ "${existing}" == false ]]; then
+            echo "A published release already exists for ${GITHUB_REF_NAME}" >&2
+            exit 1
           fi
-          gh release create "${GITHUB_REF_NAME}" --verify-tag --draft \
-            --title "${GITHUB_REF_NAME}" \
-            --notes 'Release build in progress.' \
-            "${prerelease[@]}"
+          if [[ "${existing}" != true ]]; then
+            prerelease=()
+            if [[ "${GITHUB_REF_NAME}" =~ -(rc|alpha|beta|dev) ]]; then
+              prerelease=(--prerelease)
+            fi
+            gh release create "${GITHUB_REF_NAME}" --verify-tag --draft \
+              --title "${GITHUB_REF_NAME}" \
+              --notes 'Release build in progress.' \
+              "${prerelease[@]}"
+          fi
 
   # Fetch and verify the large kernel archive once, then fan it out to both
   # firmware architectures over GitHub's artifact network.
@@ -422,7 +429,7 @@ jobs:
           library="libkrunfw-linux-${ARCH}-${suffix}.so"
           cp vendor/libkrunfw/kernel.c "${kernel}"
           cp "vendor/libkrunfw/libkrunfw.so.${LIBKRUNFW_VERSION}" "${library}"
-          gh release upload "${GITHUB_REF_NAME}" "${kernel}" "${library}" "${manifest}"
+          gh release upload "${GITHUB_REF_NAME}" --clobber "${kernel}" "${library}" "${manifest}"
 
   variant-links:
     name: Variant library (${{ matrix.platform.target }}, ${{ matrix.mask }})
@@ -476,8 +483,14 @@ jobs:
         run: |
           suffix="m$(printf '%02d' "${MASK}")"
           mkdir variant-input
-          gh release download "${GITHUB_REF_NAME}" --pattern "kernel-${ARCH}-${suffix}.c" --dir variant-input
-          gh release download "${GITHUB_REF_NAME}" --pattern "manifest-linux-${ARCH}-${suffix}.json" --dir variant-input
+          release_id=$(gh release view "${GITHUB_REF_NAME}" --json databaseId --jq .databaseId)
+          assets=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" \
+            --jq ".[] | select(.name == \"kernel-${ARCH}-${suffix}.c\" or .name == \"manifest-linux-${ARCH}-${suffix}.json\") | [.id, .name] | @tsv")
+          test "$(printf '%s\n' "${assets}" | wc -l | tr -d ' ')" = 2
+          while IFS=$'\t' read -r asset_id name; do
+            gh api -H 'Accept: application/octet-stream' \
+              "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > "variant-input/${name}"
+          done <<< "${assets}"
           cp "variant-input/kernel-${ARCH}-${suffix}.c" vendor/libkrunfw/kernel.c
 
       - name: Stage PR kernel bundle
@@ -540,7 +553,7 @@ jobs:
           if [[ "${RUNNER_OS}" == Windows ]]; then python=python; fi
           asset=$("${python}" -c 'import json, sys; print(json.load(open(sys.argv[1]))["library_asset"])' "${manifest}")
           cp "vendor/libkrunfw/${LIBRARY}" "${asset}"
-          gh release upload "${GITHUB_REF_NAME}" "${asset}" "${manifest}"
+          gh release upload "${GITHUB_REF_NAME}" --clobber "${asset}" "${manifest}"
 
   # ---------------------------------------------------------------------------
   # Legacy tag-release graph. Keep this disabled as an in-file rollback
@@ -1340,7 +1353,7 @@ jobs:
           gh release edit "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --notes-file "$RUNNER_TEMP/release-notes.md"
-          gh release upload "${GITHUB_REF_NAME}" release-artifacts/*
+          gh release upload "${GITHUB_REF_NAME}" --clobber release-artifacts/*
 
   publish-release:
     name: Publish complete release
@@ -1357,29 +1370,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir variant-manifests
-          gh release download "${GITHUB_REF_NAME}" --pattern 'manifest-*.json' --dir variant-manifests
+          release_id=$(gh release view "${GITHUB_REF_NAME}" --json databaseId --jq .databaseId)
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" \
+            --jq '.[] | select(.name | startswith("manifest-") and endswith(".json")) | [.id, .name] | @tsv' |
+            while IFS=$'\t' read -r asset_id name; do
+              gh api -H 'Accept: application/octet-stream' \
+                "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > "variant-manifests/${name}"
+            done
           python3 scripts/ci/kernel_variants.py index --manifests variant-manifests > kernel-variants.json
-          gh release upload "${GITHUB_REF_NAME}" kernel-variants.json scripts/ci/kernel-variant-profiles.json
-          release_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq .id)
+          gh release upload "${GITHUB_REF_NAME}" --clobber kernel-variants.json scripts/ci/kernel-variant-profiles.json
           gh api --paginate "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" \
             --jq '.[] | select(.name | startswith("kernel-") and endswith(".c")) | .id' |
             while read -r asset_id; do
               gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}"
             done
           gh release edit "${GITHUB_REF_NAME}" --draft=false
-
-  cleanup-variant-draft:
-    name: Remove incomplete draft release
-    if: ${{ always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.variant-plan.result == 'success' && needs.publish-release.result != 'success' }}
-    needs: [variant-plan, release-ready, assemble, publish-release]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - name: Delete incomplete draft release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release delete "${GITHUB_REF_NAME}" --yes
 
   # ---------------------------------------------------------------------------
   # Sync mintlify branch to the released commit

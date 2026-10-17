@@ -41,6 +41,12 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def profile_sha256(path: Path) -> str:
+    payload = json.loads(path.read_text())
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def asset_name(target: str, mask: int) -> str:
     extension = {"linux": "so", "darwin": "dylib", "windows": "dll"}[target.split("-")[0]]
     return f"libkrunfw-{target}-m{mask:02d}.{extension}"
@@ -135,7 +141,7 @@ def verify(firmware: Path, profiles: Path, mask: int, arch: str) -> dict:
         "guest_arch": arch,
         "host_target": f"linux-{arch}",
         "requested_y": sorted(symbols),
-        "profile_sha256": sha256(profiles),
+        "profile_sha256": profile_sha256(profiles),
         "resolved_config_sha256": sha256(config),
         "kernel_c_sha256": sha256(bundle),
         "library_filename": library.name,
@@ -153,17 +159,19 @@ def record_link(
     if not isinstance(mask, int) or not 0 <= mask < 32:
         raise ValueError("invalid kernel variant mask")
     names, symbols = requested_symbols(profiles, mask, arch)
-    if (
-        manifest.get("host_target") != f"linux-{arch}"
-        or manifest.get("guest_arch") != arch
-        or manifest.get("groups") != names
-        or manifest.get("requested_y") != sorted(symbols)
-        or manifest.get("profile_sha256") != sha256(profiles)
-        or manifest.get("kernel_c_sha256") != sha256(kernel_bundle)
-        or not library.is_file()
-        or library.stat().st_size == 0
-    ):
-        raise ValueError(f"kernel or linked library does not match {target}/mask {mask}")
+    expected = {
+        "host_target": f"linux-{arch}",
+        "guest_arch": arch,
+        "groups": names,
+        "requested_y": sorted(symbols),
+        "profile_sha256": profile_sha256(profiles),
+        "kernel_c_sha256": sha256(kernel_bundle),
+    }
+    for field, value in expected.items():
+        if manifest.get(field) != value:
+            raise ValueError(f"{target}/mask {mask} has a mismatched {field}")
+    if not library.is_file() or library.stat().st_size == 0:
+        raise ValueError(f"missing or empty linked library: {library}")
     manifest.update(
         host_target=target,
         library_filename=library.name,
@@ -192,7 +200,7 @@ def index(manifests: Path, profiles: Path) -> dict:
             or manifest.get("groups") != names
             or manifest.get("guest_arch") != arch
             or manifest.get("requested_y") != sorted(symbols)
-            or manifest.get("profile_sha256") != sha256(profiles)
+            or manifest.get("profile_sha256") != profile_sha256(profiles)
             or manifest.get("library_asset") != asset_name(target, mask)
         ):
             raise ValueError(f"invalid variant manifest: {path}")
@@ -201,7 +209,7 @@ def index(manifests: Path, profiles: Path) -> dict:
     expected = {(target, mask) for target in TARGET_ARCH for mask in range(32)}
     if seen != expected:
         raise ValueError(f"variant manifests incomplete: missing={sorted(expected - seen)}")
-    return {"schema": 1, "profile_sha256": sha256(profiles), "variants": variants}
+    return {"schema": 1, "profile_sha256": profile_sha256(profiles), "variants": variants}
 
 
 def main() -> None:
