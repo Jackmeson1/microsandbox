@@ -3,6 +3,9 @@
 //! Immutable files and reader locks keep their inode identity. Only a complete private
 //! generation becomes visible; the catalog journal travels with that generation.
 
+#[path = "generation_retirement.rs"]
+mod retirement;
+
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io;
@@ -127,6 +130,13 @@ impl Generation {
                 &directory.path().join(".snapshot-deletions"),
             )?;
         }
+        if group.join(retirement::DIRECTORY).exists() {
+            link_tree(
+                &group.join(retirement::DIRECTORY),
+                &directory.path().join(retirement::DIRECTORY),
+            )?;
+        }
+        retirement::stage(group, directory.path())?;
         sync_directory(directory.path())?;
         Ok(Self { directory })
     }
@@ -139,6 +149,12 @@ impl Generation {
 //--------------------------------------------------------------------------------------------------
 // Functions
 //--------------------------------------------------------------------------------------------------
+
+/// Recover only generations named by a published, identity-checked retirement journal.
+/// Caller retains group writer admission through this blocking operation.
+pub(super) fn recover_retired(group: &Path) -> MicrosandboxResult<()> {
+    retirement::recover(group)
+}
 
 /// Probe the destination filesystem with disposable files before archive unpacking. A
 /// missing destination uses its nearest existing parent; publication rechecks its parent.
@@ -244,7 +260,7 @@ fn publish_with_flush(
     publication_boundary(group, "committed");
     // Cleanup failure cannot undo a published batch. The old generation contains
     // only extra links; removing them cannot invalidate live reader descriptors.
-    if let Err(error) = fs::remove_dir_all(&retired).and_then(|()| sync_directory(parent)) {
+    if let Err(error) = retirement::finish(group, &retired) {
         let warning = format!(
             "snapshot batch committed; retired generation cleanup remains at {}: {error}",
             retired.display()
@@ -306,7 +322,7 @@ fn remove_with_flush(
     )))?;
     #[cfg(test)]
     super::removal::publication_boundary(group, "committed");
-    if let Err(error) = fs::remove_dir_all(&retired).and_then(|()| sync_directory(parent)) {
+    if let Err(error) = retirement::finish(group, &retired) {
         return Ok(vec![format!(
             "checkpoint removal committed; retired generation cleanup remains at {}: {error}",
             retired.display()

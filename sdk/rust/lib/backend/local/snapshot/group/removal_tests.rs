@@ -315,6 +315,21 @@ async fn crash_cases(legacy_cli: Option<&Path>) {
         );
         deletion::recover_parent(&local, &directory).await.unwrap();
         deletion::recover_parent(&local, &directory).await.unwrap();
+        if removed {
+            assert!(
+                !fs::read_dir(directory.parent().unwrap())
+                    .unwrap()
+                    .any(|entry| {
+                        entry
+                            .unwrap()
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".group-generation-")
+                    }),
+                "committed removal leaked retired payloads at {boundary}"
+            );
+        }
+
         assert_eq!(
             snapshot::Entity::find_by_id(key)
                 .one(local.db().await.unwrap().read())

@@ -1006,4 +1006,11 @@ async fn removal_flush_failure_retains_complete_view_and_old_generation() {
             .exists()
     );
     assert!(directory.join(".snapshot-deletions").exists());
+    // Older recovery may consume the catalog receipt; generation reclamation
+    // remains independently recoverable, including after a durability failure.
+    fs::remove_dir_all(directory.join(".snapshot-deletions")).unwrap();
+    recover_retired(&directory).unwrap();
+    recover_retired(&directory).unwrap();
+    assert!(!retired.exists());
+    assert!(directory.join(id(1).as_str()).is_dir());
 }
