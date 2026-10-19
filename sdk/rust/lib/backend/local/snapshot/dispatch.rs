@@ -287,9 +287,25 @@ impl SnapshotBackend for LocalBackend {
             };
             let selector = local_selector(self, reference).await?;
             if may_be_archive && Path::new(&selector).is_file() {
+                // A retained installed member cannot turn into an archive input after
+                // selection. Legacy reference-based restore has no expected descriptor.
+                if config.snapshot_expected_digest.is_some() {
+                    return Err(MicrosandboxError::SnapshotIntegrity(
+                        "snapshot was replaced since this handle was opened".into(),
+                    ));
+                }
                 config.snapshot_archive_source = Some(PathBuf::from(selector));
             } else {
                 let artifact = store::open_snapshot_leased(self, &selector).await?;
+                if config
+                    .snapshot_expected_digest
+                    .as_ref()
+                    .is_some_and(|expected| expected != artifact.digest())
+                {
+                    return Err(MicrosandboxError::SnapshotIntegrity(
+                        "snapshot was replaced since this handle was opened".into(),
+                    ));
+                }
                 config.snapshot_lease = artifact.lease.clone();
                 let snapshot = from_artifact(backend, artifact);
                 crate::sandbox::prepare_local_snapshot_restore(config, &snapshot)?;

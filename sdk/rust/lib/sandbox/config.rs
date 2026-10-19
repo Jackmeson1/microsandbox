@@ -142,6 +142,11 @@ pub struct SandboxConfig {
     #[cfg(feature = "local")]
     #[serde(skip)]
     pub(crate) snapshot_lease: Option<microsandbox_image::storage_lease::StorageLease>,
+    /// Descriptor selected by a retained local checkpoint receiver. Validate under its
+    /// reader lease before child preparation; this constraint never crosses the runtime ABI.
+    #[cfg(feature = "local")]
+    #[serde(skip)]
+    pub(crate) snapshot_expected_digest: Option<String>,
     /// Operation-local observer; never persisted or retained as a stream owner.
     #[cfg(feature = "local")]
     #[serde(skip)]
@@ -1120,6 +1125,8 @@ impl Default for SandboxConfig {
             creation_progress: None,
             #[cfg(feature = "local")]
             snapshot_lease: None,
+            #[cfg(feature = "local")]
+            snapshot_expected_digest: None,
             insecure: false,
             ca_certs: Vec::new(),
             replace_existing: false,

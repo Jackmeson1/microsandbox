@@ -417,6 +417,13 @@ impl Checkpoint {
         // A callback can return a completely different builder. The receiver still owns
         // source selection; only destination choices may be taken from that builder.
         builder.inner = builder.inner.with_snapshot_reference(self.reference());
+        #[cfg(feature = "local")]
+        if self.backend.as_local().is_some() {
+            // Opening a receiver reads metadata but does not keep a lifetime lease.
+            // Bind deferred preparation to that descriptor, even if the callback
+            // supplied another builder or the path was reused before spawn began.
+            builder.inner.config.snapshot_expected_digest = Some(self.digest.clone());
+        }
         if builder
             .inner
             .config
@@ -470,4 +477,121 @@ fn captured_head(checkpoint: &Checkpoint) -> MicrosandboxResult<HeadUpdate> {
             "capture completed without an operation-specific head outcome".into(),
         )
     })
+}
+
+//--------------------------------------------------------------------------------------------------
+// Tests
+//--------------------------------------------------------------------------------------------------
+
+#[cfg(all(test, feature = "local"))]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::backend::Backend;
+    use crate::snapshot::{Checkpoint, DESCRIPTOR_FILENAME, SnapshotReference};
+    use crate::{MicrosandboxError, Sandbox};
+
+    #[tokio::test]
+    async fn retained_checkpoint_spawn_refuses_replaced_descriptor() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend: Arc<dyn Backend> = Arc::new(
+            crate::test_support::local_backend_builder(temp.path().join("home"))
+                .build()
+                .await
+                .unwrap(),
+        );
+        let directory = temp.path().join("artifact");
+        std::fs::create_dir(&directory).unwrap();
+        let wire = microsandbox_types::snapshot::cloud_manifest::Manifest::from_bytes(
+            br#"{"schema":1,"artifact":"snapshot","scope":"disk","created_at":"2026-05-01T12:00:00Z","parent":null,"image":{"ref":"docker.io/library/python:3.12","manifest_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"source_sandbox":"source","state":{"kind":"file","format":"raw","fstype":"ext4","upper":{"file":"upper.ext4","size_bytes":512,"integrity":null}},"labels":{},"extensions":{},"requires":[]}"#,
+        )
+        .unwrap();
+        let mut manifest = microsandbox_types::snapshot::legacy::project_cloud_descriptor(
+            &wire,
+            &wire.digest().unwrap(),
+        )
+        .unwrap();
+        let descriptor = directory.join(DESCRIPTOR_FILENAME);
+        std::fs::write(&descriptor, manifest.to_canonical_bytes().unwrap()).unwrap();
+        std::fs::write(directory.join("upper.ext4"), [42; 512]).unwrap();
+        let reference = SnapshotReference::path(directory.to_string_lossy());
+
+        crate::with_backend(backend, async {
+            let selected = Checkpoint::open_ref(reference.clone()).await.unwrap();
+            // Exercise the actual spawn preparation without booting a guest. Successful
+            // preparation must retain a reader lease until child materialization finishes.
+            let prepared = selected
+                .spawn_builder(|options| options.name("child"))
+                .inner
+                .build()
+                .await
+                .unwrap();
+            assert!(prepared.snapshot_lease.is_some());
+            let serialized = serde_json::to_value(&prepared).unwrap();
+            assert!(serialized.get("snapshot_expected_digest").is_none());
+            assert!(
+                serde_json::from_value::<crate::SandboxConfig>(serialized)
+                    .unwrap()
+                    .snapshot_expected_digest
+                    .is_none()
+            );
+            drop(prepared);
+
+            // The immutable ID alone is insufficient: a removed/replaced directory can
+            // contain a different descriptor at the same address before spawn starts.
+            manifest.image.reference = "replacement:latest".into();
+            std::fs::write(&descriptor, manifest.to_canonical_bytes().unwrap()).unwrap();
+            let outcome = selected
+                .spawn_builder(|_| Sandbox::restore("different").name("child"))
+                .inner
+                .build()
+                .await;
+            assert!(
+                matches!(
+                    &outcome,
+                    Err(MicrosandboxError::SnapshotIntegrity(message))
+                        if message.contains("replaced since this handle was opened")
+                ),
+                "replacement outcome: {:?}",
+                outcome.as_ref().map(|config| &config.spec.image)
+            );
+
+            // Legacy reference-based restoration intentionally selects what is currently
+            // stored at that reference; it must not inherit a stale receiver's constraint.
+            let current = Sandbox::restore_ref(reference.clone())
+                .name("current")
+                .inner
+                .build()
+                .await
+                .unwrap();
+            assert!(current.snapshot_lease.is_some());
+            drop(current);
+
+            let fresh = Checkpoint::open_ref(reference.clone()).await.unwrap();
+            let prepared = fresh
+                .spawn_builder(|options| options.name("fresh"))
+                .inner
+                .build()
+                .await
+                .unwrap();
+            assert!(prepared.snapshot_lease.is_some());
+            drop(prepared);
+
+            // Replacing the directory by a regular file must not bypass the digest
+            // guard by taking the legacy deferred archive-materialization path.
+            std::fs::remove_dir_all(&directory).unwrap();
+            std::fs::write(&directory, b"not an archive").unwrap();
+            let outcome = fresh
+                .spawn_builder(|options| options.name("file-replacement"))
+                .inner
+                .build()
+                .await;
+            assert!(matches!(
+                outcome,
+                Err(MicrosandboxError::SnapshotIntegrity(message))
+                    if message.contains("replaced since this handle was opened")
+            ));
+        })
+        .await;
+    }
 }
