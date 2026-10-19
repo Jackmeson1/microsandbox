@@ -4,7 +4,9 @@
 //! member's optional local alias need metadata; immutable descriptors remain authoritative for
 //! ancestry. All group operations share one process-held lock, acquired off the async executor.
 
+mod capture;
 mod transaction;
+
 #[cfg(windows)]
 mod txf;
 
@@ -204,7 +206,7 @@ pub(super) async fn member_paths(directory: &Path) -> MicrosandboxResult<Vec<Pat
 /// Open or create an explicitly named group, or create a fresh generated local group.
 #[cfg(test)]
 pub(super) async fn ensure(root: &Path, name: Option<&str>) -> MicrosandboxResult<PathBuf> {
-    Ok(prepare_destination(root, name, false, None, false, false)
+    Ok(prepare_destination(root, name, false, None, false)
         .await?
         .directory)
 }
@@ -218,7 +220,7 @@ pub(super) async fn ensure_capture(
 ) -> MicrosandboxResult<PathBuf> {
     source.validate()?;
     Ok(
-        prepare_destination(root, Some(name), false, Some(source), false, false)
+        prepare_destination(root, Some(name), false, Some(source), false)
             .await?
             .directory,
     )
@@ -229,13 +231,13 @@ pub(super) async fn ensure_new_capture(
     root: &Path,
     name: &str,
     source: super::source::Source,
-) -> MicrosandboxResult<PathBuf> {
+) -> MicrosandboxResult<CaptureReservation> {
     source.validate()?;
-    Ok(
-        prepare_destination(root, Some(name), false, Some(source), false, true)
-            .await?
-            .directory,
-    )
+    let root = root.to_path_buf();
+    let name = name.to_owned();
+    // The result itself owns rollback. If the awaiting future is cancelled, the
+    // blocking worker's unobserved return value still retires its reservation.
+    blocking(move || capture::claim(&root, &name, source)).await
 }
 
 /// Validate a group independently of whether it currently selects a head.
@@ -274,7 +276,7 @@ pub(super) async fn ensure_checkpoint(
 ) -> MicrosandboxResult<PathBuf> {
     source.validate()?;
     Ok(
-        prepare_destination(root, Some(name), false, Some(source), true, false)
+        prepare_destination(root, Some(name), false, Some(source), true)
             .await?
             .directory,
     )
@@ -364,7 +366,7 @@ pub(super) async fn ensure_import(
     root: &Path,
     name: Option<&str>,
 ) -> MicrosandboxResult<ImportDestination> {
-    prepare_destination(root, name, true, None, false, false).await
+    prepare_destination(root, name, true, None, false).await
 }
 
 async fn prepare_destination(
@@ -373,7 +375,6 @@ async fn prepare_destination(
     importing: bool,
     source: Option<super::source::Source>,
     require_existing: bool,
-    require_new: bool,
 ) -> MicrosandboxResult<ImportDestination> {
     let root = root.to_path_buf();
     let name = name.map(str::to_owned);
@@ -392,7 +393,6 @@ async fn prepare_destination(
         };
         let directory = root.join(&name);
         if path_exists(&directory)? {
-            if require_new { return Err(MicrosandboxError::SnapshotAlreadyExists(name)); }
             require_directory(&directory)?;
             if let Some(source) = &source {
                 let _lock = lock_group(&directory)?;
@@ -1494,3 +1494,9 @@ fn sync_directory(_path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 #[path = "group_tests.rs"]
 mod tests;
+
+//--------------------------------------------------------------------------------------------------
+// Re-Exports
+//--------------------------------------------------------------------------------------------------
+
+pub(super) use capture::CaptureReservation;

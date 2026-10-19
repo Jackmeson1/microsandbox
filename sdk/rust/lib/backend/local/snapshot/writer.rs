@@ -38,6 +38,16 @@ impl WriterLease {
     /// Deletion uses nonblocking admission, preserving its existing busy behavior.
     pub(super) fn try_acquire(directory: &Path) -> io::Result<Option<Self>> {
         let directory = directory.canonicalize()?;
+        Self::try_acquire_key(directory)
+    }
+
+    /// Creation reserves the stable writer key before the destination directory exists.
+    /// The caller serializes name creation with the root creation lock.
+    pub(super) fn try_reserve(directory: &Path) -> io::Result<Option<Self>> {
+        Self::try_acquire_key(StorageLease::key(directory)?)
+    }
+
+    fn try_acquire_key(directory: PathBuf) -> io::Result<Option<Self>> {
         let parent = directory
             .parent()
             .ok_or_else(|| io::Error::other("group has no parent"))?;

@@ -1231,13 +1231,16 @@ async fn new_group_capture_admission_is_exclusive_even_for_the_same_source() {
         ensure_new_capture(&root, "history", source.clone()),
     );
     assert_ne!(first.is_ok(), second.is_ok());
-    let failure = first.err().or_else(|| second.err()).unwrap();
-    assert!(matches!(
-        failure,
-        MicrosandboxError::SnapshotAlreadyExists(_)
-    ));
+    let winner = match (first, second) {
+        (Ok(winner), Err(MicrosandboxError::SnapshotAlreadyExists(_)))
+        | (Err(MicrosandboxError::SnapshotAlreadyExists(_)), Ok(winner)) => winner,
+        _ => panic!("expected one owner and one name collision"),
+    };
     // Creation must not silently become append, even when the requested binding matches.
     assert!(ensure_new_capture(&root, "history", source).await.is_err());
+    assert!(!winner.directory().join(GROUP_FILENAME).exists());
+    drop(winner);
+    assert!(!root.join("history").exists());
 }
 
 #[tokio::test]
@@ -1330,9 +1333,25 @@ async fn live_public_group_capture_head_and_spawn_after_source_deletion() {
         }
         .await;
         let stopped = source.stop().await;
-        let removed = Sandbox::remove("group-api-source").await;
         stopped.unwrap();
+        // A full capture of a stopped VM fails after group reservation. The same
+        // name must remain usable for a subsequent valid disk-only capture.
+        let failed = source
+            .snapshot_with("failed-initial", |options| options.full())
+            .await;
+        let absent = Snapshot::get("failed-initial").await;
+        let retry = source.snapshot("failed-initial").await;
+        let removed = Sandbox::remove("group-api-source").await;
         removed.unwrap();
+        assert!(
+            failed.is_err(),
+            "stopped full capture unexpectedly succeeded"
+        );
+        assert!(
+            absent.is_err(),
+            "failed initial capture exposed an empty group"
+        );
+        retry.unwrap();
         let (group, base, next) = captured.unwrap();
         assert!(
             group.checkpoint().await.is_err(),

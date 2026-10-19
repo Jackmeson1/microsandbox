@@ -204,16 +204,19 @@ async fn create_snapshot_inner(
         &config.source_sandbox,
     )
     .await?;
-    let group_dir = match mode {
-        CaptureGroupMode::Existing => {
-            super::group::ensure_checkpoint(&root, &group_name, source).await?
-        }
+    let (group_dir, reservation) = match mode {
+        CaptureGroupMode::Existing => (
+            super::group::ensure_checkpoint(&root, &group_name, source).await?,
+            None,
+        ),
         CaptureGroupMode::New(_) => {
-            super::group::ensure_new_capture(&root, &group_name, source).await?
+            let reservation = super::group::ensure_new_capture(&root, &group_name, source).await?;
+            (reservation.directory().to_path_buf(), Some(reservation))
         }
-        CaptureGroupMode::Legacy => {
-            super::group::ensure_capture(&root, &group_name, source).await?
-        }
+        CaptureGroupMode::Legacy => (
+            super::group::ensure_capture(&root, &group_name, source).await?,
+            None,
+        ),
     };
     super::publication::complete_batch(local.db().await?.write(), &group_dir).await?;
     // Capture may continue while a group generation is exchanged. Its private staging
@@ -229,7 +232,7 @@ async fn create_snapshot_inner(
         local,
         captured,
         staging,
-        group_dir,
+        (group_dir, reservation),
         lineage,
         (name, generated_name),
         &source_sandbox,
@@ -243,7 +246,7 @@ async fn publish_snapshot_group(
     local: &LocalBackend,
     captured: StagedSnapshot,
     staging: tempfile::TempDir,
-    group_dir: PathBuf,
+    (group_dir, reservation): (PathBuf, Option<super::group::CaptureReservation>),
     lineage: super::lineage::CaptureLineage,
     (name, generated_name): (String, bool),
     source_sandbox: &str,
@@ -269,7 +272,13 @@ async fn publish_snapshot_group(
     // release the source lock while a blocking group commit is still running in the background.
     let publication_db = local.db().await?.write().clone();
     let captured = tokio::spawn(async move {
-        let writer = super::writer::WriterLease::acquire(&group_dir).await?;
+        // A detached publisher owns the initial reservation even if its caller
+        // cancels. Reuse admission instead of deadlocking on our own writer lease.
+        let _reservation = reservation;
+        let writer = match &_reservation {
+            Some(reservation) => reservation.writer(),
+            None => super::writer::WriterLease::acquire(&group_dir).await?,
+        };
         let destination = group_dir.join(captured.id().as_str());
         let _publication = microsandbox_image::storage_lease::StorageLease::shared_async(destination.clone()).await?;
         super::publication::prepare(&publication_db, &destination, captured.digest(), captured.manifest()).await?;
@@ -2564,12 +2573,21 @@ mod tests {
             let snapshot_id = captured.manifest.snapshot_id.clone();
             fixture_source(&local).await;
             let lineage = super::super::lineage::begin(&local, "box").await.unwrap();
-            let group = super::super::group::ensure(&local.snapshots_dir(), Some("box"))
-                .await
-                .unwrap();
+            let source = super::super::source::Source::capture(
+                local.db().await.unwrap().write(),
+                lineage.sandbox_id(),
+                "box",
+            )
+            .await
+            .unwrap();
+            let reservation =
+                super::super::group::ensure_new_capture(&local.snapshots_dir(), "box", source)
+                    .await
+                    .unwrap();
+            let group = reservation.directory().to_path_buf();
             let staging = tempfile::Builder::new()
                 .prefix(".capture-")
-                .tempdir_in(&group)
+                .tempdir_in(local.snapshots_dir())
                 .unwrap();
             let staged_path = staging.path().join("snapshot");
             let staged = stage_full_snapshot(
@@ -2597,7 +2615,7 @@ mod tests {
                 &local,
                 staged,
                 staging,
-                group.clone(),
+                (group.clone(), Some(reservation)),
                 lineage,
                 ("snapshot".into(), false),
                 "box",
@@ -2624,6 +2642,8 @@ mod tests {
             assert_eq!(
                 super::super::group::resolve(&local.snapshots_dir(), "box")
                     .await
+                    .unwrap()
+                    .canonicalize()
                     .unwrap(),
                 destination
             );
