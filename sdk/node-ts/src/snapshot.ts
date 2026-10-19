@@ -1,3 +1,5 @@
+import { Sandbox, CreationProgressCreate, type RestoreBuilder } from "./sandbox.js";
+import type { NapiRestoreBuilder } from "./internal/napi.js";
 import { UnsupportedError } from "./errors.js";
 import { storageUsageFromHandle, type StorageItemUsage } from "./storage.js";
 import { mapNapiError, withMappedErrors } from "./internal/error-mapping.js";
@@ -71,6 +73,18 @@ export interface SaveOpts {
   plainTar?: boolean;
 }
 
+/** Archive controls for the receiver-based saveWith callback. */
+export class SnapshotSaveOptions {
+  private options: SaveOpts = {};
+  withParents(): this { this.options.withParents = true; return this; }
+  withImage(): this { this.options.withImage = true; return this; }
+  plainTar(): this { this.options.plainTar = true; return this; }
+  since(base: string): this { this.options.since = base; return this; }
+  lastLayers(count: number): this { this.options.lastLayers = count; return this; }
+  /** @internal */
+  toNative(): SaveOpts { return { ...this.options }; }
+}
+
 /** Options for importing one or more archives into a snapshot group. */
 export interface LoadOpts {
   /** Parent directory containing snapshot groups. */
@@ -87,7 +101,7 @@ export interface LoadOpts {
 export interface HeadUpdate {
   readonly group: string;
   readonly previous: string | null;
-  readonly head: string;
+  readonly head: string | null;
   readonly reason: string;
   readonly changed: boolean;
 }
@@ -260,7 +274,7 @@ export class Snapshot {
   /** Read a group's head, or select `group:member` as its head. */
   static async groupHead(selector: string): Promise<HeadUpdate> {
     const update = await withMappedErrors(() => napi.Snapshot.groupHead(selector));
-    return { ...update, previous: update.previous ?? null };
+    return { ...update, previous: update.previous ?? null, head: update.head ?? null };
   }
 
   //--------------------------------------------------------------------------
@@ -295,7 +309,7 @@ export class Snapshot {
   /** Outcome of the group head update performed by this capture. */
   get headUpdate(): HeadUpdate | null {
     const update = this.inner.headUpdate;
-    return update ? { ...update, previous: update.previous ?? null } : null;
+    return update ? { ...update, previous: update.previous ?? null, head: update.head ?? null } : null;
   }
 
   /** Canonical content digest (`sha256:hex`). The snapshot's identity. */
@@ -455,6 +469,32 @@ export class Snapshot {
    * Bundle this snapshot into a `.tar.zst` archive.
    * Throws `UnsupportedError` when the backend does not expose artifact archives.
    */
+  /** Export this exact checkpoint with default archive controls. */
+  async save(out: string): Promise<void> { await this.saveTo(out); }
+
+  /** Export this exact checkpoint with portable/incremental archive controls. */
+  async saveWith(out: string, configure: (options: SnapshotSaveOptions) => SnapshotSaveOptions): Promise<void> {
+    await this.saveTo(out, configure(new SnapshotSaveOptions()).toNative());
+  }
+
+  async spawnSandbox(): Promise<Sandbox> { return this.spawnSandboxWith(b => b); }
+
+  async spawnSandboxWith(configure: (options: RestoreBuilder) => RestoreBuilder): Promise<Sandbox> {
+    const builder = configure(Sandbox.restore(this));
+    const sandbox = await withMappedErrors(() => this.inner.spawnSandboxWithBuilder(builder as unknown as NapiRestoreBuilder));
+    return new Sandbox(sandbox, await sandbox.name);
+  }
+
+  async spawnSandboxWithProgress(): Promise<CreationProgressCreate> {
+    return this.spawnSandboxWithProgressWith(b => b);
+  }
+
+  async spawnSandboxWithProgressWith(configure: (options: RestoreBuilder) => RestoreBuilder): Promise<CreationProgressCreate> {
+    const builder = configure(Sandbox.restore(this));
+    const progress = await withMappedErrors(() => this.inner.spawnSandboxWithProgressBuilder(builder as unknown as NapiRestoreBuilder));
+    return new CreationProgressCreate(progress, "");
+  }
+
   async saveTo(out: string, opts?: SaveOpts): Promise<void> {
     await withMappedErrors(() => this.inner.saveTo(out, opts));
   }

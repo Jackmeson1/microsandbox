@@ -112,6 +112,23 @@ impl Sandbox {
 
 #[napi]
 impl Sandbox {
+    /// Create a new history from this exact sandbox incarnation.
+    #[napi]
+    pub async fn snapshot(
+        &self,
+        name: String,
+        options: Option<crate::snapshot_group::JsSnapshotCaptureOptions>,
+    ) -> Result<crate::snapshot_group::JsSnapshotCreateResult> {
+        let options = crate::snapshot_group::capture_options(options.unwrap_or_default())?;
+        let sandbox = self.inner.get().await.ok_or_else(consumed_error)?;
+        Ok(crate::snapshot_group::JsSnapshotCreateResult::from_rust(
+            sandbox
+                .snapshot_with(&name, |_| options)
+                .await
+                .map_err(to_napi_error)?,
+        ))
+    }
+
     /// Retrieve a retained managed job in this sandbox.
     #[napi]
     pub async fn get_job(&self, id: String) -> Result<JsJob> {

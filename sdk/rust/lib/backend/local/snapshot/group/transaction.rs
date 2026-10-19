@@ -614,7 +614,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "live subprocess worker; requires isolated home, archives and explicit crash boundary"]
     async fn live_windows_import_worker() {
-        use crate::{Snapshot, backend::LocalBackend, snapshot::LoadOpts};
+        use crate::{Checkpoint as Snapshot, backend::LocalBackend, snapshot::LoadOpts};
         let home = PathBuf::from(std::env::var_os("MSB_TEST_IMPORT_HOME").unwrap());
         let archives: Vec<PathBuf> =
             serde_json::from_str(&std::env::var("MSB_TEST_IMPORT_ARCHIVES").unwrap()).unwrap();

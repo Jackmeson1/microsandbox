@@ -409,7 +409,7 @@ impl JsRestoreBuilder {
 }
 
 impl JsRestoreBuilder {
-    fn take_inner(&mut self) -> Result<RestoreBuilder> {
+    pub(crate) fn take_inner(&mut self) -> Result<RestoreBuilder> {
         self.inner
             .take()
             .ok_or_else(|| napi::Error::from_reason("RestoreBuilder already consumed"))

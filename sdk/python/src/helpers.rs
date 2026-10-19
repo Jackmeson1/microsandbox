@@ -192,6 +192,15 @@ pub(crate) fn restore_builder_from_args(
             })?;
         SnapshotReference::path(path)
     };
+    restore_builder_from_reference(snapshot, name, kwargs)
+}
+
+/// Apply destination options without allowing them to replace a receiver-selected source.
+pub(crate) fn restore_builder_from_reference(
+    snapshot: SnapshotReference,
+    name: String,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<microsandbox::sandbox::RestoreBuilder> {
     let mut builder = microsandbox::Sandbox::restore_ref(snapshot).name(name);
     let Some(kwargs) = kwargs else {
         return Ok(builder);

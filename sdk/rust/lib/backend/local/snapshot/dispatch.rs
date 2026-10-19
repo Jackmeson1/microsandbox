@@ -10,8 +10,8 @@ use super::{archive, artifact, copy, create, group, store, verify};
 use crate::backend::{Backend, LocalBackend, SnapshotBackend};
 use crate::sandbox::SandboxConfig;
 use crate::snapshot::{
-    HeadUpdate, LoadOpts, Manifest, SaveOpts, Snapshot, SnapshotArchive, SnapshotConfig,
-    SnapshotHandle, SnapshotReference, SnapshotVerifyReport,
+    Checkpoint as Snapshot, HeadUpdate, LoadOpts, Manifest, SaveOpts, SnapshotArchive,
+    SnapshotConfig, SnapshotHandle, SnapshotReference, SnapshotVerifyReport,
 };
 use crate::{MicrosandboxError, MicrosandboxResult, Operation};
 
@@ -20,6 +20,128 @@ use crate::{MicrosandboxError, MicrosandboxResult, Operation};
 //--------------------------------------------------------------------------------------------------
 
 impl SnapshotBackend for LocalBackend {
+    fn change_head<'a>(
+        &'a self,
+        reference: &'a SnapshotReference,
+        member: Option<&'a str>,
+    ) -> BoxFuture<'a, MicrosandboxResult<HeadUpdate>> {
+        Box::pin(async move { group::change_head(self.path(reference)?, member).await })
+    }
+
+    fn create_group<'a>(
+        &'a self,
+        backend: Arc<dyn Backend>,
+        mut config: SnapshotConfig,
+        source_id: crate::sandbox::SandboxId,
+    ) -> BoxFuture<'a, MicrosandboxResult<Snapshot>> {
+        Box::pin(async move {
+            config.dest_dir = config.dest_dir.map(std::path::absolute).transpose()?;
+            Ok(from_artifact(
+                backend,
+                create::create_group(self, config, source_id).await?,
+            ))
+        })
+    }
+
+    fn get_group<'a>(
+        &'a self,
+        backend: Arc<dyn Backend>,
+        name: &'a str,
+    ) -> BoxFuture<'a, MicrosandboxResult<crate::Snapshot>> {
+        Box::pin(async move {
+            group::validate_group_name(name)?;
+            let directory = self.snapshots_dir().join(name);
+            group::inspect_directory(&directory).await?;
+            Ok(crate::Snapshot {
+                backend,
+                name: name.into(),
+                reference: SnapshotReference::Path(directory.to_string_lossy().into_owned()),
+            })
+        })
+    }
+
+    fn list_groups<'a>(
+        &'a self,
+        backend: Arc<dyn Backend>,
+    ) -> BoxFuture<'a, MicrosandboxResult<Vec<crate::Snapshot>>> {
+        Box::pin(async move {
+            let mut groups = Vec::new();
+            let mut entries = match tokio::fs::read_dir(self.snapshots_dir()).await {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(groups),
+                Err(error) => return Err(error.into()),
+            };
+            while let Some(entry) = entries.next_entry().await? {
+                let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                if name.starts_with('.')
+                    || !entry.file_type().await?.is_dir()
+                    || !entry.path().join(group::GROUP_FILENAME).is_file()
+                {
+                    continue;
+                }
+                groups.push(self.get_group(backend.clone(), &name).await?);
+            }
+            groups.sort_by(|a, b| a.name.cmp(&b.name));
+            Ok(groups)
+        })
+    }
+
+    fn read_head<'a>(
+        &'a self,
+        backend: Arc<dyn Backend>,
+        reference: &'a SnapshotReference,
+    ) -> BoxFuture<'a, MicrosandboxResult<Option<Snapshot>>> {
+        Box::pin(async move {
+            let directory = self.path(reference)?;
+            let Some(path) = group::inspect_directory(directory).await? else {
+                return Ok(None);
+            };
+            // Resolve the head once; opening the exact ID must not silently follow a newer head.
+            Ok(Some(from_artifact(
+                backend,
+                store::open_snapshot(self, &path.to_string_lossy()).await?,
+            )))
+        })
+    }
+
+    fn group_members<'a>(
+        &'a self,
+        backend: Arc<dyn Backend>,
+        reference: &'a SnapshotReference,
+    ) -> BoxFuture<'a, MicrosandboxResult<Vec<SnapshotHandle>>> {
+        Box::pin(async move {
+            let directory = self.path(reference)?;
+            group::inspect_directory(directory).await?;
+            let mut paths = group::member_paths(directory).await?;
+            paths.sort();
+            let mut members = Vec::with_capacity(paths.len());
+            for path in paths {
+                members.push(from_handle(
+                    backend.clone(),
+                    store::get_handle(self, &path.to_string_lossy()).await?,
+                ));
+            }
+            Ok(members)
+        })
+    }
+
+    fn get_checkpoint<'a>(
+        &'a self,
+        backend: Arc<dyn Backend>,
+        reference: &'a SnapshotReference,
+        member: &'a str,
+    ) -> BoxFuture<'a, MicrosandboxResult<Snapshot>> {
+        Box::pin(async move {
+            let path = group::selected_path(self.path(reference)?, member).await?;
+            Ok(from_artifact(
+                backend,
+                store::open_snapshot(self, &path.to_string_lossy()).await?,
+            ))
+        })
+    }
+
     fn checkpoint<'a>(
         &'a self,
         backend: Arc<dyn Backend>,

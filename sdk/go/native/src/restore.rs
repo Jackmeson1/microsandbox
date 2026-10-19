@@ -18,7 +18,7 @@ use super::{
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RestoreOptions {
+pub(super) struct RestoreOptions {
     snapshot: String,
     snapshot_reference_kind: Option<String>,
     cpus: Option<u8>,
@@ -33,7 +33,7 @@ struct RestoreOptions {
     security_profile: Option<String>,
     max_duration_secs: Option<u64>,
     idle_timeout_secs: Option<u64>,
-    creation_progress: Option<u64>,
+    pub(super) creation_progress: Option<u64>,
     #[serde(default)]
     forked: bool,
     #[serde(default)]
@@ -90,7 +90,7 @@ where
         .transpose()
 }
 
-fn builder(name: String, opts: &RestoreOptions) -> Result<RestoreBuilder, FfiError> {
+pub(super) fn builder(name: String, opts: &RestoreOptions) -> Result<RestoreBuilder, FfiError> {
     let reference = super::parse_snapshot_reference(
         opts.snapshot.clone(),
         opts.snapshot_reference_kind.as_deref().unwrap_or(""),

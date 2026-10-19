@@ -100,8 +100,9 @@ pub use sandbox::{
     VsockSpecPatch, validate_sandbox_name,
 };
 pub use snapshot::{
-    CheckpointSnapshotState, FileSnapshotState, HeadUpdate, HeadUpdateReason, LoadOpts, SaveOpts,
-    Snapshot, SnapshotArchive, SnapshotBuilder, SnapshotConfig, SnapshotCopyBuilder,
+    Checkpoint, CheckpointCaptureResult, CheckpointSnapshotState, FileSnapshotState, HeadUpdate,
+    HeadUpdateReason, LoadOpts, SaveOpts, Snapshot, SnapshotArchive, SnapshotBuilder,
+    SnapshotCaptureOptions, SnapshotConfig, SnapshotCopyBuilder, SnapshotCreateResult,
     SnapshotDescriptor, SnapshotFormat, SnapshotHandle, SnapshotReference, SnapshotRootDisk,
     SnapshotScope, SnapshotSpec, SnapshotState, SnapshotVerifyReport, UpperIntegrity,
     UpperVerifyStatus,

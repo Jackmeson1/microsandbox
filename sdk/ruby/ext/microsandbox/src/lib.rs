@@ -1,4 +1,5 @@
 mod jobs;
+mod snapshot_group;
 
 use std::{
     ffi::c_void,
@@ -33,7 +34,7 @@ use microsandbox_core::{
         SandboxPage, SandboxPingResult, SandboxStatus, SandboxStopResult, SandboxTouchResult,
         SecretSource,
     },
-    snapshot::{SaveOpts, Snapshot, SnapshotHandle},
+    snapshot::{Checkpoint as Snapshot, SaveOpts, SnapshotHandle},
     volume::{Volume, VolumeHandle, VolumeKind},
 };
 
@@ -1122,7 +1123,7 @@ struct RubySnapshotHandle {
     inner: SnapshotHandle,
 }
 
-#[magnus::wrap(class = "Microsandbox::Snapshot", free_immediately, size)]
+#[magnus::wrap(class = "Microsandbox::Checkpoint", free_immediately, size)]
 struct RubySnapshot {
     inner: Snapshot,
 }
@@ -1864,9 +1865,20 @@ impl RubySandboxHandle {
         run(ruby, async move { handle.destroy_with(options).await })
     }
 
-    fn snapshot(ruby: &Ruby, this: typed_data::Obj<Self>, name: String) -> Result<RHash, Error> {
+    fn snapshot(
+        ruby: &Ruby,
+        this: typed_data::Obj<Self>,
+        args: &[Value],
+    ) -> Result<snapshot_group::RubySnapshotCreateResult, Error> {
+        let parsed = scan_args::<(String,), (), (), (), RHash, ()>(args)?;
+        let name = parsed.required.0;
+        let options = snapshot_group::capture_options(ruby, parsed.keywords, true)?;
         let handle = Arc::clone(&this.inner);
-        snapshot_hash(run(ruby, async move { handle.snapshot(&name).await })?)
+        Ok(snapshot_group::RubySnapshotCreateResult {
+            inner: run(ruby, async move {
+                handle.snapshot_with(&name, |_| options).await
+            })?,
+        })
     }
 
     fn metrics(ruby: &Ruby, this: typed_data::Obj<Self>) -> Result<RubySandboxMetrics, Error> {
@@ -2447,10 +2459,9 @@ fn snapshot_save(ruby: &Ruby, args: &[Value]) -> Result<(), Error> {
     let reference = parsed.required.0;
     let out = PathBuf::from(parsed.required.1);
     let opts = snapshot_save_opts(parsed.keywords)?;
-    run(
-        ruby,
-        async move { Snapshot::save(&reference, &out, opts).await },
-    )
+    run(ruby, async move {
+        Snapshot::save_by_reference(&reference, &out, opts).await
+    })
 }
 
 // -- Image statics -----------------------------------------------------------
@@ -2697,15 +2708,6 @@ fn fs_metadata_hash(md: FsMetadata) -> Result<RHash, Error> {
     Ok(h)
 }
 
-fn snapshot_hash(snapshot: Snapshot) -> Result<RHash, Error> {
-    let hash = current_ruby().hash_new();
-    hash.aset("digest", snapshot.digest())?;
-    hash.aset("reference", snapshot.reference().value())?;
-    hash.aset("reference_kind", snapshot.reference().kind())?;
-    hash.aset("size_bytes", snapshot.size_bytes())?;
-    Ok(hash)
-}
-
 fn parse_snapshot_save_args(ruby: &Ruby, args: &[Value]) -> Result<(PathBuf, SaveOpts), Error> {
     let parsed = scan_args::<(String,), (), (), (), RHash, ()>(args)?;
     reject_unknown_keywords(
@@ -2816,6 +2818,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     sandbox.define_method("ping", method!(RubySandbox::ping, 0))?;
     sandbox.define_method("touch", method!(RubySandbox::touch, 0))?;
     sandbox.define_method("metrics", method!(RubySandbox::metrics, 0))?;
+    sandbox.define_method("snapshot", method!(RubySandbox::snapshot, -1))?;
     sandbox.define_method("logs", method!(RubySandbox::logs, -1))?;
     sandbox.define_method("ssh_exec", method!(RubySandbox::ssh_exec, -1))?;
     // filesystem
@@ -2873,7 +2876,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     )?;
     handle.define_method("restart", method!(RubySandboxHandle::restart, -1))?;
     handle.define_method("destroy", method!(RubySandboxHandle::destroy, -1))?;
-    handle.define_method("snapshot", method!(RubySandboxHandle::snapshot, 1))?;
+    handle.define_method("snapshot", method!(RubySandboxHandle::snapshot, -1))?;
     handle.define_method("metrics", method!(RubySandboxHandle::metrics, 0))?;
     handle.define_method("ping", method!(RubySandboxHandle::ping, 0))?;
     handle.define_method("touch", method!(RubySandboxHandle::touch, 0))?;
@@ -2998,19 +3001,23 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     vol_handle.define_method("remove", method!(RubyVolumeHandle::remove, 0))?;
 
     // -- Snapshot ------------------------------------------------------------
-    let snapshot = module.define_class("Snapshot", ruby.class_object())?;
+    let snapshot = module.define_class("Checkpoint", ruby.class_object())?;
+    snapshot_group::register(ruby, module)?;
     snapshot.define_singleton_method("open", function!(snapshot_open, -1))?;
     snapshot.define_singleton_method("get", function!(snapshot_get, -1))?;
     snapshot.define_singleton_method("list", function!(snapshot_list, -1))?;
     snapshot.define_singleton_method("remove", function!(snapshot_remove, -1))?;
     snapshot.define_singleton_method("save", function!(snapshot_save, -1))?;
+    snapshot.define_method("id", method!(RubySnapshot::id, 0))?;
     snapshot.define_method("digest", method!(RubySnapshot::digest, 0))?;
     snapshot.define_method("size_bytes", method!(RubySnapshot::size_bytes, 0))?;
     snapshot.define_method("reference", method!(RubySnapshot::reference, 0))?;
     snapshot.define_method("reference_kind", method!(RubySnapshot::reference_kind, 0))?;
     snapshot.define_method("save_to", method!(RubySnapshot::save_to, -1))?;
+    snapshot.define_method("save", method!(RubySnapshot::save_to, -1))?;
 
     let snap_handle = module.define_class("SnapshotHandle", ruby.class_object())?;
+    snap_handle.define_method("id", method!(RubySnapshotHandle::id, 0))?;
     snap_handle.define_method("digest", method!(RubySnapshotHandle::digest, 0))?;
     snap_handle.define_method("name", method!(RubySnapshotHandle::name, 0))?;
     snap_handle.define_method("size_bytes", method!(RubySnapshotHandle::size_bytes, 0))?;

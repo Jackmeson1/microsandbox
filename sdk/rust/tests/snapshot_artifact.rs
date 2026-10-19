@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use microsandbox::backend::{Backend, LocalBackend};
-use microsandbox::{MicrosandboxResult, SaveOpts, Snapshot, SnapshotReference};
+use microsandbox::{Checkpoint as Snapshot, MicrosandboxResult, SaveOpts, SnapshotReference};
 use microsandbox_types::snapshot::{
     CheckpointSnapshotState, DEFAULT_UPPER_FILE, DESCRIPTOR_FILENAME, DiskLayer, DiskLayerId,
     FileSnapshotState, ImageRef, LayerFileKind, LayerPayload, Manifest, SCHEMA, SnapshotCapture,
@@ -549,7 +549,7 @@ async fn save_batch_fixtures(parent: &Path, artifacts: &[PathBuf]) -> Vec<PathBu
     let mut archives = Vec::new();
     for (index, artifact) in artifacts.iter().enumerate() {
         let archive = parent.join(format!("batch-{index}.msb"));
-        Snapshot::save(
+        Snapshot::save_by_reference(
             artifact.to_string_lossy().as_ref(),
             &archive,
             microsandbox::snapshot::SaveOpts {
@@ -644,9 +644,13 @@ async fn indexed_handle_can_remove_a_missing_local_artifact() {
         microsandbox::with_backend(backend, async {
             let handle = if grouped {
                 let archive = tmp.path().join("snapshot.msb");
-                Snapshot::save(source.to_str().unwrap(), &archive, SaveOpts::default())
-                    .await
-                    .unwrap();
+                Snapshot::save_by_reference(
+                    source.to_str().unwrap(),
+                    &archive,
+                    SaveOpts::default(),
+                )
+                .await
+                .unwrap();
                 Snapshot::remove(source.to_str().unwrap(), false)
                     .await
                     .unwrap();
@@ -1283,7 +1287,7 @@ async fn save_then_load_round_trips_via_plain_tar() {
     let (dir, original_digest) = make_artifact(tmp.path(), "src-plain", b"plain tar bytes");
 
     let archive = tmp.path().join("bundle.tar");
-    Snapshot::save(
+    Snapshot::save_by_reference(
         dir.to_string_lossy().as_ref(),
         &archive,
         microsandbox::snapshot::SaveOpts {
@@ -1310,7 +1314,7 @@ async fn repeated_loads_preserve_ids_and_resolve_local_group_names() {
     let reexport = tmp.path().join("renamed.msb");
 
     microsandbox::with_backend(backend, async {
-        Snapshot::save(
+        Snapshot::save_by_reference(
             source.to_string_lossy().as_ref(),
             &archive,
             microsandbox::snapshot::SaveOpts::default(),
@@ -1368,7 +1372,7 @@ async fn repeated_loads_preserve_ids_and_resolve_local_group_names() {
         assert_eq!(another.id(), first.id());
         assert_eq!(Snapshot::list().await.unwrap().len(), 3);
 
-        Snapshot::save(
+        Snapshot::save_by_reference(
             "work:clean",
             &reexport,
             microsandbox::snapshot::SaveOpts::default(),
@@ -1388,7 +1392,7 @@ async fn repeated_loads_preserve_ids_and_resolve_local_group_names() {
         assert_eq!(renamed.id(), snapshot_id);
         assert_eq!(
             Snapshot::group_head("renamed").await.unwrap().head,
-            snapshot_id
+            Some(snapshot_id.clone())
         );
 
         // Removing one installed copy does not erase another group's membership or payload.
@@ -1420,7 +1424,7 @@ async fn group_alias_collision_keeps_the_installed_snapshot_and_head() {
 
     microsandbox::with_backend(backend, async {
         for (source, destination) in [(&first, &archive), (&second, &competing)] {
-            Snapshot::save(
+            Snapshot::save_by_reference(
                 source.to_string_lossy().as_ref(),
                 destination,
                 microsandbox::snapshot::SaveOpts::default(),
@@ -1431,7 +1435,7 @@ async fn group_alias_collision_keeps_the_installed_snapshot_and_head() {
 
         let renamed_source = first.with_file_name("renamed");
         std::fs::rename(&first, &renamed_source).unwrap();
-        Snapshot::save(
+        Snapshot::save_by_reference(
             renamed_source.to_str().unwrap(),
             &renamed_archive,
             SaveOpts::default(),
@@ -1455,7 +1459,7 @@ async fn group_alias_collision_keeps_the_installed_snapshot_and_head() {
         );
         assert_eq!(
             Snapshot::group_head("work").await.unwrap().head,
-            original_id
+            Some(original_id.clone())
         );
         assert_eq!(
             Snapshot::open("work:clean").await.unwrap().digest(),
@@ -1476,10 +1480,21 @@ async fn group_alias_collision_keeps_the_installed_snapshot_and_head() {
         let error = Snapshot::load_with_options(&renamed_archive, options)
             .await
             .unwrap_err();
-        assert!(matches!(
-            error,
-            microsandbox::MicrosandboxError::SnapshotAlreadyExists(_)
-        ));
+        let microsandbox::MicrosandboxError::SnapshotImport(report) = error else {
+            panic!("expected structured import failure, got {error}");
+        };
+        assert_eq!(
+            report.outcome,
+            microsandbox::SnapshotImportOutcome::NotCommitted
+        );
+        assert!(
+            matches!(
+                report.source.as_ref(),
+                microsandbox::MicrosandboxError::SnapshotAlreadyExists(_)
+            ),
+            "unexpected import cause: {}",
+            report.source
+        );
 
         let listed = Snapshot::list().await.unwrap();
         assert_eq!(listed.len(), 1);
@@ -1487,7 +1502,7 @@ async fn group_alias_collision_keeps_the_installed_snapshot_and_head() {
         assert_eq!(listed[0].name(), Some("clean"));
         assert_eq!(
             Snapshot::group_head("work").await.unwrap().head,
-            original_id
+            Some(original_id.clone())
         );
         assert_eq!(
             std::fs::read(artifact_payload_path(installed.path().unwrap())).unwrap(),
@@ -1524,7 +1539,10 @@ async fn load_many_selects_lineage_tip_independently_of_input_order() {
                 assert_eq!(handle.id(), expected_ids[index]);
                 assert_eq!(handle.group(), Some(group));
             }
-            assert_eq!(Snapshot::group_head(group).await.unwrap().head, third_id);
+            assert_eq!(
+                Snapshot::group_head(group).await.unwrap().head,
+                Some(third_id.clone())
+            );
             assert_eq!(
                 Snapshot::open(format!("{group}:cp01"))
                     .await
@@ -1604,7 +1622,7 @@ async fn load_many_sibling_batch_preserves_existing_head_and_leaves_new_group_he
             .unwrap();
         assert_eq!(
             Snapshot::group_head("existing").await.unwrap().head,
-            base_id
+            Some(base_id.clone())
         );
         let handles = Snapshot::load_many(&siblings, batch_group_options("fresh"))
             .await
@@ -1618,7 +1636,7 @@ async fn load_many_sibling_batch_preserves_existing_head_and_leaves_new_group_he
         );
         assert_eq!(
             Snapshot::group_head("fresh:left").await.unwrap().head,
-            left_id
+            Some(left_id.clone())
         );
         assert_eq!(
             Snapshot::open("fresh").await.unwrap().id().as_str(),
@@ -1661,7 +1679,10 @@ async fn load_many_accepts_complete_payload_with_missing_historical_parent() {
             .await
             .unwrap();
         assert_eq!(handles[0].id(), id);
-        assert_eq!(Snapshot::group_head("work").await.unwrap().head, id);
+        assert_eq!(
+            Snapshot::group_head("work").await.unwrap().head,
+            Some(id.clone())
+        );
         assert_eq!(
             std::fs::read(artifact_payload_path(handles[0].path().unwrap())).unwrap(),
             b"complete payload"
@@ -2428,7 +2449,7 @@ async fn load_selects_child_head_when_parents_are_present() {
     assert_eq!(handle.id(), child_id);
     let imported_group = dest.join(handle.group().expect("load creates a local group"));
     assert_eq!(handle.path().unwrap(), imported_group.join(&child_id));
-    assert_eq!(handle.head_update().unwrap().head, child_id);
+    assert_eq!(handle.head_update().unwrap().head, Some(child_id.clone()));
     assert_eq!(handle.head_update().unwrap().previous, None);
     assert!(
         imported_group

@@ -5,7 +5,7 @@ use microsandbox::snapshot::{
     HeadUpdateReason, LoadOpts as RustLoadOpts, SaveOpts as RustSaveOpts,
 };
 use microsandbox::{
-    Snapshot as RustSnapshot, SnapshotArchive as RustSnapshotArchive,
+    Checkpoint as RustSnapshot, SnapshotArchive as RustSnapshotArchive,
     SnapshotFormat as RustSnapshotFormat, SnapshotHandle as RustSnapshotHandle,
     SnapshotScope as RustSnapshotScope, UpperIntegrity as RustUpperIntegrity,
     UpperVerifyStatus as RustUpperVerifyStatus,
@@ -74,7 +74,7 @@ pub struct JsLoadOpts {
 pub struct JsHeadUpdate {
     pub group: String,
     pub previous: Option<String>,
-    pub head: String,
+    pub head: Option<String>,
     pub reason: String,
     pub changed: bool,
 }
@@ -137,6 +137,46 @@ pub struct JsSnapshotInfo {
 
 #[napi]
 impl JsSnapshot {
+    /// Consume destination options; the receiver always selects the source and backend.
+    ///
+    /// # Safety
+    /// The destination builder is consumed before suspension and must not be reused.
+    #[napi]
+    pub async unsafe fn spawn_sandbox_with_builder(
+        &self,
+        builder: &mut crate::restore_builder::JsRestoreBuilder,
+    ) -> Result<crate::sandbox::Sandbox> {
+        let options = builder.take_inner()?;
+        Ok(crate::sandbox::Sandbox::from_rust(
+            self.inner
+                .spawn_sandbox_with(|_| options)
+                .await
+                .map_err(to_napi_error)?,
+        ))
+    }
+
+    /// Consume destination options and return progress for the receiver-selected source.
+    ///
+    /// # Safety
+    /// The destination builder is consumed before suspension and must not be reused.
+    #[napi]
+    pub async unsafe fn spawn_sandbox_with_progress_builder(
+        &self,
+        builder: &mut crate::restore_builder::JsRestoreBuilder,
+    ) -> Result<crate::sandbox_builder::JsPullProgressCreate> {
+        let options = builder.take_inner()?;
+        let (progress, task) = self
+            .inner
+            .spawn_sandbox_with_progress_with(|_| options)
+            .await
+            .map_err(to_napi_error)?;
+        Ok(crate::sandbox_builder::JsPullProgressCreate {
+            stream: crate::pull_progress::JsPullProgressStream::from_creation(progress),
+            abort: task.abort_handle(),
+            task: std::sync::Arc::new(tokio::sync::Mutex::new(Some(task))),
+        })
+    }
+
     //----------------------------------------------------------------------------------------------
     // Static management
     //----------------------------------------------------------------------------------------------
@@ -460,9 +500,13 @@ impl JsSnapshot {
     /// Bundle a snapshot into a `.tar.zst` archive.
     #[napi]
     pub async fn save(name_or_path: String, out: String, opts: Option<JsSaveOpts>) -> Result<()> {
-        RustSnapshot::save(&name_or_path, &PathBuf::from(out), save_opts_to_rust(opts)?)
-            .await
-            .map_err(to_napi_error)
+        RustSnapshot::save_by_reference(
+            &name_or_path,
+            &PathBuf::from(out),
+            save_opts_to_rust(opts)?,
+        )
+        .await
+        .map_err(to_napi_error)
     }
 
     /// Bundle this snapshot into a `.tar.zst` archive.
@@ -735,7 +779,7 @@ fn snapshot_handle_to_info(h: &RustSnapshotHandle) -> JsSnapshotInfo {
     }
 }
 
-fn head_update_to_js(update: &microsandbox::snapshot::HeadUpdate) -> JsHeadUpdate {
+pub(crate) fn head_update_to_js(update: &microsandbox::snapshot::HeadUpdate) -> JsHeadUpdate {
     // Match the stable serde spelling without losing the closed reason variants.
     let reason = match update.reason {
         HeadUpdateReason::Initialized => "initialized",
@@ -745,6 +789,8 @@ fn head_update_to_js(update: &microsandbox::snapshot::HeadUpdate) -> JsHeadUpdat
         HeadUpdateReason::Diverged => "diverged",
         HeadUpdateReason::UnknownAncestry => "unknown_ancestry",
         HeadUpdateReason::AmbiguousCandidates => "ambiguous_candidates",
+        HeadUpdateReason::Cleared => "cleared",
+        HeadUpdateReason::ParentSelected => "parent_selected",
     };
     JsHeadUpdate {
         group: update.group.clone(),

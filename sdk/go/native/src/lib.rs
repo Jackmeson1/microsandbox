@@ -40,6 +40,7 @@ mod exec_adapter;
 mod jobs;
 mod restore;
 mod setup;
+mod snapshot_objects;
 mod storage;
 mod volume_fs;
 
@@ -59,8 +60,8 @@ use std::{
 
 use base64::Engine;
 use microsandbox::{
-    AgentBridge, LogLevel, MicrosandboxError, RegistryAuth, Sandbox, Snapshot, SnapshotReference,
-    UpperVerifyStatus, default_backend,
+    AgentBridge, Checkpoint as Snapshot, LogLevel, MicrosandboxError, RegistryAuth, Sandbox,
+    SnapshotReference, UpperVerifyStatus, default_backend,
     logs::{LogOptions, LogSource},
     sandbox::{
         DeploymentProfile, FsEntryKind, PullPolicy, SecurityProfile, all_sandbox_metrics_local,
@@ -6664,8 +6665,17 @@ pub unsafe extern "C" fn msb_sandbox_handle_snapshot(
         let sandbox_name = unsafe { cstr(sandbox_name) }?;
         let snapshot_name = unsafe { cstr(snapshot_name) }?;
         Ok(Box::pin(async move {
-            let h = Sandbox::get(&sandbox_name).await.map_err(FfiError::from)?;
-            let snap = h.snapshot(&snapshot_name).await.map_err(FfiError::from)?;
+            // This released symbol still serves older Go SDKs: its argument is
+            // a member name, not the new group name accepted by capture_source.
+            let backend = default_backend();
+            backend
+                .sandboxes()
+                .get(backend.clone(), &sandbox_name)
+                .await?;
+            let config = Snapshot::builder(snapshot_name)
+                .from_sandbox(sandbox_name)
+                .build()?;
+            let snap = backend.snapshots().create(backend.clone(), config).await?;
             Ok(snapshot_json(&snap).to_string())
         }))
     })

@@ -46,6 +46,7 @@ export interface NativeBindings {
   readonly Volume: NapiVolumeStatic;
   readonly VolumeBuilder: NapiVolumeBuilderCtor;
   readonly Snapshot: NapiSnapshotStatic;
+  readonly SnapshotGroup: NapiSnapshotGroupStatic;
   readonly SnapshotBuilder: NapiSnapshotBuilderCtor;
   readonly ExecOptionsBuilder: NapiExecOptionsBuilderCtor;
   readonly InitOptionsBuilder: NapiInitOptionsBuilderCtor;
@@ -328,6 +329,8 @@ export interface NapiSandboxDestroyOptions {
 }
 
 export interface NapiSandbox {
+  snapshot(group: string, options?: NapiSnapshotCaptureOptions): Promise<NapiSnapshotCreateResult>;
+  readonly name: Promise<string>;
   execDetached(cmd: string, args?: string[]): Promise<NapiJob>;
   execDetachedWithBuilder(cmd: string, builder: NapiExecOptionsBuilder): Promise<NapiJob>;
   getJob(id: string): Promise<NapiJob>;
@@ -429,7 +432,7 @@ export interface NapiSandboxHandle {
   remove(): Promise<void>;
   logs(opts?: LogOptions): Promise<LogEntry[]>;
   logStream(opts?: LogStreamOptions): Promise<NapiLogStream>;
-  snapshot(name: string): Promise<NapiSnapshot>;
+  snapshot(name: string, options?: NapiSnapshotCaptureOptions): Promise<NapiSnapshotCreateResult>;
 }
 
 export interface NapiSandboxStopResult {
@@ -685,7 +688,7 @@ export interface NapiLoadOpts {
 export interface NapiHeadUpdate {
   readonly group: string;
   readonly previous: string | null | undefined;
-  readonly head: string;
+  readonly head: string | null;
   readonly reason: string;
   readonly changed: boolean;
 }
@@ -726,6 +729,8 @@ export interface NapiSnapshotCopyBuilder
 }
 
 export interface NapiSnapshot {
+  spawnSandboxWithBuilder(builder: NapiRestoreBuilder): Promise<NapiSandbox>;
+  spawnSandboxWithProgressBuilder(builder: NapiRestoreBuilder): Promise<NapiPullProgressCreate>;
   storageUsage?(): Promise<NapiStorageItemUsage>;
   readonly id: string;
   readonly path: string;
@@ -1502,4 +1507,43 @@ export interface NapiMemoryCacheReport {
   readonly logicalBytesRemoved: bigint;
   readonly physicalBytesReclaimed: bigint | null | undefined;
   readonly truncated: boolean;
+}
+
+
+export interface NapiSnapshotCaptureOptions {
+  name?: string;
+  destDir?: string;
+  full?: boolean;
+  recordIntegrity?: boolean;
+  guestFlush?: "auto" | "required" | "skip";
+  labels?: Record<string, string>;
+}
+
+export interface NapiSnapshotGroupStatic {
+  get(name: string): Promise<NapiSnapshotGroup>;
+  list(): Promise<NapiSnapshotGroup[]>;
+}
+
+export interface NapiSnapshotGroup {
+  spawnSandboxWithBuilder(builder: NapiRestoreBuilder): Promise<NapiSandbox>;
+  spawnSandboxWithProgressBuilder(builder: NapiRestoreBuilder): Promise<NapiPullProgressCreate>;
+  readonly name: string;
+  head(): Promise<NapiSnapshot | null | undefined>;
+  checkpoints(): Promise<NapiSnapshotHandle[]>;
+  getCheckpoint(member: string): Promise<NapiSnapshot>;
+  setHead(member: string): Promise<NapiHeadUpdate>;
+  clearHead(): Promise<NapiHeadUpdate>;
+  checkpoint(options?: NapiSnapshotCaptureOptions): Promise<NapiCheckpointCaptureResult>;
+  spawnSandbox(): Promise<NapiSandbox>;
+}
+
+export interface NapiSnapshotCreateResult {
+  snapshot: NapiSnapshotGroup;
+  checkpoint: NapiSnapshot;
+  headUpdate: NapiHeadUpdate;
+}
+
+export interface NapiCheckpointCaptureResult {
+  checkpoint: NapiSnapshot;
+  headUpdate: NapiHeadUpdate;
 }

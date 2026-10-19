@@ -32,14 +32,18 @@ func main() {
 	baseName := fmt.Sprintf("go-sdk-snapshot-base-%d", suffix)
 	forkName := fmt.Sprintf("go-sdk-snapshot-fork-%d", suffix)
 	snapshotName := fmt.Sprintf("go-sdk-snapshot-%d", suffix)
-	snapshotSelector := baseName + ":" + snapshotName
+	snapshotSelector := ""
 
 	base, err := microsandbox.CreateSandbox(ctx, baseName, microsandbox.WithImage("alpine:3.19"))
 	if err != nil {
 		log.Fatalf("CreateSandbox base: %v", err)
 	}
 	defer cleanupSandbox(baseName)
-	defer cleanupSnapshot(snapshotSelector)
+	defer func() {
+		if snapshotSelector != "" {
+			cleanupSnapshot(snapshotSelector)
+		}
+	}()
 
 	payload := fmt.Sprintf("created by %s\n", baseName)
 	if err := base.FS().WriteString(ctx, markerPath, payload); err != nil {
@@ -57,10 +61,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("GetSandbox base: %v", err)
 	}
-	artifact, err := baseHandle.Snapshot(ctx, snapshotName)
+	created, err := baseHandle.Snapshot(ctx, snapshotName)
 	if err != nil {
 		log.Fatalf("Snapshot: %v", err)
 	}
+	artifact := created.Checkpoint
+	snapshotSelector = snapshotName + ":" + artifact.ID()
+
 	size := "unknown"
 	if sizeBytes := artifact.SizeBytes(); sizeBytes != nil {
 		size = fmt.Sprintf("%d", *sizeBytes)
@@ -73,7 +80,7 @@ func main() {
 	}
 	fmt.Printf("snapshot verified: upper=%s\n", report.Upper.Kind)
 
-	handle, err := microsandbox.Snapshot.Get(ctx, snapshotSelector)
+	handle, err := microsandbox.Checkpoint.Get(ctx, snapshotSelector)
 	if err != nil {
 		log.Fatalf("Snapshot.Get: %v", err)
 	}
@@ -83,7 +90,7 @@ func main() {
 	}
 	fmt.Printf("snapshot index entry: name=%s digest=%s\n", name, handle.Digest())
 
-	fork, err := microsandbox.RestoreSandbox(ctx, snapshotSelector, forkName)
+	fork, err := artifact.SpawnSandbox(ctx, forkName)
 	if err != nil {
 		log.Fatalf("RestoreSandbox fork: %v", err)
 	}

@@ -321,7 +321,7 @@ fn assert_released(mut acquire: impl FnMut() -> bool) {
 #[tokio::test]
 #[ignore = "live VM test: requires isolated home, runtime and real a/b/c archives from the qualification workload"]
 async fn live_archive_import_restore_and_guest_content() {
-    use crate::{Sandbox, Snapshot, backend::LocalBackend, snapshot::LoadOpts};
+    use crate::{Checkpoint as Snapshot, Sandbox, backend::LocalBackend, snapshot::LoadOpts};
 
     let home = std::path::PathBuf::from(
         std::env::var_os("MSB_TEST_LIVE_HOME").expect("MSB_TEST_LIVE_HOME"),
@@ -350,12 +350,12 @@ async fn live_archive_import_restore_and_guest_content() {
 
         let appended = Snapshot::load_many(&[archives.join("c.msb"), archives.join("b.msb")], options()).await.unwrap();
         assert_eq!(appended.len(), 2);
-        assert_eq!(Snapshot::group_head("qualified").await.unwrap().head, appended[0].id());
+        assert_eq!(Snapshot::group_head("qualified").await.unwrap().head.as_deref(), Some(appended[0].id()));
         assert_eq!(Snapshot::list().await.unwrap().len(), 3);
         let retry = Snapshot::load_many(&[archives.join("b.msb"), archives.join("c.msb")], options()).await.unwrap();
         assert_eq!(retry.len(), 2);
         assert_eq!(Snapshot::list().await.unwrap().len(), 3);
-        assert_eq!(Snapshot::group_head("qualified").await.unwrap().head, appended[0].id());
+        assert_eq!(Snapshot::group_head("qualified").await.unwrap().head.as_deref(), Some(appended[0].id()));
         assert_eq!(LIVE_PUBLICATIONS.load(Ordering::Relaxed), if prototype { 3 } else { 0 });
         eprintln!("LIVE_IMPORT_AND_RETRY_OK prototype={prototype} members=3 seconds={:.3}", started.elapsed().as_secs_f64());
 
@@ -389,7 +389,7 @@ async fn live_archive_import_restore_and_guest_content() {
 #[tokio::test]
 #[ignore = "live VM test: requires isolated home and full.msb containing the qualification background counter"]
 async fn live_full_archive_import_resumes_captured_process() {
-    use crate::{Sandbox, Snapshot, backend::LocalBackend, snapshot::LoadOpts};
+    use crate::{Checkpoint as Snapshot, Sandbox, backend::LocalBackend, snapshot::LoadOpts};
 
     let home = std::path::PathBuf::from(std::env::var_os("MSB_TEST_LIVE_HOME").unwrap());
     let archives = std::path::PathBuf::from(std::env::var_os("MSB_TEST_LIVE_ARCHIVES").unwrap());
@@ -694,7 +694,7 @@ async fn updated_publisher_waits_before_creating_namespace_leases() {
         .unwrap()
         .unwrap()
         .unwrap();
-    assert_eq!(result.head, id(3).to_string());
+    assert_eq!(result.head, Some(id(3).to_string()));
     assert_eq!(read_members(&group, true).unwrap().len(), 3);
 }
 

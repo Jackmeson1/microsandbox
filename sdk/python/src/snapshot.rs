@@ -6,7 +6,7 @@ use pyo3::types::PyDict;
 
 use microsandbox::snapshot::{LoadOpts as RustLoadOpts, SaveOpts as RustSaveOpts};
 use microsandbox::{
-    Snapshot as RustSnapshot, SnapshotArchive as RustSnapshotArchive,
+    Checkpoint as RustSnapshot, SnapshotArchive as RustSnapshotArchive,
     SnapshotFormat as RustSnapshotFormat, SnapshotHandle as RustSnapshotHandle,
     SnapshotScope as RustSnapshotScope, UpperVerifyStatus as RustUpperVerifyStatus,
 };
@@ -254,7 +254,7 @@ impl PySnapshot {
         since = None,
         last_layers = None,
     ))]
-    fn save<'py>(
+    fn save_by_reference<'py>(
         py: Python<'py>,
         name_or_path: String,
         out: PathBuf,
@@ -272,7 +272,7 @@ impl PySnapshot {
                 since,
                 last_layers,
             };
-            RustSnapshot::save(&name_or_path, &out, opts)
+            RustSnapshot::save_by_reference(&name_or_path, &out, opts)
                 .await
                 .map_err(to_py_err)?;
             Ok(())
@@ -530,7 +530,91 @@ impl PySnapshot {
         })
     }
 
-    /// Bundle this snapshot into a `.tar.zst` archive.
+    /// Spawn this exact member on the backend retained by the handle.
+    #[pyo3(signature = (*, name = None, **kwargs))]
+    fn spawn_sandbox<'py>(
+        &self,
+        py: Python<'py>,
+        name: Option<String>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let builder = crate::helpers::restore_builder_from_reference(
+            self.inner.reference(),
+            name.unwrap_or_default(),
+            kwargs,
+        )?;
+        let inner = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            Ok(crate::sandbox::PySandbox::from_rust(
+                inner
+                    .spawn_sandbox_with(|_| builder)
+                    .await
+                    .map_err(to_py_err)?,
+            ))
+        })
+    }
+
+    #[pyo3(signature = (*, name = None, **kwargs))]
+    fn spawn_sandbox_with_progress<'py>(
+        &self,
+        py: Python<'py>,
+        name: Option<String>,
+        kwargs: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let builder = crate::helpers::restore_builder_from_reference(
+            self.inner.reference(),
+            name.unwrap_or_default(),
+            kwargs,
+        )?;
+        let inner = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let (progress, task) = inner
+                .spawn_sandbox_with_progress_with(|_| builder)
+                .await
+                .map_err(to_py_err)?;
+            Ok(crate::sandbox::PyPullSession::new(progress, task))
+        })
+    }
+
+    /// Raises `UnsupportedError` when artifact archives are unavailable.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        out,
+        *,
+        with_parents = false,
+        with_image = false,
+        plain_tar = false,
+        since = None,
+        last_layers = None,
+    ))]
+    fn save<'py>(
+        &self,
+        py: Python<'py>,
+        out: PathBuf,
+        with_parents: bool,
+        with_image: bool,
+        plain_tar: bool,
+        since: Option<String>,
+        last_layers: Option<usize>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let snapshot = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            snapshot
+                .save_to(
+                    &out,
+                    RustSaveOpts {
+                        with_parents,
+                        with_image,
+                        plain_tar,
+                        since,
+                        last_layers,
+                    },
+                )
+                .await
+                .map_err(to_py_err)
+        })
+    }
+
     /// Raises `UnsupportedError` when artifact archives are unavailable.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
@@ -898,7 +982,7 @@ impl PySnapshotHandle {
 // Functions: Helpers
 //--------------------------------------------------------------------------------------------------
 
-fn head_update_to_py(
+pub(crate) fn head_update_to_py(
     py: Python<'_>,
     update: &microsandbox::snapshot::HeadUpdate,
 ) -> PyResult<Py<PyDict>> {

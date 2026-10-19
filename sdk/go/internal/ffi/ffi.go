@@ -227,6 +227,8 @@ typedef char *(*msb_image_list_fn)(uint64_t cancel_id, uint8_t *buf, size_t buf_
 typedef char *(*msb_image_inspect_fn)(uint64_t cancel_id, const char *reference, uint8_t *buf, size_t buf_len);
 typedef char *(*msb_image_remove_fn)(uint64_t cancel_id, const char *reference, bool force, uint8_t *buf, size_t buf_len);
 typedef char *(*msb_image_prune_fn)(uint64_t cancel_id, uint8_t *buf, size_t buf_len);
+typedef char *(*msb_snapshot_object_fn)(uint64_t, uint64_t, const char *, uint8_t *, size_t);
+typedef void (*msb_snapshot_object_close_fn)(uint64_t);
 typedef char *(*msb_storage_usage_fn)(uint64_t cancel_id, uint8_t *buf, size_t buf_len);
 typedef char *(*msb_sandbox_storage_usage_fn)(uint64_t cancel_id, uint64_t handle, uint8_t *buf, size_t buf_len);
 typedef char *(*msb_storage_prune_fn)(uint64_t cancel_id, const char *options_json, uint8_t *buf, size_t buf_len);
@@ -415,6 +417,8 @@ static msb_image_list_fn           ptr_msb_image_list           = NULL;
 static msb_image_inspect_fn        ptr_msb_image_inspect        = NULL;
 static msb_image_remove_fn         ptr_msb_image_remove         = NULL;
 static msb_image_prune_fn         ptr_msb_image_prune         = NULL;
+static msb_snapshot_object_fn ptr_msb_snapshot_object = NULL;
+static msb_snapshot_object_close_fn ptr_msb_snapshot_object_close = NULL;
 static msb_storage_usage_fn       ptr_msb_storage_usage       = NULL;
 static msb_sandbox_storage_usage_fn ptr_msb_sandbox_storage_usage = NULL;
 static msb_storage_prune_fn       ptr_msb_storage_prune       = NULL;
@@ -623,6 +627,8 @@ const char *load_microsandbox(const char *path) {
 	RESOLVE(msb_image_remove);
 	RESOLVE(msb_image_prune);
 	RESOLVE_OPTIONAL(msb_storage_usage);
+	RESOLVE_OPTIONAL(msb_snapshot_object);
+	RESOLVE_OPTIONAL(msb_snapshot_object_close);
 	RESOLVE_OPTIONAL(msb_sandbox_storage_usage);
 	RESOLVE_OPTIONAL(msb_storage_prune);
 	RESOLVE(msb_image_load);
@@ -1080,6 +1086,13 @@ char *call_msb_image_remove(uint64_t cancel_id, const char *reference, bool forc
 }
 char *call_msb_image_prune(uint64_t cancel_id, uint8_t *buf, size_t buf_len) {
 	return ptr_msb_image_prune ? ptr_msb_image_prune(cancel_id, buf, buf_len) : NULL;
+}
+bool has_msb_snapshot_objects(void) { return ptr_msb_snapshot_object && ptr_msb_snapshot_object_close; }
+char *call_msb_snapshot_object(uint64_t cancel_id, uint64_t handle, const char *request, uint8_t *buf, size_t buf_len) {
+    return ptr_msb_snapshot_object ? ptr_msb_snapshot_object(cancel_id, handle, request, buf, buf_len) : NULL;
+}
+void call_msb_snapshot_object_close(uint64_t handle) {
+    if (ptr_msb_snapshot_object_close) ptr_msb_snapshot_object_close(handle);
 }
 bool has_msb_storage_usage(void) { return ptr_msb_storage_usage != NULL; }
 bool has_msb_sandbox_storage_usage(void) { return ptr_msb_sandbox_storage_usage != NULL; }
@@ -2205,6 +2218,7 @@ func ConnectSandbox(ctx context.Context, name string) (*Sandbox, error) {
 
 // SandboxHandleInfo is the JSON payload returned by LookupSandbox.
 type SandboxHandleInfo struct {
+	ObjectHandle  uint64 `json:"object_handle"`
 	ID            string `json:"id"`
 	Name          string `json:"name"`
 	Status        string `json:"status"`
@@ -2474,6 +2488,18 @@ func LookupSandbox(ctx context.Context, name string) (*SandboxHandleInfo, error)
 	if err := ensureLoaded(); err != nil {
 		return nil, err
 	}
+	if bool(C.has_msb_snapshot_objects()) {
+		raw, err := SnapshotObjectCall(ctx, 0, map[string]any{"op": "lookup_source", "name": name})
+		if err != nil {
+			return nil, err
+		}
+		var info SandboxHandleInfo
+		if err := json.Unmarshal(raw, &info); err != nil {
+			return nil, fmt.Errorf("parse retained source: %w", err)
+		}
+		return &info, nil
+	}
+
 	cName := C.CString(name)
 	defer C.free(unsafe.Pointer(cName))
 
@@ -3152,6 +3178,18 @@ func ListSandboxes(ctx context.Context, options SandboxListOptions) (*SandboxPag
 	if err := ensureLoaded(); err != nil {
 		return nil, err
 	}
+	if bool(C.has_msb_snapshot_objects()) {
+		raw, err := SnapshotObjectCall(ctx, 0, map[string]any{"op": "list_sources", "options": options})
+		if err != nil {
+			return nil, err
+		}
+		var page SandboxPage
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return nil, fmt.Errorf("parse retained sources: %w", err)
+		}
+		return &page, nil
+	}
+
 	filterJSON, err := json.Marshal(options)
 	if err != nil {
 		return nil, fmt.Errorf("marshal list filter: %w", err)
@@ -5482,6 +5520,7 @@ func ImageSave(ctx context.Context, references []string, outputPath string, form
 // ---------------------------------------------------------------------------
 
 type SnapshotInfo struct {
+	ObjectHandle              uint64              `json:"object_handle"`
 	Reference                 string              `json:"reference"`
 	ReferenceKind             string              `json:"reference_kind"`
 	HeadUpdate                *SnapshotHeadUpdate `json:"head_update"`
@@ -5582,7 +5621,7 @@ type SnapshotLoadOptions struct {
 type SnapshotHeadUpdate struct {
 	Group    string  `json:"group"`
 	Previous *string `json:"previous"`
-	Head     string  `json:"head"`
+	Head     *string `json:"head"`
 	Reason   string  `json:"reason"`
 	Changed  bool    `json:"changed"`
 }
@@ -5680,6 +5719,18 @@ func SnapshotOpen(ctx context.Context, reference, referenceKind string) (*Snapsh
 	if err := ensureLoaded(); err != nil {
 		return nil, err
 	}
+	if bool(C.has_msb_snapshot_objects()) {
+		raw, err := SnapshotObjectCall(ctx, 0, map[string]any{"op": "open", "reference": reference, "reference_kind": referenceKind})
+		if err != nil {
+			return nil, err
+		}
+		var info SnapshotInfo
+		if err := json.Unmarshal(raw, &info); err != nil {
+			return nil, fmt.Errorf("parse retained checkpoint: %w", err)
+		}
+		return &info, nil
+	}
+
 	cReference := C.CString(reference)
 	defer C.free(unsafe.Pointer(cReference))
 	cReferenceKind := C.CString(referenceKind)
@@ -6019,3 +6070,52 @@ func RequirePortModification() error {
 	}
 	return nil
 }
+
+// SnapshotObjectCall refuses old native libraries before dispatch. Receiver handles
+// carry their original backend; a caller must not reconstruct them from names.
+func SnapshotObjectCall(ctx context.Context, handle uint64, request any) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := ensureLoaded(); err != nil {
+		return nil, err
+	}
+	if !bool(C.has_msb_snapshot_objects()) {
+		return nil, &Error{Kind: KindUnsupportedOperation, Message: "native SDK does not support snapshot group receivers; update the native SDK"}
+	}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return nil, err
+	}
+	text := C.CString(string(payload))
+	defer C.free(unsafe.Pointer(text))
+	// Unlike metadata-only calls, a successful result transfers native ownership.
+	// Cancellation racing a completed call must not discard those object handles.
+	buf := make([]byte, defaultBufSize)
+	cancelID := C.call_msb_cancel_alloc()
+	done := make(chan *C.char, 1)
+	go func() {
+		done <- C.call_msb_snapshot_object(cancelID, C.uint64_t(handle), text, (*C.uint8_t)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)))
+	}()
+	var failure *C.char
+	select {
+	case failure = <-done:
+	case <-ctx.Done():
+		C.call_msb_cancel_trigger(cancelID)
+		failure = <-done // native code must release the borrowed input before C.free
+	}
+	if failure != nil {
+		err := errorFromPtr(failure)
+		if native, ok := err.(*Error); ok && native.Kind == KindCancelled && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, err
+	}
+	end := 0
+	for end < len(buf) && buf[end] != 0 {
+		end++
+	}
+	return buf[:end], nil
+}
+
+func releaseSnapshotObject(handle uint64) { C.call_msb_snapshot_object_close(C.uint64_t(handle)) }

@@ -1072,10 +1072,10 @@ mod tests {
         .unwrap();
         let backend: std::sync::Arc<dyn crate::backend::Backend> = local.clone();
         crate::with_backend(backend, async {
-            let opened = crate::Snapshot::open(artifact.to_str().unwrap())
+            let opened = crate::Checkpoint::open(artifact.to_str().unwrap())
                 .await
                 .unwrap();
-            let handle = crate::Snapshot::list().await.unwrap().pop().unwrap();
+            let handle = crate::Checkpoint::list().await.unwrap().pop().unwrap();
             remove_snapshot(&local, artifact.to_str().unwrap(), false)
                 .await
                 .unwrap();

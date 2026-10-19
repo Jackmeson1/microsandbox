@@ -474,14 +474,22 @@ impl JsSandboxHandle {
         crate::sandbox::spawn_log_stream_from_stream(stream).await
     }
 
-    /// Snapshot this sandbox's disk under a bare name, preserving its running/paused state.
-    ///
-    /// Resolves under `~/.microsandbox/snapshots/<name>/`. Move
-    /// artifacts with `Snapshot.save`/`Snapshot.load`.
+    /// Create a new history with the exact initial checkpoint and capture head outcome.
     #[napi]
-    pub async fn snapshot(&self, name: String) -> Result<crate::snapshot::JsSnapshot> {
-        let snap = self.inner.snapshot(&name).await.map_err(to_napi_error)?;
-        Ok(crate::snapshot::JsSnapshot::from_rust(snap))
+    pub async fn snapshot(
+        &self,
+        name: String,
+        options: Option<crate::snapshot_group::JsSnapshotCaptureOptions>,
+    ) -> Result<crate::snapshot_group::JsSnapshotCreateResult> {
+        let options = crate::snapshot_group::capture_options(options.unwrap_or_default())?;
+        let result = self
+            .inner
+            .snapshot_with(&name, |_| options)
+            .await
+            .map_err(to_napi_error)?;
+        Ok(crate::snapshot_group::JsSnapshotCreateResult::from_rust(
+            result,
+        ))
     }
 }
 

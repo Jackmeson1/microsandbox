@@ -44,6 +44,13 @@ struct CapturedFullSnapshot {
     source_recovery: Option<SnapshotSourceRecoveryError>,
 }
 
+/// Admission mode is local control flow, not part of the portable capture configuration.
+enum CaptureGroupMode {
+    Legacy,
+    New(crate::sandbox::SandboxId),
+    Existing,
+}
+
 /// A complete operation-owned artifact, not yet a durable group member.
 #[derive(Debug)]
 struct StagedSnapshot {
@@ -123,7 +130,16 @@ pub(super) async fn create_snapshot(
     local: &LocalBackend,
     config: SnapshotConfig,
 ) -> MicrosandboxResult<Snapshot> {
-    create_snapshot_inner(local, config, false).await
+    create_snapshot_inner(local, config, CaptureGroupMode::Legacy).await
+}
+
+/// Create a new history, never append through the group-creation API.
+pub(super) async fn create_group(
+    local: &LocalBackend,
+    config: SnapshotConfig,
+    source_id: crate::sandbox::SandboxId,
+) -> MicrosandboxResult<Snapshot> {
+    create_snapshot_inner(local, config, CaptureGroupMode::New(source_id)).await
 }
 
 pub(super) async fn create_checkpoint(
@@ -143,13 +159,13 @@ pub(super) async fn create_checkpoint(
     .await?;
     config.group = Some(group);
     config.source_sandbox = source;
-    create_snapshot_inner(local, config, true).await
+    create_snapshot_inner(local, config, CaptureGroupMode::Existing).await
 }
 
 async fn create_snapshot_inner(
     local: &LocalBackend,
     mut config: SnapshotConfig,
-    require_existing_group: bool,
+    mode: CaptureGroupMode,
 ) -> MicrosandboxResult<Snapshot> {
     if config.force {
         return Err(MicrosandboxError::InvalidConfig(
@@ -162,6 +178,18 @@ async fn create_snapshot_inner(
     }
     validate_snapshot_name(&config.name)?;
     let lineage = super::lineage::begin(local, &config.source_sandbox).await?;
+    if let CaptureGroupMode::New(expected) = &mode {
+        // The sequencer also excludes removal/recreation. Check the receiver identity
+        // here, before creating a group or asking the guest to capture anything.
+        let actual = crate::sandbox::SandboxId::local(lineage.sandbox_id());
+        if expected != &actual {
+            return Err(MicrosandboxError::SandboxReplaced {
+                name: config.source_sandbox.clone(),
+                expected: expected.to_string(),
+                actual: actual.to_string(),
+            });
+        }
+    }
     let root = config
         .dest_dir
         .take()
@@ -176,10 +204,16 @@ async fn create_snapshot_inner(
         &config.source_sandbox,
     )
     .await?;
-    let group_dir = if require_existing_group {
-        super::group::ensure_checkpoint(&root, &group_name, source).await?
-    } else {
-        super::group::ensure_capture(&root, &group_name, source).await?
+    let group_dir = match mode {
+        CaptureGroupMode::Existing => {
+            super::group::ensure_checkpoint(&root, &group_name, source).await?
+        }
+        CaptureGroupMode::New(_) => {
+            super::group::ensure_new_capture(&root, &group_name, source).await?
+        }
+        CaptureGroupMode::Legacy => {
+            super::group::ensure_capture(&root, &group_name, source).await?
+        }
     };
     super::publication::complete_batch(local.db().await?.write(), &group_dir).await?;
     // Capture may continue while a group generation is exchanged. Its private staging
@@ -252,7 +286,7 @@ async fn publish_snapshot_group(
         super::publication::complete(&publication_db, captured.path(), captured.digest(), captured.manifest()).await?;
         captured.lease = Some(super::lease::reader_async(captured.path.clone()).await?);
         lineage.commit(captured.id()).await?;
-        tracing::info!(group = %update.group, head = %update.head, reason = ?update.reason, "snapshot group publication");
+        tracing::info!(group = %update.group, head = ?update.head, reason = ?update.reason, "snapshot group publication");
         captured.head_update = Some(update);
         Ok::<_, MicrosandboxError>(captured)
     }).await.map_err(|error| MicrosandboxError::Runtime(format!("snapshot publication task: {error}")))??;

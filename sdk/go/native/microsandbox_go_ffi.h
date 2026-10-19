@@ -1108,6 +1108,20 @@ char *msb_runtime_setup(uint64_t cancel_id,
                         uintptr_t buf_len);
 
 /**
+ * Execute only the explicitly tagged operation against a retained receiver.
+ */
+char *msb_snapshot_object(uint64_t cancel_id,
+                          uint64_t handle,
+                          const char *request,
+                          unsigned char *buf,
+                          uintptr_t buf_len);
+
+/**
+ * Release a receiver, without deleting its persistent artifact or group.
+ */
+void msb_snapshot_object_close(uint64_t handle);
+
+/**
  * Observe one live sandbox through its retained native backend and stable identity.
  */
 char *msb_sandbox_storage_usage(uint64_t cancel_id,

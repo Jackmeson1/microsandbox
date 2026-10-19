@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
-use microsandbox::{Snapshot, SnapshotReference};
+use microsandbox::{Checkpoint as Snapshot, Snapshot as SnapshotGroup, SnapshotReference};
 use microsandbox_utils::format::format_bytes;
 
 use crate::{
@@ -18,11 +18,7 @@ use crate::{
 /// Capture, restore, and manage disk or full snapshots.
 #[derive(Debug, Args)]
 #[command(
-    after_help = "Examples:\n  msb snap create ready --sandbox app --full\n  \
-    msb snap restore app:ready --name worker\n  msb snap ls --group app\n  \
-    msb snap export app:ready --output ready.msb\n  \
-    msb snap import ready.msb --group received\n\n\
-    'snap' and 'snapshot' are equivalent. Live forking uses 'msb fork'."
+    after_help = "Examples:\n  msb snap create templates --sandbox app --name ready\n  msb checkpoint templates --name next\n  msb snap list templates\n  msb snap modify templates --set-head ready\n  msb snap export templates --output ready.msb\n\n'snap' and 'snapshot' are equivalent. Live forking uses 'msb fork'."
 )]
 pub struct SnapshotArgs {
     /// Snapshot subcommand.
@@ -67,38 +63,34 @@ pub enum SnapshotCommands {
     #[command(name = "import", visible_alias = "load")]
     Load(SnapshotLoadArgs),
 
-    /// Read a group's head, or select a member as its head.
+    /// Read a group's selected head without changing it.
     Head(SnapshotHeadArgs),
+
+    /// Select or clear a group's head without capturing a checkpoint.
+    Modify(SnapshotModifyArgs),
 }
 
 /// Arguments for `msb snapshot create`.
 #[derive(Debug, Args)]
 #[command(
-    after_help = "Disk capture is the default. Use --full to include memory and running processes.\n\
-    The group defaults to the source sandbox's name; ready --sandbox app creates app:ready.\n\
-    Use --name instead of a positional name, or omit both to generate a snapshot name.\n\n\
-    Examples:\n  \
-    msb snap create ready --sandbox app\n  \
-    msb snap create ready --sandbox app --full\n  \
-    msb snap create ready --sandbox app --group templates\n\n\
-    Compatibility: snapshot create ready --from-sandbox app is still supported."
+    after_help = "Create a new bound group, or capture directly to an archive without installing a group.\n\nExamples:\n  msb snap create templates --sandbox app --name ready\n  msb snap create --sandbox app -o ready.msb\n\nUse checkpoint to append to an existing group."
 )]
 pub struct SnapshotCreateArgs {
-    /// Snapshot name within the group (generated when omitted).
-    #[arg(value_name = "NAME")]
-    pub positional_name: Option<String>,
+    /// New snapshot group; mutually exclusive with --output.
+    #[arg(
+        value_name = "GROUP",
+        required_unless_present = "output",
+        conflicts_with = "output"
+    )]
+    pub group: Option<String>,
 
     /// Sandbox to capture.
     #[arg(long, alias = "from-sandbox", value_name = "SANDBOX")]
     pub sandbox: String,
 
-    /// Set the snapshot name instead of using the positional argument.
-    #[arg(short, long, conflicts_with = "positional_name")]
+    /// Initial checkpoint name; generated when omitted.
+    #[arg(short, long, value_name = "NAME")]
     pub name: Option<String>,
-
-    /// Snapshot group to create or add to (defaults to the source sandbox name).
-    #[arg(long, value_name = "GROUP")]
-    pub group: Option<String>,
 
     /// Parent directory to create the artifact in, instead of the
     /// default snapshots directory. The group is created under this root.
@@ -110,7 +102,7 @@ pub struct SnapshotCreateArgs {
     pub output: Option<PathBuf>,
 
     /// Write a plain tar archive instead of zstd-compressed tar.
-    #[arg(long, requires = "output")]
+    #[arg(long, requires = "output", conflicts_with = "group")]
     pub plain_tar: bool,
 
     /// Add a `key=value` label. May be repeated.
@@ -118,7 +110,7 @@ pub struct SnapshotCreateArgs {
     pub labels: Vec<String>,
 
     /// Overwrite an existing archive file; installed group members are immutable.
-    #[arg(short = 'f', long)]
+    #[arg(short = 'f', long, requires = "output", conflicts_with = "group")]
     pub force: bool,
 
     /// Compute and record content integrity while creating the snapshot.
@@ -180,15 +172,15 @@ pub struct SnapshotCheckpointArgs {
 /// Arguments for `msb snapshot list`.
 #[derive(Debug, Args)]
 pub struct SnapshotListArgs {
-    /// Show only snapshots in this local group.
-    #[arg(long, value_name = "GROUP")]
+    /// List checkpoints in this group; omit to list groups.
+    #[arg(value_name = "GROUP")]
     pub group: Option<String>,
 
     /// Output format (json).
     #[arg(long, value_name = "FORMAT", value_parser = ["json"])]
     pub format: Option<String>,
 
-    /// Show only digests.
+    /// Show only group names or checkpoint IDs.
     #[arg(short, long)]
     pub quiet: bool,
 }
@@ -237,8 +229,13 @@ pub struct SnapshotReindexArgs {
 /// Arguments for `msb snapshot export` (also available as `save`).
 #[derive(Debug, Args)]
 pub struct SnapshotSaveArgs {
-    /// Snapshot to save (path, name, or digest).
+    /// Group whose selected head to export.
+    #[arg(value_name = "GROUP")]
     pub snapshot: String,
+
+    /// Export this exact group-local checkpoint name or ID instead of head.
+    #[arg(long, value_name = "MEMBER")]
+    pub checkpoint: Option<String>,
 
     /// Legacy positional output archive path; alternatively use --output.
     #[arg(
@@ -299,11 +296,32 @@ pub struct SnapshotLoadArgs {
 /// Arguments for `msb snapshot head`.
 #[derive(Debug, Args)]
 pub struct SnapshotHeadArgs {
-    /// Group to read, or GROUP:MEMBER to select a new head.
+    /// Group whose head to read.
     pub selector: String,
 
     /// Output format (json).
     #[arg(long, value_name = "FORMAT", value_parser = ["json"])]
+    pub format: Option<String>,
+}
+
+/// Explicit head mutation. Bare modify and conflicting selections are refused by the parser.
+#[derive(Debug, Args)]
+pub struct SnapshotModifyArgs {
+    /// Group whose head selection to change.
+    pub group: String,
+    /// Select an existing checkpoint by local name or stable ID.
+    #[arg(
+        long,
+        value_name = "MEMBER",
+        required_unless_present = "clear_head",
+        conflicts_with = "clear_head"
+    )]
+    pub set_head: Option<String>,
+    /// Clear selection while retaining all checkpoints.
+    #[arg(long)]
+    pub clear_head: bool,
+    /// Emit the head mutation report as JSON.
+    #[arg(long, value_parser = ["json"])]
     pub format: Option<String>,
 }
 
@@ -313,10 +331,7 @@ pub struct SnapshotHeadArgs {
 
 impl SnapshotCreateArgs {
     fn snapshot_name(&self) -> &str {
-        self.name
-            .as_deref()
-            .or(self.positional_name.as_deref())
-            .unwrap_or_default()
+        self.name.as_deref().unwrap_or_default()
     }
 }
 
@@ -347,6 +362,7 @@ pub async fn run(args: SnapshotArgs) -> anyhow::Result<()> {
         SnapshotCommands::Save(args) => save(args).await,
         SnapshotCommands::Load(args) => load(args).await,
         SnapshotCommands::Head(args) => head(args).await,
+        SnapshotCommands::Modify(args) => modify(args).await,
     }
 }
 
@@ -411,9 +427,6 @@ async fn create(args: SnapshotCreateArgs) -> anyhow::Result<()> {
     let mut builder = Snapshot::builder(args.snapshot_name())
         .from_sandbox(&source)
         .guest_flush(args.guest_flush);
-    if let Some(group) = args.group {
-        builder = builder.group(group);
-    }
     if let Some(ref dest_dir) = args.dest_dir {
         builder = builder.dest_dir(dest_dir);
     }
@@ -456,8 +469,36 @@ async fn create(args: SnapshotCreateArgs) -> anyhow::Result<()> {
         };
     }
 
-    match builder.create().await {
-        Ok(snap) => {
+    // Group creation never turns a name collision into append. The receiver also
+    // carries the source row identity, protecting against same-name replacement.
+    let config = builder.build()?;
+    let source = microsandbox::Sandbox::get(&source).await?;
+    let mut options = microsandbox::SnapshotCaptureOptions::default()
+        .initial_checkpoint(config.name)
+        .guest_flush(config.guest_flush);
+    if config.full {
+        options = options.full();
+    }
+    if config.record_integrity {
+        options = options.record_integrity();
+    }
+    if let Some(dest) = config.dest_dir {
+        options = options.dest_dir(dest);
+    }
+    for (key, value) in config.labels {
+        options = options.label(key, value);
+    }
+    match source
+        .snapshot_with(
+            args.group
+                .as_deref()
+                .expect("clap requires group or output"),
+            |_| options,
+        )
+        .await
+    {
+        Ok(created) => {
+            let snap = created.checkpoint;
             spinner.finish_success("Snapshotted");
             if !args.quiet {
                 if let Some(update) = snap.head_update() {
@@ -476,20 +517,42 @@ async fn create(args: SnapshotCreateArgs) -> anyhow::Result<()> {
 }
 
 async fn list(args: SnapshotListArgs) -> anyhow::Result<()> {
-    if args.group.is_some() {
-        // Groups are local metadata; do not silently return an empty cloud listing.
-        super::common::resolve_local_backend()?;
-    }
-
-    let snapshots: Vec<_> = Snapshot::list()
-        .await?
-        .into_iter()
-        .filter(|snapshot| {
-            args.group
-                .as_deref()
-                .is_none_or(|group| snapshot.group() == Some(group))
-        })
-        .collect();
+    let Some(group_name) = args.group else {
+        let groups = SnapshotGroup::list().await?;
+        if args.quiet {
+            for group in groups {
+                println!("{}", group.name());
+            }
+            return Ok(());
+        }
+        let mut rows = Vec::new();
+        for group in groups {
+            let head = group.head().await?;
+            let members = group.checkpoints().await?;
+            rows.push(serde_json::json!({
+                "name": group.name(),
+                "head": head.as_ref().map(|checkpoint| checkpoint.id().as_str()),
+                "count": members.len(),
+            }));
+        }
+        if args.format.as_deref() == Some("json") {
+            println!("{}", serde_json::to_string_pretty(&rows)?);
+        } else if rows.is_empty() {
+            eprintln!("No snapshot groups found.");
+        } else {
+            let mut table = ui::Table::new(&["NAME", "COUNT", "HEAD"]);
+            for row in rows {
+                table.add_row(vec![
+                    row["name"].as_str().unwrap().into(),
+                    row["count"].to_string(),
+                    row["head"].as_str().unwrap_or("-").into(),
+                ]);
+            }
+            table.print();
+        }
+        return Ok(());
+    };
+    let snapshots = SnapshotGroup::get(&group_name).await?.checkpoints().await?;
 
     if args.format.as_deref() == Some("json") {
         let entries: Vec<serde_json::Value> = snapshots
@@ -527,7 +590,7 @@ async fn list(args: SnapshotListArgs) -> anyhow::Result<()> {
 
     if args.quiet {
         for s in &snapshots {
-            println!("{}", s.digest());
+            println!("{}", s.id());
         }
         return Ok(());
     }
@@ -703,6 +766,20 @@ async fn reindex(args: SnapshotReindexArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Canonical group selectors never guess whether a string is a path or cloud ID.
+async fn select_checkpoint(group: &str, member: Option<&str>) -> anyhow::Result<Snapshot> {
+    let group = SnapshotGroup::get(group).await?;
+    match member {
+        Some(member) => Ok(group.get_checkpoint(member).await?),
+        None => group.head().await?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "snapshot group '{}' has no selected head; use --checkpoint MEMBER",
+                group.name()
+            )
+        }),
+    }
+}
+
 async fn save(args: SnapshotSaveArgs) -> anyhow::Result<()> {
     let out = args.archive_path().to_owned();
     let opts = microsandbox::snapshot::SaveOpts {
@@ -712,7 +789,10 @@ async fn save(args: SnapshotSaveArgs) -> anyhow::Result<()> {
         since: args.since,
         last_layers: args.last_layers,
     };
-    Snapshot::save(&args.snapshot, &out, opts).await?;
+    // Pin the immutable member before export; a concurrent head change must not
+    // change the artifact or dependencies selected by this operation.
+    let checkpoint = select_checkpoint(&args.snapshot, args.checkpoint.as_deref()).await?;
+    checkpoint.save_to(&out, opts).await?;
     println!("{}", out.display());
     Ok(())
 }
@@ -751,14 +831,37 @@ async fn load(args: SnapshotLoadArgs) -> anyhow::Result<()> {
 }
 
 async fn head(args: SnapshotHeadArgs) -> anyhow::Result<()> {
-    let update = Snapshot::group_head(&args.selector).await?;
+    let group = SnapshotGroup::get(&args.selector).await?;
+    let head = group.head().await?;
+    if args.format.as_deref() == Some("json") {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "group": group.name(), "head": head.as_ref().map(|checkpoint| checkpoint.id().as_str()),
+            }))?
+        );
+    } else {
+        ui::detail_kv("Group", group.name());
+        ui::detail_kv(
+            "Head",
+            head.as_ref()
+                .map(|checkpoint| checkpoint.id().as_str())
+                .unwrap_or("-"),
+        );
+    }
+    Ok(())
+}
+
+async fn modify(args: SnapshotModifyArgs) -> anyhow::Result<()> {
+    let group = SnapshotGroup::get(&args.group).await?;
+    let update = match args.set_head {
+        Some(member) => group.set_head(member).await?,
+        None => group.clear_head().await?,
+    };
     if args.format.as_deref() == Some("json") {
         println!("{}", serde_json::to_string_pretty(&update)?);
     } else {
-        ui::detail_kv("Group", &update.group);
-        ui::detail_kv("Previous head", update.previous.as_deref().unwrap_or("-"));
-        ui::detail_kv("Head", &update.head);
-        ui::detail_kv("Reason", &format!("{:?}", update.reason));
+        report_head_update(&update);
     }
     Ok(())
 }
@@ -779,7 +882,9 @@ fn format_member_selector(group: Option<&str>, name: Option<&str>, id: &str) -> 
 fn report_head_update(update: &microsandbox::snapshot::HeadUpdate) {
     eprintln!(
         "group {}: head {} ({:?})",
-        update.group, update.head, update.reason
+        update.group,
+        update.head.as_deref().unwrap_or("-"),
+        update.reason
     );
 }
 
@@ -895,90 +1000,53 @@ mod tests {
     }
 
     #[test]
-    fn create_requires_a_source_and_rejects_mixed_naming_forms() {
-        let error = TestCli::try_parse_from(["msb", "create"]).unwrap_err();
-        assert_eq!(
-            error.kind(),
-            clap::error::ErrorKind::MissingRequiredArgument
-        );
+    fn create_requires_exactly_one_new_group_or_archive_destination() {
         for args in [
-            vec!["create", "--name", "ready"],
+            vec!["create"],
+            vec!["create", "history"],
+            vec!["create", "--sandbox", "app"],
+            vec!["create", "history", "--sandbox", "app", "-o", "backup.msb"],
+            vec!["create", "history", "--sandbox", "app", "--group", "other"],
+            vec!["create", "history", "--sandbox", "app", "--force"],
+        ] {
+            assert!(
+                TestCli::try_parse_from(std::iter::once("msb").chain(args.clone())).is_err(),
+                "unexpected accepted arguments: {args:?}"
+            );
+        }
+        for command in [
             vec![
                 "create",
-                "ready",
-                "--from-sandbox",
+                "history",
+                "--sandbox",
                 "app",
                 "--name",
-                "other",
+                "base",
+                "--full",
             ],
-            vec!["create", "ready", "--sandbox", "app", "--name", "other"],
-            vec!["create", "--sandbox", "app", "--from-sandbox", "other"],
-            vec!["create", "--sandbox", "app", "--sandbox", "other"],
-            vec!["create", "app", "--name", "ready"],
-            vec!["create", "--snapshot", "app:ready", "--name", "other"],
-            vec!["create", "app", "ready"],
+            vec![
+                "create",
+                "history",
+                "--from-sandbox",
+                "app",
+                "-n",
+                "base",
+                "--full",
+            ],
         ] {
-            assert!(TestCli::try_parse_from(std::iter::once("msb").chain(args)).is_err());
-        }
-
-        // Do not reintroduce the previously rejected ambiguous spelling.
-        let error =
-            TestCli::try_parse_from(["msb", "create", "clean", "--from", "box"]).unwrap_err();
-        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
-    }
-
-    #[test]
-    fn explicit_and_legacy_capture_resolve_the_same_names_and_defaults() {
-        for full in [false, true] {
-            for (source, name) in [("app", "ready"), ("create", "restore")] {
-                let mut forms = [
-                    vec!["create", name, "--sandbox", source],
-                    vec!["create", "--sandbox", source, name],
-                    vec!["create", "--sandbox", source, "--name", name],
-                    vec!["create", "--sandbox", source, "-n", name],
-                    vec!["create", name, "--from-sandbox", source],
-                    vec!["create", "--from-sandbox", source, "--name", name],
-                ];
-                for form in &mut forms {
-                    form.extend(["--group", "templates"]);
-                    if full {
-                        form.push("--full");
-                    }
-                    let SnapshotCommands::Create(args) = parse_snapshot_args(form).command else {
-                        panic!("expected create command");
-                    };
-                    assert_eq!(args.sandbox, source);
-                    assert_eq!(args.snapshot_name(), name);
-                    assert_eq!(args.group.as_deref(), Some("templates"));
-                    assert_eq!(args.full, full);
-                    assert_eq!(args.guest_flush, microsandbox::snapshot::GuestFlush::Auto);
-                    assert!(args.output.is_none());
-                }
-            }
-        }
-        for form in [
-            vec!["create", "--sandbox", "app"],
-            vec!["create", "--from-sandbox", "app"],
-        ] {
-            let SnapshotCommands::Create(args) = parse_snapshot_args(&form).command else {
-                panic!("expected create command");
+            let SnapshotCommands::Create(args) = parse_snapshot_args(&command).command else {
+                panic!("create")
             };
-            assert_eq!(args.sandbox, "app");
-            assert_eq!(args.snapshot_name(), "");
-            assert!(args.group.is_none());
-            assert!(!args.full);
+            assert_eq!(args.group.as_deref(), Some("history"));
+            assert_eq!(args.snapshot_name(), "base");
+            assert!(args.full);
         }
-    }
-
-    #[test]
-    fn create_parses_full_capture_flag() {
-        let args = parse_snapshot_args(&["create", "clean", "--from-sandbox", "box", "--full"]);
-        let SnapshotCommands::Create(args) = args.command else {
-            panic!("expected create command");
+        let SnapshotCommands::Create(args) =
+            parse_snapshot_args(&["create", "history", "--sandbox", "app"]).command
+        else {
+            panic!("create")
         };
-        assert_eq!(args.snapshot_name(), "clean");
-        assert_eq!(args.sandbox, "box");
-        assert!(args.full);
+        assert_eq!(args.snapshot_name(), "");
     }
 
     #[test]
@@ -1004,6 +1072,7 @@ mod tests {
     fn create_parses_direct_archive_without_installed_destination() {
         let args = parse_snapshot_args(&[
             "create",
+            "--name",
             "clean",
             "--from-sandbox",
             "box",
@@ -1125,7 +1194,7 @@ mod tests {
                 vec!["--output", "bundle.msb"],
                 vec!["-o", "bundle.msb"],
             ] {
-                let args = [command, "app:ready"]
+                let args = [command, "app", "--checkpoint", "ready"]
                     .into_iter()
                     .chain(output)
                     .chain(["--since", "app:base", "--with-image"])
@@ -1134,7 +1203,8 @@ mod tests {
                     panic!("expected export command");
                 };
                 assert_eq!(args.archive_path(), std::path::Path::new("bundle.msb"));
-                assert_eq!(args.snapshot, "app:ready");
+                assert_eq!(args.snapshot, "app");
+                assert_eq!(args.checkpoint.as_deref(), Some("ready"));
                 assert_eq!(args.since.as_deref(), Some("app:base"));
                 assert!(args.with_image);
             }
@@ -1198,7 +1268,7 @@ mod tests {
     fn group_filter_parses_with_each_listing_output() {
         for command in ["list", "ls"] {
             for output in [vec![], vec!["--quiet"], vec!["--format", "json"]] {
-                let args = [command, "--group", "app"]
+                let args = [command, "app"]
                     .into_iter()
                     .chain(output)
                     .collect::<Vec<_>>();
@@ -1257,17 +1327,6 @@ mod tests {
     }
 
     #[test]
-    fn create_accepts_generated_member_in_explicit_group() {
-        let parsed = parse_snapshot_args(&["create", "--from-sandbox", "box", "--group", "work"]);
-        let SnapshotCommands::Create(args) = parsed.command else {
-            panic!("expected create command");
-        };
-        assert_eq!(args.snapshot_name(), "");
-        assert_eq!(args.group.as_deref(), Some("work"));
-        assert_eq!(args.sandbox, "box");
-    }
-
-    #[test]
     fn load_accepts_group_and_explicit_head_selection() {
         let parsed = parse_snapshot_args(&[
             "load",
@@ -1287,12 +1346,28 @@ mod tests {
     }
 
     #[test]
-    fn head_accepts_member_selector_and_json_format() {
-        let parsed = parse_snapshot_args(&["head", "work:baseline", "--format", "json"]);
+    fn head_is_read_only_and_modify_requires_an_explicit_mutation() {
+        for args in [
+            vec!["modify", "work"],
+            vec!["modify", "work", "--set-head", "base", "--clear-head"],
+            vec!["head", "work", "--set-head", "base"],
+        ] {
+            assert!(TestCli::try_parse_from(std::iter::once("msb").chain(args)).is_err());
+        }
+        for args in [
+            vec!["modify", "work", "--set-head", "base"],
+            vec!["modify", "work", "--clear-head"],
+        ] {
+            assert!(matches!(
+                parse_snapshot_args(&args).command,
+                SnapshotCommands::Modify(_)
+            ));
+        }
+        let parsed = parse_snapshot_args(&["head", "work", "--format", "json"]);
         let SnapshotCommands::Head(args) = parsed.command else {
             panic!("expected head command");
         };
-        assert_eq!(args.selector, "work:baseline");
+        assert_eq!(args.selector, "work");
         assert_eq!(args.format.as_deref(), Some("json"));
     }
 

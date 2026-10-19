@@ -193,7 +193,7 @@ pub(super) async fn member_paths(directory: &Path) -> MicrosandboxResult<Vec<Pat
 /// Open or create an explicitly named group, or create a fresh generated local group.
 #[cfg(test)]
 pub(super) async fn ensure(root: &Path, name: Option<&str>) -> MicrosandboxResult<PathBuf> {
-    Ok(prepare_destination(root, name, false, None, false)
+    Ok(prepare_destination(root, name, false, None, false, false)
         .await?
         .directory)
 }
@@ -207,10 +207,53 @@ pub(super) async fn ensure_capture(
 ) -> MicrosandboxResult<PathBuf> {
     source.validate()?;
     Ok(
-        prepare_destination(root, Some(name), false, Some(source), false)
+        prepare_destination(root, Some(name), false, Some(source), false, false)
             .await?
             .directory,
     )
+}
+
+/// Claim a new capture history under the root creation lock, rejecting all collisions.
+pub(super) async fn ensure_new_capture(
+    root: &Path,
+    name: &str,
+    source: super::source::Source,
+) -> MicrosandboxResult<PathBuf> {
+    source.validate()?;
+    Ok(
+        prepare_destination(root, Some(name), false, Some(source), false, true)
+            .await?
+            .directory,
+    )
+}
+
+/// Validate a group independently of whether it currently selects a head.
+pub(super) async fn inspect_directory(directory: &Path) -> MicrosandboxResult<Option<PathBuf>> {
+    let directory = directory.to_path_buf();
+    blocking(move || {
+        let _lock = lock_group(&directory)?;
+        let state = read_group(&directory)?;
+        if state.head.is_none() {
+            return Ok(None);
+        }
+        let (id, _) = resolve_selected(&directory, &state, None)?;
+        Ok(Some(directory.join(id)))
+    })
+    .await
+}
+
+/// Group-local member lookup never interprets a member name as a host path.
+pub(super) async fn selected_path(directory: &Path, member: &str) -> MicrosandboxResult<PathBuf> {
+    validate_name(member, "checkpoint selector")?;
+    let directory = directory.to_path_buf();
+    let member = member.to_owned();
+    blocking(move || {
+        let _lock = lock_group(&directory)?;
+        let state = read_group(&directory)?;
+        let (id, _) = resolve_selected(&directory, &state, Some(&member))?;
+        Ok(directory.join(id))
+    })
+    .await
 }
 
 pub(super) async fn ensure_checkpoint(
@@ -220,7 +263,7 @@ pub(super) async fn ensure_checkpoint(
 ) -> MicrosandboxResult<PathBuf> {
     source.validate()?;
     Ok(
-        prepare_destination(root, Some(name), false, Some(source), true)
+        prepare_destination(root, Some(name), false, Some(source), true, false)
             .await?
             .directory,
     )
@@ -310,7 +353,7 @@ pub(super) async fn ensure_import(
     root: &Path,
     name: Option<&str>,
 ) -> MicrosandboxResult<ImportDestination> {
-    prepare_destination(root, name, true, None, false).await
+    prepare_destination(root, name, true, None, false, false).await
 }
 
 async fn prepare_destination(
@@ -319,6 +362,7 @@ async fn prepare_destination(
     importing: bool,
     source: Option<super::source::Source>,
     require_existing: bool,
+    require_new: bool,
 ) -> MicrosandboxResult<ImportDestination> {
     let root = root.to_path_buf();
     let name = name.map(str::to_owned);
@@ -337,6 +381,7 @@ async fn prepare_destination(
         };
         let directory = root.join(&name);
         if path_exists(&directory)? {
+            if require_new { return Err(MicrosandboxError::SnapshotAlreadyExists(name)); }
             require_directory(&directory)?;
             if let Some(source) = &source {
                 let _lock = lock_group(&directory)?;
@@ -598,7 +643,7 @@ async fn publish_batch_inner(
 
         let next_head = update
             .as_ref()
-            .map(|update| update.head.clone())
+            .and_then(|update| update.head.clone())
             .or_else(|| state.head.clone());
         // Exercise the real import/index/restore pipeline in an isolated test process.
         // This branch is absent from release builds; the prototype's concurrency gates
@@ -714,11 +759,48 @@ pub(super) async fn select(root: &Path, selector: &str) -> MicrosandboxResult<He
             selected.is_some(),
         )?;
         if update.changed {
-            write_group(&directory, Some(update.head.clone()))?;
+            write_group(&directory, update.head.clone())?;
         }
         Ok(update)
     })
     .await
+}
+
+/// Set or clear the head without rewriting any immutable checkpoint descriptor.
+pub(super) async fn change_head(
+    directory: &Path,
+    member: Option<&str>,
+) -> MicrosandboxResult<HeadUpdate> {
+    if let Some(member) = member {
+        validate_name(member, "checkpoint selector")?;
+    }
+    let writer = WriterLease::acquire(directory).await?;
+    let directory = directory.to_path_buf();
+    let member = member.map(str::to_owned);
+    blocking(move || {
+        let _writer = writer;
+        let _lock = lock_group(&directory)?;
+        if transaction::pending_index(&directory)?.is_some() {
+            return Err(integrity("snapshot batch index completion is pending; recover the import before changing its head".into()));
+        }
+        let state = read_group(&directory)?;
+        let update = if let Some(member) = member {
+            // Explicit selection can repair a dangling old head, but the new member
+            // must exist and carry valid identity before the head is changed.
+            let (candidate, value) = resolve_selected(&directory, &state, Some(&member))?;
+            head_update(&directory, state.head.as_deref(), &candidate, &BTreeMap::from([(candidate.clone(), value)]), true)?
+        } else {
+            HeadUpdate {
+                group: directory.file_name().and_then(|name| name.to_str()).ok_or_else(|| integrity("group directory has no valid name".into()))?.into(),
+                previous: state.head.clone(),
+                head: None,
+                reason: if state.head.is_some() { HeadUpdateReason::Cleared } else { HeadUpdateReason::Unchanged },
+                changed: state.head.is_some(),
+            }
+        };
+        if update.changed { write_group(&directory, update.head.clone())?; }
+        Ok(update)
+    }).await
 }
 
 /// Read a member's optional local friendly name without altering its immutable descriptor.
@@ -871,7 +953,7 @@ pub(super) fn validate_alias(name: &str) -> MicrosandboxResult<()> {
     Ok(())
 }
 
-fn validate_group_name(name: &str) -> MicrosandboxResult<()> {
+pub(super) fn validate_group_name(name: &str) -> MicrosandboxResult<()> {
     validate_name(name, "group")?;
     if matches!(name, "sha256" | "sha512") || SnapshotId::new(name).is_ok() {
         return Err(MicrosandboxError::InvalidConfig(format!(
@@ -1176,11 +1258,11 @@ fn head_update(
             .ok_or_else(|| integrity("snapshot group directory has no valid name".into()))?
             .into(),
         previous: previous.map(str::to_owned),
-        head: if changed {
+        head: Some(if changed {
             candidate.into()
         } else {
             previous.unwrap_or(candidate).into()
-        },
+        }),
         reason,
         changed,
     })

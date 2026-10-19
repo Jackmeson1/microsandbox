@@ -1586,7 +1586,10 @@ async fn unordered_batch_resolves_disk_and_ram_from_all_supplied_archives() {
         for (offset, snapshot) in loaded.iter().enumerate() {
             assert_ram(snapshot.path(), 6 - offset as u64);
         }
-        assert_eq!(loaded[0].head_update().unwrap().head, loaded[0].snapshot_id);
+        assert_eq!(
+            loaded[0].head_update().unwrap().head.as_deref(),
+            Some(loaded[0].snapshot_id.as_str())
+        );
         // Neither source files, archive bytes, nor other installed generations are needed by
         // the final snapshot after the batch has reconstructed destination-owned closures.
         for generation in 1..=6 {
@@ -1734,7 +1737,7 @@ async fn missing_or_corrupt_borrowed_ram_never_publishes_target() {
     let head = super::super::super::group::select(&local.snapshots_dir(), "received")
         .await
         .unwrap();
-    assert_eq!(head.head, base.id().as_str());
+    assert_eq!(head.head.as_deref(), Some(base.id().as_str()));
 }
 
 #[tokio::test]

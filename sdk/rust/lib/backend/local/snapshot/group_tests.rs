@@ -224,7 +224,7 @@ async fn batch_head_is_independent_of_archive_and_staging_order() {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(update.head, id(3).as_str());
+        assert_eq!(update.head.as_deref(), Some(id(3).as_str()));
         assert_eq!(update.reason, HeadUpdateReason::Initialized);
         assert_eq!(read_members(&group, true).unwrap().len(), 3);
     }
@@ -249,7 +249,7 @@ async fn batch_uses_known_destination_intermediates_to_prove_one_tip() {
     .unwrap();
     assert_eq!(update.reason, HeadUpdateReason::FastForwarded);
     assert_eq!(update.previous.as_deref(), Some(id(2).as_str()));
-    assert_eq!(update.head, id(3).as_str());
+    assert_eq!(update.head.as_deref(), Some(id(3).as_str()));
 }
 
 #[tokio::test]
@@ -281,7 +281,7 @@ async fn batch_unique_tip_still_respects_existing_head_ancestry() {
         .unwrap();
         assert_eq!(update.reason, reason);
         assert!(!update.changed);
-        assert_eq!(update.head, id(1).as_str());
+        assert_eq!(update.head.as_deref(), Some(id(1).as_str()));
         assert!(group.join(id(first + 1).as_str()).is_dir());
     }
 }
@@ -312,7 +312,7 @@ async fn batch_branches_preserve_existing_head_or_leave_new_group_unselected() {
                 let update = update.unwrap();
                 assert_eq!(update.reason, HeadUpdateReason::AmbiguousCandidates);
                 assert!(!update.changed);
-                assert_eq!(update.head, id(1).as_str());
+                assert_eq!(update.head.as_deref(), Some(id(1).as_str()));
             } else {
                 assert_eq!(update, None);
                 assert_eq!(read_group(&group).unwrap().head, None);
@@ -349,7 +349,7 @@ async fn batch_unknown_history_does_not_guess_a_candidate_order() {
     .unwrap()
     .unwrap();
     assert_eq!(update.reason, HeadUpdateReason::AmbiguousCandidates);
-    assert_eq!(update.head, id(1).as_str());
+    assert_eq!(update.head.as_deref(), Some(id(1).as_str()));
     let staged = stage(root.path(), &[descriptor(2, Some(1))]);
     // Repeating the same candidates is now conclusive, even though their intermediate is not
     // itself a supplied archive head.
@@ -364,7 +364,7 @@ async fn batch_unknown_history_does_not_guess_a_candidate_order() {
     .unwrap()
     .unwrap();
     assert_eq!(update.reason, HeadUpdateReason::FastForwarded);
-    assert_eq!(update.head, id(3).as_str());
+    assert_eq!(update.head.as_deref(), Some(id(3).as_str()));
 }
 
 #[tokio::test]
@@ -407,7 +407,7 @@ async fn batch_set_head_requires_one_candidate_tip_before_any_publication() {
     .unwrap()
     .unwrap();
     assert_eq!(update.reason, HeadUpdateReason::Selected);
-    assert_eq!(update.head, id(5).as_str());
+    assert_eq!(update.head.as_deref(), Some(id(5).as_str()));
 }
 
 #[tokio::test]
@@ -585,8 +585,8 @@ async fn head_and_id_lookup_do_not_scan_unrelated_descriptors() {
         group.join(id(1).as_str()),
     );
     assert_eq!(
-        select(root.path(), "lookup").await.unwrap().head,
-        id(1).as_str()
+        select(root.path(), "lookup").await.unwrap().head.as_deref(),
+        Some(id(1).as_str())
     );
 }
 
@@ -627,13 +627,17 @@ async fn unknown_history_is_retained_without_retroactively_selecting_a_tip() {
     add(&group, 1, None).await;
     let unknown = add(&group, 3, Some(2)).await;
     assert_eq!(unknown.reason, HeadUpdateReason::UnknownAncestry);
-    assert_eq!(unknown.head, id(1).as_str());
+    assert_eq!(unknown.head.as_deref(), Some(id(1).as_str()));
     assert!(group.join(id(3).as_str()).is_dir());
     let intermediate = add(&group, 2, Some(1)).await;
-    assert_eq!(intermediate.head, id(2).as_str());
+    assert_eq!(intermediate.head.as_deref(), Some(id(2).as_str()));
     assert_eq!(
-        select(root.path(), "history").await.unwrap().head,
-        id(2).as_str()
+        select(root.path(), "history")
+            .await
+            .unwrap()
+            .head
+            .as_deref(),
+        Some(id(2).as_str())
     );
 
     let staging = stage(root.path(), &[]);
@@ -641,7 +645,7 @@ async fn unknown_history_is_retained_without_retroactively_selecting_a_tip() {
         .await
         .unwrap();
     assert_eq!(retried.reason, HeadUpdateReason::FastForwarded);
-    assert_eq!(retried.head, id(3).as_str());
+    assert_eq!(retried.head.as_deref(), Some(id(3).as_str()));
 }
 
 #[tokio::test]
@@ -668,8 +672,12 @@ async fn identical_ids_reuse_members_and_conflicts_fail_before_publication() {
     assert!(!group.join(id(2).as_str()).exists());
     assert!(staging.path().join(id(2).as_str()).is_dir());
     assert_eq!(
-        select(root.path(), "duplicates").await.unwrap().head,
-        id(1).as_str()
+        select(root.path(), "duplicates")
+            .await
+            .unwrap()
+            .head
+            .as_deref(),
+        Some(id(1).as_str())
     );
 }
 
@@ -817,11 +825,11 @@ async fn explicit_selection_can_choose_a_retained_branch_or_an_older_snapshot() 
         .unwrap();
     assert_eq!(side.reason, HeadUpdateReason::Selected);
     assert_eq!(side.previous.as_deref(), Some(id(2).as_str()));
-    assert_eq!(side.head, id(3).as_str());
+    assert_eq!(side.head.as_deref(), Some(id(3).as_str()));
     let old = select(root.path(), &format!("selection:{}", id(1)))
         .await
         .unwrap();
-    assert_eq!(old.head, id(1).as_str());
+    assert_eq!(old.head.as_deref(), Some(id(1).as_str()));
     assert_eq!(
         select(root.path(), "selection").await.unwrap().reason,
         HeadUpdateReason::Unchanged
@@ -1106,4 +1114,261 @@ async fn checkpoint_selectors_require_one_matching_live_association() {
     fs::remove_dir_all(root.join("stable")).unwrap();
     assert!(ensure_checkpoint(&root, "stable", source).await.is_err());
     assert!(!root.join("stable").exists());
+}
+
+#[tokio::test]
+async fn public_group_lookup_survives_clear_and_exact_member_lookup_never_moves_head() {
+    let home = tempfile::tempdir().unwrap();
+    let local = crate::test_support::local_backend_builder(home.path())
+        .build()
+        .await
+        .unwrap();
+    let directory = ensure(&local.snapshots_dir(), Some("history"))
+        .await
+        .unwrap();
+    add(&directory, 1, None).await;
+    add(&directory, 2, Some(1)).await;
+    write_member_name(&directory.join(id(1).as_str()), Some("base")).unwrap();
+
+    crate::with_backend(local, async {
+        let group = crate::Snapshot::get("history").await.unwrap();
+        assert_eq!(group.head().await.unwrap().unwrap().id(), &id(2));
+        let base = group.get_checkpoint("base").await.unwrap();
+        assert_eq!(base.id(), &id(1));
+        assert_eq!(group.head().await.unwrap().unwrap().id(), &id(2));
+        let cleared = group.clear_head().await.unwrap();
+        assert_eq!(cleared.previous.as_deref(), Some(id(2).as_str()));
+        assert_eq!(cleared.head, None);
+        assert_eq!(cleared.reason, HeadUpdateReason::Cleared);
+        assert!(cleared.changed);
+        assert_eq!(
+            serde_json::to_value(&cleared).unwrap()["head"],
+            serde_json::Value::Null
+        );
+        assert!(group.head().await.unwrap().is_none());
+        let reopened = crate::Snapshot::get("history").await.unwrap();
+        assert_eq!(crate::Snapshot::list().await.unwrap().len(), 1);
+        assert_eq!(reopened.checkpoints().await.unwrap().len(), 2);
+        let unchanged = reopened.clear_head().await.unwrap();
+        assert!(!unchanged.changed);
+        assert_eq!(unchanged.reason, HeadUpdateReason::Unchanged);
+        let selected = reopened.set_head("base").await.unwrap();
+        assert_eq!(selected.head.as_deref(), Some(id(1).as_str()));
+        assert!(selected.changed);
+        assert!(!reopened.set_head(id(1).as_str()).await.unwrap().changed);
+        assert!(reopened.get_checkpoint("../escape").await.is_err());
+        assert!(reopened.set_head("missing").await.is_err());
+        assert_eq!(reopened.head().await.unwrap().unwrap().id(), &id(1));
+        // An imported history is useful for reads; its capture API cannot guess a source.
+        assert!(
+            reopened
+                .checkpoint()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("unbound")
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn receiver_capture_refuses_same_name_replacement_before_group_creation() {
+    use crate::{db::entity::sandbox, sandbox::SandboxConfig};
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
+
+    let home = tempfile::tempdir().unwrap();
+    let local = crate::test_support::local_backend_builder(home.path())
+        .build()
+        .await
+        .unwrap();
+    let db = local.db().await.unwrap();
+    let insert = || sandbox::ActiveModel {
+        name: Set("app".into()),
+        config: Set(serde_json::to_string(&SandboxConfig::default()).unwrap()),
+        status: Set(sandbox::SandboxStatus::Stopped),
+        ephemeral: Set(false),
+        ..Default::default()
+    };
+    let first = insert().insert(db.write()).await.unwrap();
+    fs::create_dir_all(local.sandboxes_dir().join("app")).unwrap();
+    let root = local.snapshots_dir();
+    let local = std::sync::Arc::new(local);
+    let db = local.db().await.unwrap();
+    let backend: std::sync::Arc<dyn crate::backend::Backend> = local.clone();
+    let handle = backend
+        .sandboxes()
+        .get(backend.clone(), "app")
+        .await
+        .unwrap();
+    sandbox::Entity::delete_by_id(first.id)
+        .exec(db.write())
+        .await
+        .unwrap();
+    let replacement = insert().insert(db.write()).await.unwrap();
+    assert_ne!(first.id, replacement.id);
+    let error = handle.snapshot("history").await.unwrap_err();
+    assert!(
+        matches!(error, MicrosandboxError::SandboxReplaced { .. }),
+        "{error}"
+    );
+    assert!(!root.join("history").exists());
+}
+
+#[tokio::test]
+async fn new_group_capture_admission_is_exclusive_even_for_the_same_source() {
+    let home = tempfile::tempdir().unwrap();
+    let local = crate::test_support::local_backend_builder(home.path())
+        .build()
+        .await
+        .unwrap();
+    let source = super::super::source::Source::capture(local.db().await.unwrap().write(), 1, "app")
+        .await
+        .unwrap();
+    let root = local.snapshots_dir();
+    let (first, second) = tokio::join!(
+        ensure_new_capture(&root, "history", source.clone()),
+        ensure_new_capture(&root, "history", source.clone()),
+    );
+    assert_ne!(first.is_ok(), second.is_ok());
+    let failure = first.err().or_else(|| second.err()).unwrap();
+    assert!(matches!(
+        failure,
+        MicrosandboxError::SnapshotAlreadyExists(_)
+    ));
+    // Creation must not silently become append, even when the requested binding matches.
+    assert!(ensure_new_capture(&root, "history", source).await.is_err());
+}
+
+#[tokio::test]
+#[ignore = "live VM qualification: requires MSB_TEST_GROUP_HOME, MSB_TEST_GROUP_ARCHIVE and a configured native runtime"]
+async fn live_public_group_capture_head_and_spawn_after_source_deletion() {
+    use crate::{Checkpoint, LoadOpts, Sandbox, Snapshot};
+
+    let home = PathBuf::from(std::env::var_os("MSB_TEST_GROUP_HOME").expect("isolated home"));
+    let archive =
+        PathBuf::from(std::env::var_os("MSB_TEST_GROUP_ARCHIVE").expect("native disk archive"));
+    let local = crate::backend::LocalBackend::builder()
+        .home(&home)
+        .build()
+        .await
+        .unwrap();
+    crate::with_backend(local, async {
+        Checkpoint::load_many(
+            &[archive],
+            LoadOpts {
+                group: Some("imported".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let imported = Snapshot::get("imported").await.unwrap();
+        assert!(
+            imported
+                .checkpoint()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("unbound")
+        );
+        let source = imported
+            .spawn_sandbox_with(|options| {
+                options
+                    .name("group-api-source")
+                    .cpus(2)
+                    .memory(512u32)
+                    .max_duration(180)
+            })
+            .await
+            .unwrap();
+        let captured: MicrosandboxResult<_> = async {
+            let output = source
+                .exec(
+                    "sh",
+                    ["-c", "mkdir -p /work; echo A > /work/group-api; sync"],
+                )
+                .await?;
+            assert!(output.status().success);
+            let created = source
+                .snapshot_with("history", |options| {
+                    options.initial_checkpoint("base").record_integrity()
+                })
+                .await?;
+            assert_eq!(
+                created.head_update.head.as_deref(),
+                Some(created.checkpoint.id().as_str())
+            );
+            assert!(source.snapshot("history").await.is_err());
+            let output = source
+                .exec("sh", ["-c", "echo B > /work/group-api; sync"])
+                .await?;
+            assert!(output.status().success);
+            let next = created
+                .snapshot
+                .checkpoint_with(|options| options.name("next").record_integrity())
+                .await?;
+            assert_ne!(created.checkpoint.id(), next.checkpoint.id());
+            assert_eq!(
+                created.head_update.head.as_deref(),
+                Some(created.checkpoint.id().as_str())
+            );
+            assert_eq!(
+                created.snapshot.head().await?.unwrap().id(),
+                next.checkpoint.id()
+            );
+            assert_eq!(created.snapshot.checkpoints().await?.len(), 2);
+            created.snapshot.clear_head().await?;
+            assert!(created.snapshot.head().await?.is_none());
+            assert!(created.snapshot.spawn_sandbox().await.is_err());
+            created.snapshot.set_head("base").await?;
+            assert_eq!(
+                created.snapshot.head().await?.unwrap().id(),
+                created.checkpoint.id()
+            );
+            Ok((created.snapshot, created.checkpoint, next.checkpoint))
+        }
+        .await;
+        let stopped = source.stop().await;
+        let removed = Sandbox::remove("group-api-source").await;
+        stopped.unwrap();
+        removed.unwrap();
+        let (group, base, next) = captured.unwrap();
+        assert!(
+            group.checkpoint().await.is_err(),
+            "an orphaned group must not capture another source"
+        );
+        for (checkpoint, marker) in [(base, "A"), (next, "B")] {
+            checkpoint.verify().await.unwrap();
+            let (_progress, task) = checkpoint
+                .spawn_sandbox_with_progress_with(|_| {
+                    // Even returning a different builder cannot replace the receiver's
+                    // exact source. Omitting the name exercises generated destinations.
+                    Sandbox::restore("must-not-resolve-this-source")
+                        .cpus(2)
+                        .memory(512u32)
+                        .max_duration(120)
+                })
+                .await
+                .unwrap();
+            let child = task.await.unwrap().unwrap();
+            assert!(!child.name().is_empty());
+            let checked = child.exec("cat", ["/work/group-api"]).await;
+            let stopped = child.stop().await;
+            let removed = Sandbox::remove(child.name()).await;
+            stopped.unwrap();
+            removed.unwrap();
+            let output = checked.unwrap();
+            assert!(output.status().success);
+            assert_eq!(output.stdout().unwrap().trim(), marker);
+            eprintln!(
+                "GROUP_API_GUEST_VERIFIED id={} marker={marker}",
+                checkpoint.id()
+            );
+        }
+        eprintln!(
+            "GROUP_API_LIVE_OK source_deleted=true exact_members=2 head_clear_and_replace=true"
+        );
+    })
+    .await;
 }

@@ -128,7 +128,7 @@ func TestFFIWireShape_SnapshotHeadUpdate(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"group":"work","previous":null,"head":"baseline","reason":"initialized","changed":true}`), &update); err != nil {
 		t.Fatal(err)
 	}
-	if update.Group != "work" || update.Previous != nil || update.Head != "baseline" || update.Reason != "initialized" || !update.Changed {
+	if update.Group != "work" || update.Previous != nil || (update.Head == nil || *update.Head != "baseline") || update.Reason != "initialized" || !update.Changed {
 		t.Fatalf("unexpected head update: %#v", update)
 	}
 }
@@ -193,5 +193,21 @@ func TestLegacySnapshotPaths(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestClearedHeadIsDistinctFromEmptyIdentifier(t *testing.T) {
+	var update ffi.SnapshotHeadUpdate
+	if err := json.Unmarshal([]byte(`{"group":"work","previous":"base","head":null,"reason":"cleared","changed":true}`), &update); err != nil {
+		t.Fatal(err)
+	}
+	result := snapshotHeadUpdateFromInfo(&update)
+	if result.Head != nil || result.Previous == nil || *result.Previous != "base" || !result.Changed {
+		t.Fatalf("lost clear outcome: %#v", result)
+	}
+	clone := cloneSnapshotHeadUpdate(result)
+	*clone.Previous = "different"
+	if *result.Previous != "base" {
+		t.Fatal("clone shares mutable previous head")
 	}
 }

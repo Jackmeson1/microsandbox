@@ -10,12 +10,104 @@ use super::Backend;
 use crate::MicrosandboxResult;
 use crate::sandbox::SandboxConfig;
 use crate::snapshot::{
-    HeadUpdate, LoadOpts, Manifest, SaveOpts, Snapshot, SnapshotArchive, SnapshotConfig,
-    SnapshotHandle, SnapshotReference, SnapshotVerifyReport,
+    Checkpoint as Snapshot, HeadUpdate, LoadOpts, Manifest, SaveOpts, SnapshotArchive,
+    SnapshotConfig, SnapshotHandle, SnapshotReference, SnapshotVerifyReport,
 };
 
 /// Backend implementation for snapshot lifecycle operations.
 pub trait SnapshotBackend: Send + Sync {
+    /// Explicitly set or clear a group's selected head.
+    fn change_head<'a>(
+        &'a self,
+        _group: &'a SnapshotReference,
+        _member: Option<&'a str>,
+    ) -> BoxFuture<'a, MicrosandboxResult<HeadUpdate>> {
+        Box::pin(async {
+            Err(crate::MicrosandboxError::local_only(
+                crate::Operation::SnapshotOps,
+            ))
+        })
+    }
+
+    /// Group-oriented get group; unsupported backends refuse explicitly.
+    fn get_group<'a>(
+        &'a self,
+        _backend: Arc<dyn Backend>,
+        _name: &'a str,
+    ) -> BoxFuture<'a, MicrosandboxResult<crate::Snapshot>> {
+        Box::pin(async {
+            Err(crate::MicrosandboxError::local_only(
+                crate::Operation::SnapshotOps,
+            ))
+        })
+    }
+
+    /// Group-oriented list groups; unsupported backends refuse explicitly.
+    fn list_groups<'a>(
+        &'a self,
+        _backend: Arc<dyn Backend>,
+    ) -> BoxFuture<'a, MicrosandboxResult<Vec<crate::Snapshot>>> {
+        Box::pin(async {
+            Err(crate::MicrosandboxError::local_only(
+                crate::Operation::SnapshotOps,
+            ))
+        })
+    }
+
+    /// Group-oriented read head; unsupported backends refuse explicitly.
+    fn read_head<'a>(
+        &'a self,
+        _backend: Arc<dyn Backend>,
+        _group: &'a SnapshotReference,
+    ) -> BoxFuture<'a, MicrosandboxResult<Option<Snapshot>>> {
+        Box::pin(async {
+            Err(crate::MicrosandboxError::local_only(
+                crate::Operation::SnapshotOps,
+            ))
+        })
+    }
+
+    /// Group-oriented group members; unsupported backends refuse explicitly.
+    fn group_members<'a>(
+        &'a self,
+        _backend: Arc<dyn Backend>,
+        _group: &'a SnapshotReference,
+    ) -> BoxFuture<'a, MicrosandboxResult<Vec<SnapshotHandle>>> {
+        Box::pin(async {
+            Err(crate::MicrosandboxError::local_only(
+                crate::Operation::SnapshotOps,
+            ))
+        })
+    }
+
+    /// Group-oriented get checkpoint; unsupported backends refuse explicitly.
+    fn get_checkpoint<'a>(
+        &'a self,
+        _backend: Arc<dyn Backend>,
+        _group: &'a SnapshotReference,
+        _member: &'a str,
+    ) -> BoxFuture<'a, MicrosandboxResult<Snapshot>> {
+        Box::pin(async {
+            Err(crate::MicrosandboxError::local_only(
+                crate::Operation::SnapshotOps,
+            ))
+        })
+    }
+
+    /// Group-oriented create group; unsupported backends refuse explicitly.
+    fn create_group<'a>(
+        &'a self,
+        _backend: Arc<dyn Backend>,
+        _config: SnapshotConfig,
+        _source_id: crate::sandbox::SandboxId,
+    ) -> BoxFuture<'a, MicrosandboxResult<Snapshot>> {
+        Box::pin(async {
+            Err(crate::MicrosandboxError::local_only(
+                crate::Operation::SnapshotOps,
+            ))
+        })
+    }
+
     /// Append to an existing source-bound group. Group-only, source-only, or matching
     /// combined selectors are accepted; no missing group is created implicitly.
     fn checkpoint<'a>(

@@ -50,7 +50,7 @@ pub struct LoadOpts {
     pub set_head: bool,
 }
 
-/// Options for [`super::Snapshot::save`].
+/// Options for [`super::Checkpoint::save`].
 #[derive(Debug, Clone, Default)]
 pub struct SaveOpts {
     /// Walk parent chain and include each ancestor in the archive.
@@ -76,8 +76,8 @@ pub struct HeadUpdate {
     pub group: String,
     /// Previously selected stable snapshot ID, if the group had a head.
     pub previous: Option<String>,
-    /// Stable snapshot ID selected after the operation.
-    pub head: String,
+    /// Stable snapshot ID selected after the operation, or none for a cleared head.
+    pub head: Option<String>,
     /// Explanation for advancing or retaining the selected head.
     pub reason: HeadUpdateReason,
     /// Whether the selected head changed.
@@ -102,4 +102,44 @@ pub enum HeadUpdateReason {
     UnknownAncestry,
     /// Supplied archive heads have multiple tips that known ancestry cannot order.
     AmbiguousCandidates,
+    /// The caller explicitly cleared the selected head.
+    Cleared,
+    /// Removing the head selected its surviving recorded same-group parent.
+    ParentSelected,
+}
+
+//--------------------------------------------------------------------------------------------------
+// Methods
+//--------------------------------------------------------------------------------------------------
+
+impl SaveOpts {
+    /// Include the recorded parent chain.
+    pub fn with_parents(mut self) -> Self {
+        self.with_parents = true;
+        self
+    }
+
+    /// Include the base image so the exported checkpoint can boot offline.
+    pub fn with_image(mut self) -> Self {
+        self.with_image = true;
+        self
+    }
+
+    /// Write an uncompressed tar archive.
+    pub fn plain_tar(mut self) -> Self {
+        self.plain_tar = true;
+        self
+    }
+
+    /// Omit payload already supplied by an exact base.
+    pub fn since(mut self, base: impl Into<String>) -> Self {
+        self.since = Some(base.into());
+        self
+    }
+
+    /// Export only the newest root-disk layers, retaining explicit dependencies.
+    pub fn last_layers(mut self, count: usize) -> Self {
+        self.last_layers = Some(count);
+        self
+    }
 }

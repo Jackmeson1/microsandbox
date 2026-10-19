@@ -1,0 +1,279 @@
+//! Source-bound group histories and operation-owned capture results for Ruby.
+
+use magnus::{
+    Error, RArray, RHash, RModule, Ruby, Value, function, method, prelude::*, scan_args::scan_args,
+    typed_data,
+};
+use microsandbox_core::{
+    CheckpointCaptureResult, Snapshot, SnapshotCaptureOptions, SnapshotCreateResult,
+};
+
+use super::{
+    RubySandbox, RubySnapshot, RubySnapshotHandle, argument_error, current_ruby, keyword,
+    reject_unknown_keywords, run, string_map, symbol,
+};
+
+//--------------------------------------------------------------------------------------------------
+// Types
+//--------------------------------------------------------------------------------------------------
+
+#[magnus::wrap(class = "Microsandbox::Snapshot", free_immediately, size)]
+pub(super) struct RubyGroup {
+    inner: Snapshot,
+}
+
+#[magnus::wrap(class = "Microsandbox::SnapshotCreateResult", free_immediately, size)]
+pub(super) struct RubySnapshotCreateResult {
+    pub(super) inner: SnapshotCreateResult,
+}
+
+#[magnus::wrap(
+    class = "Microsandbox::CheckpointCaptureResult",
+    free_immediately,
+    size
+)]
+struct RubyCheckpointCaptureResult {
+    inner: CheckpointCaptureResult,
+}
+
+//--------------------------------------------------------------------------------------------------
+// Methods
+//--------------------------------------------------------------------------------------------------
+
+impl RubyGroup {
+    fn get(ruby: &Ruby, name: String) -> Result<Self, Error> {
+        Ok(Self {
+            inner: run(ruby, async move { Snapshot::get(name).await })?,
+        })
+    }
+
+    fn list(ruby: &Ruby) -> Result<RArray, Error> {
+        let groups = run(ruby, Snapshot::list())?;
+        let result = ruby.ary_new();
+        for inner in groups {
+            result.push(Self { inner })?;
+        }
+        Ok(result)
+    }
+
+    fn name(&self) -> String {
+        self.inner.name().into()
+    }
+
+    fn head(ruby: &Ruby, this: typed_data::Obj<Self>) -> Result<Option<RubySnapshot>, Error> {
+        let group = this.inner.clone();
+        Ok(run(ruby, async move { group.head().await })?.map(|inner| RubySnapshot { inner }))
+    }
+
+    fn checkpoints(ruby: &Ruby, this: typed_data::Obj<Self>) -> Result<RArray, Error> {
+        let group = this.inner.clone();
+        let members = run(ruby, async move { group.checkpoints().await })?;
+        let result = ruby.ary_new();
+        for inner in members {
+            result.push(RubySnapshotHandle { inner })?;
+        }
+        Ok(result)
+    }
+
+    fn get_checkpoint(
+        ruby: &Ruby,
+        this: typed_data::Obj<Self>,
+        member: String,
+    ) -> Result<RubySnapshot, Error> {
+        let group = this.inner.clone();
+        Ok(RubySnapshot {
+            inner: run(ruby, async move { group.get_checkpoint(member).await })?,
+        })
+    }
+
+    fn set_head(ruby: &Ruby, this: typed_data::Obj<Self>, member: String) -> Result<RHash, Error> {
+        let group = this.inner.clone();
+        head_update(&run(ruby, async move { group.set_head(member).await })?)
+    }
+
+    fn clear_head(ruby: &Ruby, this: typed_data::Obj<Self>) -> Result<RHash, Error> {
+        let group = this.inner.clone();
+        head_update(&run(ruby, async move { group.clear_head().await })?)
+    }
+
+    fn checkpoint(
+        ruby: &Ruby,
+        this: typed_data::Obj<Self>,
+        args: &[Value],
+    ) -> Result<RubyCheckpointCaptureResult, Error> {
+        let parsed = scan_args::<(), (), (), (), RHash, ()>(args)?;
+        let options = capture_options(ruby, parsed.keywords, false)?;
+        let group = this.inner.clone();
+        Ok(RubyCheckpointCaptureResult {
+            inner: run(
+                ruby,
+                async move { group.checkpoint_with(|_| options).await },
+            )?,
+        })
+    }
+}
+
+impl RubySnapshot {
+    pub(super) fn id(&self) -> String {
+        self.inner.id().to_string()
+    }
+}
+
+impl RubySnapshotHandle {
+    pub(super) fn id(&self) -> String {
+        self.inner.id().to_string()
+    }
+}
+
+impl RubySandbox {
+    pub(super) fn snapshot(
+        ruby: &Ruby,
+        this: typed_data::Obj<Self>,
+        args: &[Value],
+    ) -> Result<RubySnapshotCreateResult, Error> {
+        let parsed = scan_args::<(String,), (), (), (), RHash, ()>(args)?;
+        let (name,) = parsed.required;
+        let options = capture_options(ruby, parsed.keywords, true)?;
+        let sandbox = this.inner_clone()?;
+        Ok(RubySnapshotCreateResult {
+            inner: run(ruby, async move {
+                sandbox.snapshot_with(&name, |_| options).await
+            })?,
+        })
+    }
+}
+
+impl RubySnapshotCreateResult {
+    fn snapshot(&self) -> RubyGroup {
+        RubyGroup {
+            inner: self.inner.snapshot.clone(),
+        }
+    }
+    fn checkpoint(&self) -> RubySnapshot {
+        RubySnapshot {
+            inner: self.inner.checkpoint.clone(),
+        }
+    }
+    fn head_update(&self) -> Result<RHash, Error> {
+        head_update(&self.inner.head_update)
+    }
+}
+
+impl RubyCheckpointCaptureResult {
+    fn checkpoint(&self) -> RubySnapshot {
+        RubySnapshot {
+            inner: self.inner.checkpoint.clone(),
+        }
+    }
+    fn head_update(&self) -> Result<RHash, Error> {
+        head_update(&self.inner.head_update)
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Functions
+//--------------------------------------------------------------------------------------------------
+
+pub(super) fn capture_options(
+    ruby: &Ruby,
+    keywords: RHash,
+    initial: bool,
+) -> Result<SnapshotCaptureOptions, Error> {
+    let allowed = if initial {
+        &[
+            "initial_checkpoint",
+            "dest_dir",
+            "labels",
+            "full",
+            "record_integrity",
+            "guest_flush",
+        ][..]
+    } else {
+        &["name", "labels", "full", "record_integrity", "guest_flush"][..]
+    };
+    reject_unknown_keywords(ruby, keywords, allowed)?;
+    let mut options = SnapshotCaptureOptions::default();
+    if let Some(name) = keyword::<String>(
+        keywords,
+        if initial {
+            "initial_checkpoint"
+        } else {
+            "name"
+        },
+    )? {
+        options = options.name(name);
+    }
+    if let Some(dest) = keyword::<String>(keywords, "dest_dir")? {
+        options = options.dest_dir(dest);
+    }
+    if keyword::<bool>(keywords, "full")?.unwrap_or(false) {
+        options = options.full();
+    }
+    if keyword::<bool>(keywords, "record_integrity")?.unwrap_or(false) {
+        options = options.record_integrity();
+    }
+    if let Some(policy) = keyword::<String>(keywords, "guest_flush")? {
+        options = options.guest_flush(match policy.as_str() {
+            "auto" => microsandbox_core::snapshot::GuestFlush::Auto,
+            "required" => microsandbox_core::snapshot::GuestFlush::Required,
+            "skip" => microsandbox_core::snapshot::GuestFlush::Skip,
+            _ => {
+                return Err(argument_error(
+                    ruby,
+                    "guest_flush must be auto, required, or skip",
+                ));
+            }
+        });
+    }
+    if let Some(labels) = keywords.get(symbol("labels")) {
+        for (key, value) in string_map(labels, "labels")? {
+            options = options.label(key, value);
+        }
+    }
+    Ok(options)
+}
+
+fn head_update(update: &microsandbox_core::HeadUpdate) -> Result<RHash, Error> {
+    let hash = current_ruby().hash_new();
+    hash.aset("group", update.group.as_str())?;
+    hash.aset("head", update.head.as_deref())?;
+    hash.aset("previous", update.previous.as_deref())?;
+    hash.aset("changed", update.changed)?;
+    let reason = serde_json::to_value(update.reason)
+        .map_err(|error| argument_error(&current_ruby(), error.to_string()))?;
+    hash.aset("reason", reason.as_str())?;
+    Ok(hash)
+}
+
+pub(super) fn register(ruby: &Ruby, module: RModule) -> Result<(), Error> {
+    let group = module.define_class("Snapshot", ruby.class_object())?;
+    group.define_singleton_method("get", function!(RubyGroup::get, 1))?;
+    group.define_singleton_method("list", function!(RubyGroup::list, 0))?;
+    group.define_method("name", method!(RubyGroup::name, 0))?;
+    group.define_method("head", method!(RubyGroup::head, 0))?;
+    group.define_method("checkpoints", method!(RubyGroup::checkpoints, 0))?;
+    group.define_method("get_checkpoint", method!(RubyGroup::get_checkpoint, 1))?;
+    group.define_method("set_head", method!(RubyGroup::set_head, 1))?;
+    group.define_method("clear_head", method!(RubyGroup::clear_head, 0))?;
+    group.define_method("checkpoint", method!(RubyGroup::checkpoint, -1))?;
+    let initial = module.define_class("SnapshotCreateResult", ruby.class_object())?;
+    initial.define_method("snapshot", method!(RubySnapshotCreateResult::snapshot, 0))?;
+    initial.define_method(
+        "checkpoint",
+        method!(RubySnapshotCreateResult::checkpoint, 0),
+    )?;
+    initial.define_method(
+        "head_update",
+        method!(RubySnapshotCreateResult::head_update, 0),
+    )?;
+    let captured = module.define_class("CheckpointCaptureResult", ruby.class_object())?;
+    captured.define_method(
+        "checkpoint",
+        method!(RubyCheckpointCaptureResult::checkpoint, 0),
+    )?;
+    captured.define_method(
+        "head_update",
+        method!(RubyCheckpointCaptureResult::head_update, 0),
+    )?;
+    Ok(())
+}

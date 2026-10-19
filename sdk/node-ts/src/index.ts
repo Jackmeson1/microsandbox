@@ -113,7 +113,9 @@ export {
 } from "./volume-fs.js";
 
 // Snapshots
-export { Snapshot, SnapshotArchive } from "./snapshot.js";
+export { Snapshot as Checkpoint, SnapshotSaveOptions, SnapshotArchive } from "./snapshot.js";
+export { Snapshot, SnapshotCaptureOptions } from "./snapshot-group.js";
+export type { SnapshotCreateResult, CheckpointCaptureResult } from "./snapshot-group.js";
 export type { DiskCompactionOptions, DiskCompactionDiskResult, DiskCompactionResult } from "./compact.js";
 import { Snapshot as _Snapshot, type SnapshotBuilder as _SnapBT } from "./snapshot.js";
 /**
