@@ -1,6 +1,6 @@
-//! Ownership of an unpublished group's first capture, including cancellation cleanup.
+//! Capture destination identity and ownership of unpublished groups, including cancellation cleanup.
 
-use std::fs;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -26,6 +26,13 @@ pub(crate) struct CaptureReservation {
     inner: Arc<Reservation>,
 }
 
+/// Non-locking identity pin for an existing capture destination. Holding its file
+/// prevents inode reuse; ordinary generation exchanges preserve this same lock inode.
+pub(in crate::backend::local::snapshot) struct CaptureTarget {
+    lock: File,
+    source: Source,
+}
+
 struct Reservation {
     directory: PathBuf,
     token: String,
@@ -35,6 +42,59 @@ struct Reservation {
 //--------------------------------------------------------------------------------------------------
 // Methods
 //--------------------------------------------------------------------------------------------------
+
+impl CaptureTarget {
+    /// Capture against the source binding validated in this admission interval.
+    pub(in crate::backend::local::snapshot) async fn admit(
+        directory: &Path,
+        source: Source,
+    ) -> MicrosandboxResult<Self> {
+        let writer = WriterLease::acquire(directory).await?;
+        let directory = directory.to_path_buf();
+        super::blocking(move || {
+            let _writer = writer;
+            let group_lock = super::lock_group(&directory)?;
+            super::require_source(&directory, &source)?;
+            // Open separately rather than clone the locked descriptor: a clone would
+            // keep its OS lock and block imports throughout guest capture.
+            let lock = open_identity_file(&directory)?;
+            if super::super::file_identity::key(&lock)?
+                != super::super::file_identity::key(&group_lock)?
+            {
+                return Err(super::integrity(
+                    "capture destination changed during admission".into(),
+                ));
+            }
+            Ok(Self { lock, source })
+        })
+        .await
+    }
+
+    /// The publisher already owns writer admission. Recheck before preparing any
+    /// catalog publication intent, including recreation bound to the same sandbox.
+    pub(in crate::backend::local::snapshot) async fn validate(
+        self,
+        directory: &Path,
+    ) -> MicrosandboxResult<()> {
+        let directory = directory.to_path_buf();
+        super::blocking(move || {
+            // Do not create a missing lock or recover a replacement history before
+            // establishing that this is the destination admitted before capture.
+            let current = open_identity_file(&directory)?;
+            if super::super::file_identity::key(&self.lock)?
+                != super::super::file_identity::key(&current)?
+            {
+                return Err(super::integrity(format!(
+                    "snapshot group '{}' was removed or replaced during capture; checkpoint was not published",
+                    directory.display()
+                )));
+            }
+            process_lock::lock_exclusive(&current)?;
+            super::read_group(&directory)?;
+            super::require_source(&directory, &self.source)
+        }).await
+    }
+}
 
 impl CaptureReservation {
     pub(crate) fn directory(&self) -> &Path {
@@ -63,6 +123,23 @@ impl Drop for Reservation {
 //--------------------------------------------------------------------------------------------------
 // Functions
 //--------------------------------------------------------------------------------------------------
+
+fn open_identity_file(directory: &Path) -> std::io::Result<File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(directory.join(".group.lock"))?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other(
+            "capture destination lock is not a regular file",
+        ));
+    }
+    Ok(file)
+}
 
 pub(super) fn claim(
     root: &Path,
@@ -185,6 +262,108 @@ mod tests {
         Source::capture(local.db().await.unwrap().write(), 1, "source")
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn capture_target_rejects_group_recreation_even_with_the_same_source() {
+        for replacement in ["same", "other", "unbound", "missing", "missing-lock"] {
+            let root = tempfile::tempdir().unwrap();
+            let source = source(&root.path().join("home")).await;
+            let directory = super::super::ensure_capture(root.path(), "history", source.clone())
+                .await
+                .unwrap();
+            let target = CaptureTarget::admit(&directory, source.clone())
+                .await
+                .unwrap();
+            // The retained identity must not own the advisory lock or writer admission.
+            assert!(WriterLease::try_acquire(&directory).unwrap().is_some());
+            fs::remove_dir_all(&directory).unwrap();
+            match replacement {
+                "same" => {
+                    super::super::ensure_capture(root.path(), "history", source)
+                        .await
+                        .unwrap();
+                }
+                "other" => {
+                    let other = self::source(&root.path().join("other-home")).await;
+                    super::super::ensure_capture(root.path(), "history", other)
+                        .await
+                        .unwrap();
+                }
+                "unbound" | "missing-lock" => {
+                    super::super::ensure(root.path(), Some("history"))
+                        .await
+                        .unwrap();
+                    if replacement == "missing-lock" {
+                        fs::remove_file(directory.join(".group.lock")).unwrap();
+                    }
+                }
+                _ => {}
+            }
+            let _writer = if directory.exists() {
+                WriterLease::try_acquire(&directory).unwrap()
+            } else {
+                None
+            };
+            assert!(target.validate(&directory).await.is_err(), "{replacement}");
+            if replacement == "missing-lock" {
+                assert!(!directory.join(".group.lock").exists());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn capture_target_rechecks_the_binding_without_requiring_a_writable_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let original = source(&root.path().join("home")).await;
+        let other = source(&root.path().join("other-home")).await;
+        let directory = super::super::ensure_capture(root.path(), "history", original.clone())
+            .await
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                directory.join(".group.lock"),
+                fs::Permissions::from_mode(0o400),
+            )
+            .unwrap();
+        }
+        let target = CaptureTarget::admit(&directory, original).await.unwrap();
+        let _writer = WriterLease::acquire(&directory).await.unwrap();
+        super::super::write_json(
+            &directory,
+            super::super::super::source::SOURCE_FILENAME,
+            &other,
+        )
+        .unwrap();
+        let error = target.validate(&directory).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("bound to another sandbox instance"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn capture_target_survives_generation_exchange_without_blocking_publication() {
+        let root = tempfile::tempdir().unwrap();
+        let source = source(&root.path().join("home")).await;
+        let directory = super::super::ensure_capture(root.path(), "history", source.clone())
+            .await
+            .unwrap();
+        let target = CaptureTarget::admit(&directory, source).await.unwrap();
+        let incoming = stage(root.path(), &[descriptor(1, None)]);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            super::super::publish(&directory, incoming.path(), &BTreeMap::new(), &id(1), false),
+        )
+        .await
+        .expect("identity pin blocked group publication")
+        .unwrap();
+        let _writer = WriterLease::acquire(&directory).await.unwrap();
+        target.validate(&directory).await.unwrap();
     }
 
     #[tokio::test]

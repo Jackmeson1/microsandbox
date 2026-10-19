@@ -7,6 +7,7 @@ mod create;
 pub(crate) mod deletion;
 mod dispatch;
 pub mod downgrade;
+mod file_identity;
 mod group;
 mod lease;
 pub(crate) mod lineage;
