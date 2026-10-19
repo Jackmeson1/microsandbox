@@ -12,6 +12,8 @@ Export methods `save` and `save_to` accept the keyword `compatibility` (`"curren
 
 `Snapshot` is a named group; `Checkpoint` is an immutable artifact. Create a new group through a sandbox or sandbox handle, then capture later checkpoints through that group. The initial call refuses an existing group; an append uses its saved source identity. Imported or orphaned groups cannot capture, and recreating a sandbox with the same name does not rebind them.
 
+<Accordion title="Example">
+
 ```ruby
 source = Microsandbox::Sandbox.get("worker")
 created = source.snapshot("history", initial_checkpoint: "ready", record_integrity: true)
@@ -25,6 +27,8 @@ exact.save_to("ready.msb")
 reopened = Microsandbox::Snapshot.get("history")
 ```
 
+</Accordion>
+
 The initial result is `SnapshotCreateResult` with the group, exact first checkpoint, and operation-owned head outcome. A later capture returns `CheckpointCaptureResult` with its exact checkpoint and head outcome. Read the checkpoint from that result when you need the artifact created by your call; another caller may already have moved group head. An omitted member name is generated. Capture is disk-only by default; full capture and integrity recording are explicit options.
 
 `head` returns no checkpoint after explicit clearing. Listing members and exact member lookup still work. Selecting or clearing the current value is a reported no-op. New groups are bound to one sandbox instance, while one sandbox may have several groups. Existing group destinations cannot be changed by capture options.
@@ -32,6 +36,8 @@ The initial result is `SnapshotCreateResult` with the group, exact first checkpo
 Artifact helpers formerly owned by `Snapshot` are now accessed through `Checkpoint`. Existing `SnapshotHandle`, builder, archive, ID, and verification type names remain; this public object rename does not rewrite persisted artifact IDs. Retained artifact helpers below also cover supported cloud workflows, where local group operations return unsupported.
 
 ## Spawn a sandbox
+
+<Accordion title="Example">
 
 ```ruby
 child = group.spawn_sandbox(name: "worker", cpus: 2, memory: 512)
@@ -41,6 +47,8 @@ session = checkpoint.spawn_sandbox_with_progress(name: "observed-worker")
 session.progress.each { |event| puts event.inspect }
 child = session.result
 ```
+
+</Accordion>
 
 The group selects its head once; an exact checkpoint stays fixed even if the group head changes. A headless group refuses spawning, while its exact members remain usable. Imported or orphaned groups can spawn; they cannot capture a new checkpoint. The receiver retains its owning backend even when the default backend changes.
 
@@ -64,18 +72,26 @@ A capture can publish successfully and then raise `SnapshotSourceRecoveryError` 
 
 ## Save an exact checkpoint
 
+<Accordion title="Example">
+
 ```ruby
 checkpoint.save("ready.msb")
 checkpoint.save("portable.msb", with_parents: true, with_image: true)
 ```
 
+</Accordion>
+
 The receiver selects one immutable checkpoint. Use the group’s optional head or exact-member lookup first; saving a group’s whole history is not implied. The no-options call writes a compressed `.msb` archive. `save_to` retains its explicit options form for compatibility. See the archive compatibility option below before sending output to an older reader.
 
 ## Group archive import
 
+<Accordion title="Example">
+
 ```ruby
 Microsandbox::Snapshot.load(group, files, dest: "store", base: "base.msb", set_head: true)
 ```
+
+</Accordion>
 
 `files` is an array of host paths. The keywords are optional. Returns `SnapshotImportResult` with `snapshot`, `checkpoints`, `added`, `reused`, `head_update`, `operation_id`, and `warnings` readers.
 
@@ -105,10 +121,14 @@ If publication commits but catalog cleanup fails, the call raises or returns `Sn
 
 ## Exact checkpoint removal
 
+<Accordion title="Example">
+
 ```ruby
 removed = checkpoint.remove
 # To allow indexed dependents, use checkpoint.remove(force: true) instead.
 ```
+
+</Accordion>
 
 Returns `CheckpointRemoveResult` with `id`, optional `head_update`, and `warnings`. It identifies this exact retained checkpoint and this operation's head decision. Removing head selects its surviving same-group parent or clears selection; other removals leave head unchanged. Later head edits do not change the result, and force never bypasses active readers.
 
@@ -586,12 +606,16 @@ Export through the backend retained by this handle. Archive export is local-only
 
 ## Checkpoint verification
 
+<Accordion title="Example">
+
 ```ruby
-checkpoint = Microsandbox::Checkpoint.get("templates").get_checkpoint("ready")
+checkpoint = Microsandbox::Snapshot.get("templates").get_checkpoint("ready")
 report = checkpoint.verify
 puts report["coverage"]["kind"]
 ```
 
+</Accordion>
+
 `verify` returns a hash with `digest`, `path`, `upper`, `checkpoint`, and `coverage`. Coverage is `complete` or `incomplete`; incomplete coverage includes an `unrecorded` array of required payload paths without checksums, including ancestor layers and owned disks. The upper/head checksum or checkpoint-root result alone does not establish complete coverage. Corruption raises an error.
 
-`Microsandbox::Checkpoint.get("worker").verify` checks the whole group's pinned membership, including headless groups. Its hash contains `group`, `state`, `checkpoints`, and `payload_hashes`. States are `complete`, `incomplete`, `invalid`, and `empty` (zero checked). Each member retains its `id`, `path`, `state`, optional existing verification `report`, and specific `findings`. Shared physical payloads are hashed once per algorithm; independent copies are checked separately. Missing checksums remain incomplete. Other verification failures raise `SnapshotVerificationError` with the entire hash in `error.report`; failures before meaningful selection retain their ordinary exception.
+`Microsandbox::Snapshot.get("worker").verify` checks the whole group's pinned membership, including headless groups. Its hash contains `group`, `state`, `checkpoints`, and `payload_hashes`. States are `complete`, `incomplete`, `invalid`, and `empty` (zero checked). Each member retains its `id`, `path`, `state`, optional existing verification `report`, and specific `findings`. Shared physical payloads are hashed once per algorithm; independent copies are checked separately. Missing checksums remain incomplete. Other verification failures raise `SnapshotVerificationError` with the entire hash in `error.report`; failures before meaningful selection retain their ordinary exception.

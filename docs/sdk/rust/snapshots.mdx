@@ -15,6 +15,8 @@ Use snapshot objects or references on cloud. Local operations also accept a grou
 
 `Snapshot` is a named group; `Checkpoint` is an immutable artifact. Create a new group through a sandbox or sandbox handle, then capture later checkpoints through that group. The initial call refuses an existing group; an append uses its saved source identity. Imported or orphaned groups cannot capture, and recreating a sandbox with the same name does not rebind them.
 
+<Accordion title="Example">
+
 ```rust
 use microsandbox::{Sandbox, Snapshot};
 
@@ -32,6 +34,8 @@ let child = exact.spawn_sandbox_with(|destination| destination.name("child")).aw
 let reopened = Snapshot::get("history").await?;
 ```
 
+</Accordion>
+
 The initial result is `SnapshotCreateResult` with the group, exact first checkpoint, and operation-owned head outcome. A later capture returns `CheckpointCaptureResult` with its exact checkpoint and head outcome. Read the checkpoint from that result when you need the artifact created by your call; another caller may already have moved group head. An omitted member name is generated. Capture is disk-only by default; full capture and integrity recording are explicit options.
 
 `head` returns no checkpoint after explicit clearing. Listing members and exact member lookup still work. Selecting or clearing the current value is a reported no-op. New groups are bound to one sandbox instance, while one sandbox may have several groups. Existing group destinations cannot be changed by capture options.
@@ -42,19 +46,27 @@ Group spawn selects head once and retains that member while preparing the destin
 
 ## Save an exact checkpoint
 
+<Accordion title="Example">
+
 ```rust
 checkpoint.save("ready.msb").await?;
 checkpoint.save_with("portable.msb", |save| save.with_parents().with_image()).await?;
 ```
 
+</Accordion>
+
 The receiver selects one immutable checkpoint. Use the group’s optional head or exact-member lookup first; saving a group’s whole history is not implied. The no-options call writes a compressed `.msb` archive. `save_to` retains its explicit options form for compatibility. See the archive compatibility option below before sending output to an older reader.
 
 ## Group archive import
+
+<Accordion title="Example">
 
 ```rust
 Snapshot::load(group, files).await?
 Snapshot::load_with(group, files, |load| load.dest_dir("store").base("base.msb").set_head()).await?
 ```
+
+</Accordion>
 
 `group` is a name and `files` is `&[PathBuf]`. The callback receives `SnapshotImportOptions`, with destination/base/head controls and no second group selector. Legacy artifact-loading methods retain `LoadOpts` and its optional `group` field. Returns `SnapshotImportResult`: `snapshot`, `checkpoints`, `added`, `reused`, `head_update`, `operation_id`, and `warnings`.
 
@@ -92,10 +104,14 @@ If publication commits but catalog cleanup fails, the call raises or returns `Mi
 
 Migration: static Rust `Snapshot::remove(reference, force)` becomes `Checkpoint::remove_by_reference(reference, force)`. Use the instance method below for exact identity and a removal result. Legacy `SnapshotHandle::remove(force)` retains its unit-returning contract.
 
+<Accordion title="Example">
+
 ```rust
 let removed = checkpoint.remove().await?;
 let forced = checkpoint.remove_with(|options| options.force()).await?;
 ```
+
+</Accordion>
 
 These are alternative calls, not successive removals of the same checkpoint. The instance method removes the retained checkpoint identity, refuses a replacement at the same address, and returns `CheckpointRemoveResult` with `id`, optional `head_update`, and `warnings`. The head outcome belongs to this operation; later head edits do not change it. Removing the head selects its surviving same-group parent or clears selection. Removing another member reports an unchanged head. Standalone artifacts have no head outcome.
 
@@ -788,6 +804,8 @@ and integrity metadata. The source snapshot is unchanged. Artifact copies are
 currently local-only; other backends return `MicrosandboxError::Unsupported`
 when `save()` is awaited.
 
+<Accordion title="Example">
+
 ```rust
 use std::collections::BTreeMap;
 
@@ -798,6 +816,8 @@ let copied_manifest = snapshot
     .save()
     .await?;
 ```
+
+</Accordion>
 
 #### <span className="msb-recv">snap.</span><span className="msb-hn">verify()</span>
 

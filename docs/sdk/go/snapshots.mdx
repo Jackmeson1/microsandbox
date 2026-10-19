@@ -15,6 +15,8 @@ Use snapshot objects or references on cloud. Local operations also accept a grou
 
 `Snapshot.Get` returns a named `SnapshotGroup`; `Checkpoint.Open` returns an immutable `SnapshotArtifact`. Create a new group through a sandbox or sandbox handle, then capture later checkpoints through that group. The initial call refuses an existing group; an append uses its saved source identity. Imported or orphaned groups cannot capture, and recreating a sandbox with the same name does not rebind them.
 
+<Accordion title="Example">
+
 ```go
 source, err := m.GetSandbox(ctx, "worker")
 if err != nil { return err }
@@ -36,6 +38,8 @@ reopened, err := m.Snapshot.Get(ctx, "history")
 if err != nil { return err }
 ```
 
+</Accordion>
+
 The initial result is `SnapshotCreateResult` with the group, exact first checkpoint, and operation-owned head outcome. A later capture returns `CheckpointCaptureResult` with its exact checkpoint and head outcome. Read the checkpoint from that result when you need the artifact created by your call; another caller may already have moved group head. An omitted member name is generated. Capture is disk-only by default; full capture and integrity recording are explicit options.
 
 `head` returns no checkpoint after explicit clearing. Listing members and exact member lookup still work. Selecting or clearing the current value is a reported no-op. New groups are bound to one sandbox instance, while one sandbox may have several groups. Existing group destinations cannot be changed by capture options.
@@ -46,19 +50,27 @@ Group spawn selects head once and retains that member while preparing the destin
 
 ## Save an exact checkpoint
 
+<Accordion title="Example">
+
 ```go
 if err := checkpoint.Save(ctx, "ready.msb"); err != nil { return err }
 if err := checkpoint.Save(ctx, "portable.msb", m.SnapshotSaveOptions{WithParents: true, WithImage: true}); err != nil { return err }
 ```
 
+</Accordion>
+
 The receiver selects one immutable checkpoint. Use the group’s optional head or exact-member lookup first; saving a group’s whole history is not implied. The no-options call writes a compressed `.msb` archive. `SaveTo` retains its explicit options form for compatibility. See the archive compatibility option below before sending output to an older reader.
 
 ## Group archive import
+
+<Accordion title="Example">
 
 ```go
 Snapshot.Load(ctx, group, files)
 Snapshot.Load(ctx, group, files, SnapshotImportOptions{Dest: "store", Base: "base.msb", SetHead: true})
 ```
+
+</Accordion>
 
 `files` is `[]string`; at most one `SnapshotImportOptions` value is accepted. It contains `Dest`, `Base`, and `SetHead`; the group is selected only by the positional argument. Legacy `Checkpoint.LoadWithOptions` and `Checkpoint.LoadMany` retain `SnapshotLoadOptions`, including its `Group` field. Returns `(*SnapshotImportResult, error)` with `Snapshot`, `Checkpoints`, `Added`, `Reused`, `HeadUpdate`, `OperationID`, and `Warnings`.
 
@@ -94,10 +106,14 @@ If publication commits but catalog cleanup fails, the call raises or returns `Sn
 
 ## Exact checkpoint removal
 
+<Accordion title="Example">
+
 ```go
 removed, err := checkpoint.Remove(ctx)
 forced, err := checkpoint.Remove(ctx, m.CheckpointRemoveOptions{Force: true})
 ```
+
+</Accordion>
 
 These are alternative calls, not successive removals of the same checkpoint. The instance method removes the retained checkpoint identity, refuses a replacement at the same address, and returns `CheckpointRemoveResult` with `ID`, optional `HeadUpdate`, and `Warnings`. The head outcome belongs to this operation; later head edits do not change it. Removing the head selects its surviving same-group parent or clears selection. Removing another member reports an unchanged head. Standalone artifacts have no head outcome.
 
@@ -614,11 +630,15 @@ func (s *SnapshotArtifact) SaveTo(
 Bundle this snapshot through the active backend while preserving its typed
 identifier-or-path reference. Cloud returns `ErrUnsupportedOperation`.
 
+<Accordion title="Example">
+
 ```go
 err := snap.SaveTo(ctx, "/tmp/snap.tar.zst", m.SnapshotSaveOptions{
     WithImage: true,
 })
 ```
+
+</Accordion>
 
 #### <span className="msb-recv">s.</span><span className="msb-hn">CopyTo()</span>
 
@@ -630,12 +650,16 @@ Create a new archive from this snapshot's disk data while replacing its labels
 and integrity metadata. The source snapshot is unchanged. Cloud returns
 `ErrUnsupportedOperation` when `Save` is called.
 
+<Accordion title="Example">
+
 ```go
 err := snap.CopyTo("/tmp/snap-copy.tar.zst").
     Labels(map[string]string{"environment": "test"}).
     RecordIntegrity(true).
     Save(ctx)
 ```
+
+</Accordion>
 
 #### <span className="msb-recv">s.</span><span className="msb-hn">ID()</span>
 

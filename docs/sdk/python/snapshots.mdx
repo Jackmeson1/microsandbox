@@ -17,6 +17,8 @@ Export methods `save` and `save_to` accept the keyword `compatibility` (`"curren
 
 `Snapshot` is a named group; `Checkpoint` is an immutable artifact. Create a new group through a sandbox or sandbox handle, then capture later checkpoints through that group. The initial call refuses an existing group; an append uses its saved source identity. Imported or orphaned groups cannot capture, and recreating a sandbox with the same name does not rebind them.
 
+<Accordion title="Example">
+
 ```python
 from microsandbox import Sandbox, Snapshot
 
@@ -32,6 +34,8 @@ child = await exact.spawn_sandbox(name="child")
 reopened = await Snapshot.get("history")
 ```
 
+</Accordion>
+
 The initial result is `SnapshotCreateResult` with the group, exact first checkpoint, and operation-owned head outcome. A later capture returns `CheckpointCaptureResult` with its exact checkpoint and head outcome. Read the checkpoint from that result when you need the artifact created by your call; another caller may already have moved group head. An omitted member name is generated. Capture is disk-only by default; full capture and integrity recording are explicit options.
 
 `head` returns no checkpoint after explicit clearing. Listing members and exact member lookup still work. Selecting or clearing the current value is a reported no-op. New groups are bound to one sandbox instance, while one sandbox may have several groups. Existing group destinations cannot be changed by capture options.
@@ -42,18 +46,26 @@ Group spawn selects head once and retains that member while preparing the destin
 
 ## Save an exact checkpoint
 
+<Accordion title="Example">
+
 ```python
 await checkpoint.save("ready.msb")
 await checkpoint.save("portable.msb", with_parents=True, with_image=True)
 ```
 
+</Accordion>
+
 The receiver selects one immutable checkpoint. Use the group’s optional head or exact-member lookup first; saving a group’s whole history is not implied. The no-options call writes a compressed `.msb` archive. `save_to` retains its explicit options form for compatibility. See the archive compatibility option below before sending output to an older reader.
 
 ## Group archive import
 
+<Accordion title="Example">
+
 ```python
 await Snapshot.load(group, files, dest="store", base="base.msb", set_head=True)
 ```
+
+</Accordion>
 
 `files` is a list of host paths. The keyword options are optional. Returns `SnapshotImportResult` with `snapshot`, `checkpoints`, `added`, `reused`, `head_update`, `operation_id`, and `warnings` properties.
 
@@ -91,10 +103,14 @@ If publication commits but catalog cleanup fails, the call raises or returns `Sn
 
 Migration: static Python `Snapshot.remove(reference, force=...)` becomes `Checkpoint.remove_by_reference(reference, force=...)`. The canonical `Checkpoint.remove()` is now an instance method. Legacy `SnapshotHandle.remove(force=...)` still returns `None`.
 
+<Accordion title="Example">
+
 ```python
 removed = await checkpoint.remove()
 forced = await checkpoint.remove(force=True)
 ```
+
+</Accordion>
 
 These are alternative calls, not successive removals of the same checkpoint. The instance method removes the retained checkpoint identity, refuses a replacement at the same address, and returns `CheckpointRemoveResult` with `id`, optional `head_update`, and `warnings` properties. The head outcome belongs to this operation; later head edits do not change it. Removing the head selects its surviving same-group parent or clears selection. Removing another member reports an unchanged head. Standalone artifacts have no head outcome.
 
@@ -228,6 +244,8 @@ async def create_archive(
 
 Capture directly into an archive without installing a local snapshot.
 
+<Accordion title="Example">
+
 ```python
 archive = await Checkpoint.create_archive(
     "deps",
@@ -235,6 +253,8 @@ archive = await Checkpoint.create_archive(
     from_sandbox="baseline",
 )
 ```
+
+</Accordion>
 
 ---
 <span id="snapshot-open" />
@@ -1033,6 +1053,8 @@ Captured snapshot state scope.
 | `SnapshotScope.DISK` | `"disk"` | Disk-only state |
 | `SnapshotScope.FULL` | `"full"` | Disk, memory, and device state |
 
+<Accordion title="Example">
+
 ```python
 from microsandbox import SnapshotFormat, SnapshotScope, SnapshotStateKind
 
@@ -1040,3 +1062,5 @@ assert snapshot.state_kind is SnapshotStateKind.FILE
 assert snapshot.format is SnapshotFormat.RAW
 assert snapshot.scope is SnapshotScope.DISK
 ```
+
+</Accordion>
