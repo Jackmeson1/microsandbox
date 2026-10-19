@@ -19,16 +19,6 @@ pub enum SnapshotConfigMode {
     Fresh,
 }
 
-/// Internal review choice for changed entrypoint semantics. No CLI/SDK setting exposes it.
-/// The launch integration must select the agreed policy; there is deliberately no default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SavedCmdPolicy {
-    /// Retain the saved CMD when only an entrypoint changes, like current image merging.
-    Retain,
-    /// An entrypoint change drops saved CMD unless the caller explicitly supplies CMD.
-    ResetOnEntrypointChange,
-}
-
 /// Operation facts, supplied by the trusted source/operation resolver rather than the artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeSelectionContext {
@@ -38,8 +28,6 @@ pub struct RuntimeSelectionContext {
     pub full_resume: bool,
     /// Whether the current operation requests a new initial workload.
     pub starts_command: bool,
-    /// Explicit internal choice pending final command-policy integration.
-    pub cmd_policy: SavedCmdPolicy,
 }
 
 /// Structural optional-default clears; map keys containing dots stay one key.

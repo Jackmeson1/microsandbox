@@ -6,8 +6,7 @@ use microsandbox_types::SandboxSpecPatch;
 use microsandbox_types::snapshot::saved_config::{SavedRuntimeConfig, SavedText, SavedValue};
 
 use super::{
-    RuntimeDefaultClear, RuntimeDefaultSelection, RuntimeSelectionContext, SavedCmdPolicy,
-    SnapshotConfigMode,
+    RuntimeDefaultClear, RuntimeDefaultSelection, RuntimeSelectionContext, SnapshotConfigMode,
 };
 use crate::{MicrosandboxError, MicrosandboxResult};
 
@@ -78,9 +77,9 @@ pub fn select_runtime_defaults(
         .is_some_and(|entrypoint| !literal_argv_matches(defaults.entrypoint.as_ref(), entrypoint));
     // A separate result flag prevents a consumer from dropping saved CMD only to
     // accidentally revive the older image CMD underneath it. The final integration
-    // must select the maintainer-approved policy; neither policy is enabled here.
+    // must consume this flag before explicit command inputs apply. This rule is
+    // specific to saved snapshot defaults, not ordinary image-only merging.
     let reset_inherited_cmd = context.config_mode == SnapshotConfigMode::Saved
-        && context.cmd_policy == SavedCmdPolicy::ResetOnEntrypointChange
         && changed_entrypoint
         && defaults.cmd.is_some()
         && explicit.runtime.cmd.is_none();

@@ -324,62 +324,72 @@ fn full_script_registration_and_empty_replacement_carry_identity_obligations() {
 }
 
 #[test]
-fn command_policy_is_explicit_and_does_not_discard_an_explicit_destination_cmd() {
+fn changed_entrypoint_clears_saved_cmd_unless_destination_cmd_is_explicit() {
     let patch = SandboxSpecPatch::new()
         .runtime(SandboxRuntimeOptionsPatch::new().entrypoint(vec!["/new".into()]));
-    let retained = select(
-        &source(),
-        &patch,
-        &[],
-        RuntimeSelectionContext {
-            cmd_policy: SavedCmdPolicy::Retain,
-            ..disk()
-        },
-    );
-    assert!(retained.defaults.cmd.is_some());
-    assert!(!retained.reset_inherited_cmd);
-    let reset = select(
-        &source(),
-        &patch,
-        &[],
-        RuntimeSelectionContext {
-            cmd_policy: SavedCmdPolicy::ResetOnEntrypointChange,
-            ..disk()
-        },
-    );
+    let reset = select(&source(), &patch, &[], disk());
     assert!(reset.defaults.cmd.is_none());
     assert!(reset.reset_inherited_cmd);
     let same = SandboxSpecPatch::new()
         .runtime(SandboxRuntimeOptionsPatch::new().entrypoint(vec!["/old".into()]));
-    assert!(
-        !select(
-            &source(),
-            &same,
-            &[],
-            RuntimeSelectionContext {
-                cmd_policy: SavedCmdPolicy::ResetOnEntrypointChange,
-                ..disk()
-            }
-        )
-        .reset_inherited_cmd
+    let retained = select(&source(), &same, &[], disk());
+    assert!(!retained.reset_inherited_cmd);
+    assert!(retained.defaults.cmd.is_some());
+    for cmd in [vec!["explicit".into()], vec![]] {
+        let explicit = patch.clone().overlay(
+            SandboxSpecPatch::new().runtime(SandboxRuntimeOptionsPatch::new().cmd(cmd.clone())),
+        );
+        let selected = select(&source(), &explicit, &[], disk());
+        assert!(!selected.reset_inherited_cmd);
+        assert!(selected.defaults.cmd.is_none());
+        assert_eq!(explicit.runtime.cmd, Some(cmd));
+    }
+}
+
+#[test]
+fn unknown_or_bound_entrypoint_cannot_prove_saved_cmd_compatibility() {
+    for entrypoint in [
+        json!({"state":"unknown","reason":"not_recorded"}),
+        json!({"state":"default"}),
+        value(json!([{"kind":"binding","id":"entrypoint"}])),
+    ] {
+        let saved =
+            parse(json!({"entrypoint":entrypoint,"cmd":value(json!([literal("old-cmd")]))}));
+        for argv in [vec!["/new".into()], vec![]] {
+            let explicit =
+                SandboxSpecPatch::new().runtime(SandboxRuntimeOptionsPatch::new().entrypoint(argv));
+            let selected = select(&saved, &explicit, &[], disk());
+            assert!(selected.reset_inherited_cmd);
+            assert!(selected.defaults.cmd.is_none());
+        }
+    }
+}
+
+#[test]
+fn resetting_cmd_removes_only_its_binding_demand_and_fresh_discards_optional_defaults() {
+    let saved = parse(json!({
+        "entrypoint":value(json!([literal("/old")])),
+        "cmd":value(json!([{"kind":"binding","id":"command"}])),
+        "env":value(json!({"REQUIRED":{"kind":"binding","id":"env"}}))
+    }));
+    let explicit = SandboxSpecPatch::new()
+        .runtime(SandboxRuntimeOptionsPatch::new().entrypoint(vec!["/new".into()]));
+    let selected = select(&saved, &explicit, &[], disk());
+    assert!(selected.reset_inherited_cmd);
+    assert!(!selected.binding_requirements.contains_key("command"));
+    assert!(selected.binding_requirements.contains_key("env"));
+    let fresh = select(
+        &saved,
+        &explicit,
+        &[],
+        RuntimeSelectionContext {
+            config_mode: SnapshotConfigMode::Fresh,
+            ..disk()
+        },
     );
-    let patch = patch.overlay(
-        SandboxSpecPatch::new()
-            .runtime(SandboxRuntimeOptionsPatch::new().cmd(vec!["explicit".into()])),
-    );
-    assert!(
-        !select(
-            &source(),
-            &patch,
-            &[],
-            RuntimeSelectionContext {
-                cmd_policy: SavedCmdPolicy::ResetOnEntrypointChange,
-                ..disk()
-            }
-        )
-        .reset_inherited_cmd
-    );
-    assert_eq!(patch.runtime.cmd, Some(vec!["explicit".into()]));
+    assert!(fresh.defaults.cmd.is_none());
+    assert!(!fresh.reset_inherited_cmd);
+    assert!(fresh.binding_requirements.is_empty());
 }
 
 #[test]
@@ -437,7 +447,6 @@ fn disk() -> RuntimeSelectionContext {
         config_mode: SnapshotConfigMode::Saved,
         full_resume: false,
         starts_command: false,
-        cmd_policy: SavedCmdPolicy::Retain,
     }
 }
 

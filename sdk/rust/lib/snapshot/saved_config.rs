@@ -40,6 +40,5 @@ pub use storage::{
     VsockInputSelection, select_storage_inputs,
 };
 pub use types::{
-    RuntimeDefaultClear, RuntimeDefaultSelection, RuntimeSelectionContext, SavedCmdPolicy,
-    SnapshotConfigMode,
+    RuntimeDefaultClear, RuntimeDefaultSelection, RuntimeSelectionContext, SnapshotConfigMode,
 };
