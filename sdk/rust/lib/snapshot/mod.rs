@@ -1,6 +1,6 @@
 //! Backend-neutral snapshot capture, inspection, archives, and restore references.
 //!
-//! Local storage supports disk and full execution snapshots, immutable groups,
+//! Local storage supports mutable groups of immutable disk and full checkpoints,
 //! layered disks, owned storage, and incremental archives. Cloud storage retains
 //! its own wire contract and reports unsupported local artifact operations explicitly.
 

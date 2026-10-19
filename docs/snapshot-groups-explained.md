@@ -51,7 +51,7 @@ msb create alpine --name worker --memory 512M
 
 # Create a new group and its first named checkpoint.
 msb snap create worker --sandbox worker --name cp01 --full
-msb checkpoint worker --name cp02 --full
+msb snap checkpoint worker --name cp02 --full
 
 # A bare group selects its head, currently cp02.
 msb snap restore worker --name latest --cow-mem

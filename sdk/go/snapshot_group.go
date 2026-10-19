@@ -326,8 +326,17 @@ func (sandbox *Sandbox) Snapshot(ctx context.Context, name string, opts ...Snaps
 }
 
 // Save exports this exact checkpoint, using the retained receiver when available.
-func (checkpoint *SnapshotArtifact) Save(ctx context.Context, path string, opts SnapshotSaveOptions) error {
-	return checkpoint.SaveTo(ctx, path, opts)
+func (checkpoint *SnapshotArtifact) Save(ctx context.Context, path string, opts ...SnapshotSaveOptions) error {
+	// Accept one explicit options value or defaults; silently choosing one of several
+	// values could discard a requested compatibility target or dependency policy.
+	if len(opts) > 1 {
+		return &Error{Kind: ErrInvalidConfig, Message: "checkpoint save accepts at most one options value"}
+	}
+	var options SnapshotSaveOptions
+	if len(opts) == 1 {
+		options = opts[0]
+	}
+	return checkpoint.SaveTo(ctx, path, options)
 }
 
 func snapshotSaveOptionsWire(options SnapshotSaveOptions) map[string]any {

@@ -11,6 +11,48 @@ See the [snapshot guide](/sandboxes/snapshots) for workflows and examples.
 
 Use snapshot objects or references on cloud. Local operations also accept a group head, `group:member`, or artifact path.
 
+## Group lifecycle and 0.8 migration
+
+`Snapshot.Get` returns a named `SnapshotGroup`; `Checkpoint.Open` returns an immutable `SnapshotArtifact`. Create a new group through a sandbox or sandbox handle, then capture later checkpoints through that group. The initial call refuses an existing group; an append uses its saved source identity. Imported or orphaned groups cannot capture, and recreating a sandbox with the same name does not rebind them.
+
+```go
+source, err := m.GetSandbox(ctx, "worker")
+if err != nil { return err }
+created, err := source.Snapshot(ctx, "history", m.WithSnapshotCaptureConfig(
+    m.SnapshotCaptureConfig{Name: "ready", RecordIntegrity: true}))
+if err != nil { return err }
+group := created.Snapshot
+next, err := group.Checkpoint(ctx, m.WithSnapshotCaptureConfig(
+    m.SnapshotCaptureConfig{Name: "after-build"}))
+if err != nil { return err }
+exact, err := group.GetCheckpoint(ctx, "ready")
+if err != nil { return err }
+if _, err = group.SetHead(ctx, "ready"); err != nil { return err }
+if _, err = group.ClearHead(ctx); err != nil { return err }
+// Clearing selection keeps all checkpoints; use an exact member to spawn.
+child, err := exact.SpawnSandbox(ctx, "child")
+if err != nil { return err }
+reopened, err := m.Snapshot.Get(ctx, "history")
+if err != nil { return err }
+```
+
+The initial result is `SnapshotCreateResult` with the group, exact first checkpoint, and operation-owned head outcome. A later capture returns `CheckpointCaptureResult` with its exact checkpoint and head outcome. Read the checkpoint from that result when you need the artifact created by your call; another caller may already have moved group head. An omitted member name is generated. Capture is disk-only by default; full capture and integrity recording are explicit options.
+
+`head` returns no checkpoint after explicit clearing. Listing members and exact member lookup still work. Selecting or clearing the current value is a reported no-op. New groups are bound to one sandbox instance, while one sandbox may have several groups. Existing group destinations cannot be changed by capture options.
+
+Artifact helpers formerly owned by `Snapshot` are now accessed through `Checkpoint`. Existing `SnapshotHandle`, builder, archive, ID, and verification type names remain; this public object rename does not rewrite persisted artifact IDs. Retained artifact helpers below also cover supported cloud workflows, where local group operations return unsupported.
+
+Group spawn selects head once and retains that member while preparing the destination. Checkpoint spawn uses its exact receiver, even if group head later changes. Default full checkpoints resume execution; disk checkpoints boot fresh. The destination configuration and progress APIs use the existing restore preparation; source selectors cannot be changed by a destination callback.
+
+## Save an exact checkpoint
+
+```go
+if err := checkpoint.Save(ctx, "ready.msb"); err != nil { return err }
+if err := checkpoint.Save(ctx, "portable.msb", m.SnapshotSaveOptions{WithParents: true, WithImage: true}); err != nil { return err }
+```
+
+The receiver selects one immutable checkpoint. Use the group’s optional head or exact-member lookup first; saving a group’s whole history is not implied. The no-options call writes a compressed `.msb` archive. `SaveTo` retains its explicit options form for compatibility. See the archive compatibility option below before sending output to an older reader.
+
 ## Group archive import
 
 ```go
@@ -63,20 +105,27 @@ Force permits removal despite indexed children, but never bypasses reader protec
 
 If removal commits but catalog cleanup fails, the call returns `*SnapshotRemovalRecoveryError`, with `Result` and `Detail`. Its result is authoritative: removal already happened. Recover the affected storage before retrying cleanup; do not assume an error means the checkpoint still exists.
 
+## Capture recovery
+
+A failed capture can still have published its requested artifact before source recovery failed. `SnapshotSourceRecoveryError` preserves the source checkpoint recovery locator and, when publication completed, the published artifact’s kind, path, identity and digest. Inspect those details before retrying or removing the source. The error does not prove that the source is running or safely paused.
+
 ## Guest writeback
 
 Set `SnapshotCreateOptions.GuestFlush` to `msb.GuestFlushRequired`, pass `msb.WithForkGuestFlush(msb.GuestFlushRequired)` to `Fork`/`ForkMany`, or call `source.PauseWithGuestFlush(ctx, msb.GuestFlushRequired)`. The default `GuestFlushAuto` flushes live disk-only captures, but adds no optional flush to full captures, forks, or pause. `GuestFlushSkip` retains mandatory storage barriers. A paused disk capture needs a matching prior flush; cloud rejects non-Auto policies. See [guest flush policy reference](/sandboxes/snapshots#guest-flushing).
 
 Disk capture, including `SandboxHandle.Snapshot`, requires a native library that supports guest-flush policies. Older libraries return an upgrade-required error, including for stopped disk captures. Full Auto capture and unrelated operations retain their compatibility.
 
-## Snapshot functions
+## Checkpoint functions
 
-Package-level helpers for snapshot artifacts. Access them through the exported `Snapshot` value, e.g. `m.Snapshot.Create(ctx, ...)`.
+Package-level helpers for snapshot artifacts. Access them through the exported `Checkpoint` value, e.g. `m.Checkpoint.Create(ctx, ...)`.
 
-#### <span className="msb-recv">Snapshot.</span><span className="msb-hn">Create()</span>
+<span id="snapshot-create" />
+<span id="snapshotcreate" />
+
+#### <span className="msb-recv">Checkpoint.</span><span className="msb-hn">Create()</span>
 
 ```go
-func (snapshotFactory) Create(ctx context.Context, opts SnapshotCreateOptions) (*SnapshotArtifact, error)
+func (checkpointFactory) Create(ctx context.Context, opts SnapshotCreateOptions) (*SnapshotArtifact, error)
 ```
 
 Create a disk snapshot, or set `Full` to include memory and execution state. [`SnapshotCreateOptions.FromSandbox`](#snapshotcreateoptionsstruct) is required. An empty `Name` is generated; an empty `Group` uses the source sandbox's name.
@@ -106,7 +155,7 @@ Create a disk snapshot, or set `Full` to include memory and execution state. [`S
 <Accordion title="Example">
 
 ```go
-snap, err := m.Snapshot.Create(ctx, m.SnapshotCreateOptions{
+snap, err := m.Checkpoint.Create(ctx, m.SnapshotCreateOptions{
     Name:            "deps",
     FromSandbox:     "baseline",
     Labels:          map[string]string{"stage": "post-deps"},
@@ -118,10 +167,13 @@ snap, err := m.Snapshot.Create(ctx, m.SnapshotCreateOptions{
 
 ---
 
-#### <span className="msb-recv">Snapshot.</span><span className="msb-hn">CreateArchive()</span>
+<span id="snapshot-createarchive" />
+<span id="snapshotcreatearchive" />
+
+#### <span className="msb-recv">Checkpoint.</span><span className="msb-hn">CreateArchive()</span>
 
 ```go
-func (snapshotFactory) CreateArchive(ctx context.Context, opts SnapshotArchiveOptions) (*SnapshotArchive, error)
+func (checkpointFactory) CreateArchive(ctx context.Context, opts SnapshotArchiveOptions) (*SnapshotArchive, error)
 ```
 
 Capture directly into an archive without installing a local snapshot.
@@ -129,7 +181,7 @@ Capture directly into an archive without installing a local snapshot.
 <Accordion title="Example">
 
 ```go
-archive, err := m.Snapshot.CreateArchive(ctx, m.SnapshotArchiveOptions{
+archive, err := m.Checkpoint.CreateArchive(ctx, m.SnapshotArchiveOptions{
     SnapshotCreateOptions: m.SnapshotCreateOptions{
         Name:        "deps",
         FromSandbox: "baseline",
@@ -142,16 +194,19 @@ archive, err := m.Snapshot.CreateArchive(ctx, m.SnapshotArchiveOptions{
 
 ---
 
-#### <span className="msb-recv">Snapshot.</span><span className="msb-hn">Open()</span>
+<span id="snapshot-open" />
+<span id="snapshotopen" />
+
+#### <span className="msb-recv">Checkpoint.</span><span className="msb-hn">Open()</span>
 
 ```go
-func (snapshotFactory) Open(ctx context.Context, pathOrName string) (*SnapshotArtifact, error)
+func (checkpointFactory) Open(ctx context.Context, pathOrName string) (*SnapshotArtifact, error)
 ```
 
 <Accordion title="Example">
 
 ```go
-snap, err := m.Snapshot.Open(ctx, "baseline:deps")
+snap, err := m.Checkpoint.Open(ctx, "baseline:deps")
 ```
 
 </Accordion>
@@ -180,16 +235,19 @@ Open an existing artifact by group head, `group:member`, or filesystem path. Thi
   </div>
 </div>
 
-#### <span className="msb-recv">Snapshot.</span><span className="msb-hn">Get()</span>
+<span id="snapshot-get" />
+<span id="snapshotget" />
+
+#### <span className="msb-recv">Checkpoint.</span><span className="msb-hn">Get()</span>
 
 ```go
-func (snapshotFactory) Get(ctx context.Context, nameOrDigest string) (*SnapshotHandle, error)
+func (checkpointFactory) Get(ctx context.Context, nameOrDigest string) (*SnapshotHandle, error)
 ```
 
 <Accordion title="Example">
 
 ```go
-h, err := m.Snapshot.Get(ctx, "baseline:deps")
+h, err := m.Checkpoint.Get(ctx, "baseline:deps")
 ```
 
 </Accordion>
@@ -218,16 +276,19 @@ Look up a lightweight handle by group head, `group:member`, stable snapshot ID, 
   </div>
 </div>
 
-#### <span className="msb-recv">Snapshot.</span><span className="msb-hn">List()</span>
+<span id="snapshot-list" />
+<span id="snapshotlist" />
+
+#### <span className="msb-recv">Checkpoint.</span><span className="msb-hn">List()</span>
 
 ```go
-func (snapshotFactory) List(ctx context.Context) ([]*SnapshotHandle, error)
+func (checkpointFactory) List(ctx context.Context) ([]*SnapshotHandle, error)
 ```
 
 <Accordion title="Example">
 
 ```go
-handles, err := m.Snapshot.List(ctx)
+handles, err := m.Checkpoint.List(ctx)
 for _, h := range handles {
     fmt.Println(h.Digest(), h.ImageRef())
 }
@@ -247,10 +308,13 @@ snapshots; host-volume artifacts are opened explicitly by reference.
   </div>
 </div>
 
-#### <span className="msb-recv">Snapshot.</span><span className="msb-hn">ListDir()</span>
+<span id="snapshot-listdir" />
+<span id="snapshotlistdir" />
+
+#### <span className="msb-recv">Checkpoint.</span><span className="msb-hn">ListDir()</span>
 
 ```go
-func (snapshotFactory) ListDir(ctx context.Context, dir string) ([]*SnapshotArtifact, error)
+func (checkpointFactory) ListDir(ctx context.Context, dir string) ([]*SnapshotArtifact, error)
 ```
 
 Walk a local directory and parse each subdirectory's manifest without touching
@@ -278,16 +342,19 @@ the local index. Cloud returns `ErrUnsupportedOperation`.
   </div>
 </div>
 
-#### <span className="msb-recv">Snapshot.</span><span className="msb-hn">Remove()</span>
+<span id="snapshot-remove" />
+<span id="snapshotremove" />
+
+#### <span className="msb-recv">Checkpoint.</span><span className="msb-hn">Remove()</span>
 
 ```go
-func (snapshotFactory) Remove(ctx context.Context, pathOrName string, force bool) error
+func (checkpointFactory) Remove(ctx context.Context, pathOrName string, force bool) error
 ```
 
 <Accordion title="Example">
 
 ```go
-err := m.Snapshot.Remove(ctx, "baseline:deps", false)
+err := m.Checkpoint.Remove(ctx, "baseline:deps", false)
 ```
 
 </Accordion>
@@ -312,16 +379,19 @@ the index and refuses indexed children unless `force` is true.
   </div>
 </div>
 
-#### <span className="msb-recv">Snapshot.</span><span className="msb-hn">Reindex()</span>
+<span id="snapshot-reindex" />
+<span id="snapshotreindex" />
+
+#### <span className="msb-recv">Checkpoint.</span><span className="msb-hn">Reindex()</span>
 
 ```go
-func (snapshotFactory) Reindex(ctx context.Context, dir string) (uint32, error)
+func (checkpointFactory) Reindex(ctx context.Context, dir string) (uint32, error)
 ```
 
 <Accordion title="Example">
 
 ```go
-n, err := m.Snapshot.Reindex(ctx, "/srv/snapshots")
+n, err := m.Checkpoint.Reindex(ctx, "/srv/snapshots")
 fmt.Printf("indexed %d snapshots\n", n)
 ```
 
@@ -354,11 +424,14 @@ returns `ErrUnsupportedOperation`.
 
 ---
 
-#### <span className="msb-recv">Snapshot.</span><span className="msb-hn">Save()</span>
+<span id="snapshot-save" />
+<span id="snapshotsave" />
+
+#### <span className="msb-recv">Checkpoint.</span><span className="msb-hn">Save()</span>
 <div className="msb-tags"><span className="msb-tag is-static">function</span></div>
 
 ```go
-func (snapshotFactory) Save(ctx context.Context, nameOrPath, outPath string, opts SnapshotSaveOptions) error
+func (checkpointFactory) Save(ctx context.Context, nameOrPath, outPath string, opts SnapshotSaveOptions) error
 ```
 
 Bundle a snapshot into a `.msb` archive at `outPath`. Set [`SnapshotSaveOptions.PlainTar`](#snapshotsaveoptionsstruct) to skip compression.
@@ -387,7 +460,7 @@ Bundle a snapshot into a `.msb` archive at `outPath`. Set [`SnapshotSaveOptions.
 <Accordion title="Example">
 
 ```go
-err := m.Snapshot.Save(ctx, "baseline:deps", "/tmp/snap.msb",
+err := m.Checkpoint.Save(ctx, "baseline:deps", "/tmp/snap.msb",
     m.SnapshotSaveOptions{WithParents: true},
 )
 ```
@@ -396,11 +469,14 @@ err := m.Snapshot.Save(ctx, "baseline:deps", "/tmp/snap.msb",
 
 ---
 
-#### <span className="msb-recv">Snapshot.</span><span className="msb-hn">Load()</span>
+<span id="snapshot-load" />
+<span id="snapshotload" />
+
+#### <span className="msb-recv">Checkpoint.</span><span className="msb-hn">Load()</span>
 <div className="msb-tags"><span className="msb-tag is-static">function</span></div>
 
 ```go
-func (snapshotFactory) Load(ctx context.Context, archive, dest string) (*SnapshotHandle, error)
+func (checkpointFactory) Load(ctx context.Context, archive, dest string) (*SnapshotHandle, error)
 ```
 
 Unpack a snapshot archive into the local snapshots directory or an explicit
@@ -436,45 +512,57 @@ Unpack a snapshot archive into the local snapshots directory or an explicit
 <Accordion title="Example">
 
 ```go
-h, err := m.Snapshot.Load(ctx, "/tmp/snap.msb", "")
+h, err := m.Checkpoint.Load(ctx, "/tmp/snap.msb", "")
 ```
 
 </Accordion>
 
-#### <span className="msb-recv">Snapshot.</span><span className="msb-hn">LoadWithBase()</span>
+<span id="snapshot-loadwithbase" />
+<span id="snapshotloadwithbase" />
+
+#### <span className="msb-recv">Checkpoint.</span><span className="msb-hn">LoadWithBase()</span>
 
 ```go
-func (snapshotFactory) LoadWithBase(
+func (checkpointFactory) LoadWithBase(
     ctx context.Context, archive, dest, base string,
 ) (*SnapshotHandle, error)
 ```
 
 Import an archive with an explicit dependency base or destination group. See [import options](#import-options).
 
-#### <span className="msb-recv">Snapshot.</span><span className="msb-hn">LoadWithOptions()</span>
+<span id="snapshot-loadwithoptions" />
+<span id="snapshotloadwithoptions" />
+
+#### <span className="msb-recv">Checkpoint.</span><span className="msb-hn">LoadWithOptions()</span>
 
 ```go
-func (snapshotFactory) LoadWithOptions(
+func (checkpointFactory) LoadWithOptions(
     ctx context.Context, archive string, opts SnapshotLoadOptions,
 ) (*SnapshotHandle, error)
 ```
 
 Import an archive with an explicit dependency base or destination group. See [import options](#import-options).
 
-#### <span className="msb-recv">Snapshot.</span><span className="msb-hn">LoadMany()</span>
+<span id="snapshot-loadmany" />
+<span id="snapshotloadmany" />
+
+#### <span className="msb-recv">Checkpoint.</span><span className="msb-hn">LoadMany()</span>
 
 ```go
-func (snapshotFactory) LoadMany(
+func (checkpointFactory) LoadMany(
     ctx context.Context, archives []string, opts SnapshotLoadOptions,
 ) ([]*SnapshotHandle, error)
 ```
 
 Import archives as one batch. Returns handles in input order. Dependencies resolve from the batch, the named group, or an explicit base; input order does not matter. All members are validated before publication.
 
-#### <span className="msb-recv">Snapshot.</span><span className="msb-hn">GroupHead()</span>
+<span id="snapshot-grouphead" />
+<span id="snapshotgrouphead" />
+
+#### <span className="msb-recv">Checkpoint.</span><span className="msb-hn">GroupHead()</span>
 
 ```go
-func (snapshotFactory) GroupHead(
+func (checkpointFactory) GroupHead(
     ctx context.Context, selector string,
 ) (*SnapshotHeadUpdate, error)
 ```
@@ -498,58 +586,16 @@ Options for `SnapshotLoadOptions`.
 
 With divergent tips, the existing head stays selected; a new group has no head. Select a member explicitly. Identical members may be reused; conflicting identities fail. See [archive imports](/sandboxes/snapshots#import-archives).
 
-## SandboxHandle methods
+## SandboxHandle
 
-Snapshots are taken from a metadata handle returned by [`GetSandbox`](/sdk/go/sandbox#m-getsandbox). Local disk capture also supports a running or paused sandbox. Cloud requires a stopped persistent source.
-
-```go
-_ = sb.Stop(ctx)
-_ = sb.Close()
-
-h, err := m.GetSandbox(ctx, "baseline")
-if err != nil {
-    return err
-}
-snap, err := h.Snapshot(ctx, "deps")
-```
-
-#### <span className="msb-recv">h.</span><span className="msb-hn">Snapshot()</span>
+<span id="handle-snapshot" />
 
 ```go
-func (h *SandboxHandle) Snapshot(ctx context.Context, name string) (*SnapshotArtifact, error)
+func (h *SandboxHandle) Snapshot(ctx context.Context, group string,
+    opts ...SnapshotCaptureOption) (*SnapshotCreateResult, error)
 ```
 
-Snapshot this sandbox into its default group with the given member name. Local live disk captures preserve the source's running or paused state. Cloud requires a stopped persistent source. Use the returned artifact path or `sandbox:member` to open it later.
-
-<p className="msb-label">Parameters</p>
-
-<div className="msb-params">
-  <div className="msb-param">
-    <div className="msb-param-key"><code>ctx</code><span className="msb-type">context.Context</span></div>
-    <div className="msb-param-desc">Cancellation and deadline.</div>
-  </div>
-  <div className="msb-param">
-    <div className="msb-param-key"><code>name</code><span className="msb-type">string</span></div>
-    <div className="msb-param-desc">Member name within the source sandbox's group.</div>
-  </div>
-</div>
-
-<p className="msb-label">Returns</p>
-
-<div className="msb-params">
-  <div className="msb-param">
-    <div className="msb-param-key"><a className="msb-type" href="#snapshotartifact">*SnapshotArtifact</a></div>
-    <div className="msb-param-desc">The created artifact.</div>
-  </div>
-</div>
-
-<Accordion title="Example">
-
-```go
-snap, err := h.Snapshot(ctx, "deps")
-```
-
-</Accordion>
+The first positional name selects the new group. Use the initial-checkpoint option to name its first member, then call the returned group’s checkpoint method for subsequent captures. Both a connected sandbox and its metadata handle support this group-creation flow. See [group lifecycle and migration](#group-lifecycle-and-08-migration) for a complete example.
 
 ## SnapshotArtifact methods
 
@@ -700,7 +746,7 @@ Upper-layer disk format: `"raw"` or `"qcow2"`.
 func (s *SnapshotArtifact) Scope() string
 ```
 
-Snapshot scope: `SnapshotScopeDisk` (`"disk"`) or `SnapshotScopeFull` (`"full"`).
+Checkpoint scope: `SnapshotScopeDisk` (`"disk"`) or `SnapshotScopeFull` (`"full"`).
 
 ---
 
@@ -867,7 +913,7 @@ Upper-layer disk format: `"raw"` or `"qcow2"`.
 func (h *SnapshotHandle) Scope() string
 ```
 
-Snapshot scope: `SnapshotScopeDisk` (`"disk"`) or `SnapshotScopeFull` (`"full"`).
+Checkpoint scope: `SnapshotScopeDisk` (`"disk"`) or `SnapshotScopeFull` (`"full"`).
 
 ---
 
@@ -893,7 +939,7 @@ Returns `"id"` or `"path"` for the handle's backend-neutral reference.
 func (h *SnapshotHandle) CreatedAt() time.Time
 ```
 
-Snapshot creation time, decoded from the index's Unix timestamp.
+Checkpoint creation time, decoded from the index's Unix timestamp.
 
 <span id="restore-a-sandbox" />
 
@@ -1005,7 +1051,7 @@ Results include aggregate counts and per-disk entries keyed by `GuestPath`. `Mat
 
 ## Constants
 
-<p className="msb-member-group">Snapshot scopes</p>
+<p className="msb-member-group">Checkpoint scopes</p>
 
 <p className="msb-backref">Returned by <a href="#s-scope">s.Scope()</a> · <a href="#h-scope">h.Scope()</a></p>
 
@@ -1021,7 +1067,7 @@ Scope of what a snapshot captures: disk-only or disk plus complete VM state.
 
 ### SnapshotArtifact<span className="msb-tag is-type" style={{marginLeft: "8px"}}>struct</span>
 
-<p className="msb-backref">Returned by <a href="#snapshot-create">Snapshot.Create()</a> · <a href="#snapshot-open">Snapshot.Open()</a> · <a href="#snapshot-listdir">Snapshot.ListDir()</a> · <a href="#h-snapshot">h.Snapshot()</a> · <a href="#h-open">h.Open()</a></p>
+<p className="msb-backref">Returned by <a href="#snapshot-create">Checkpoint.Create()</a> · <a href="#snapshot-open">Checkpoint.Open()</a> · <a href="#snapshot-listdir">Checkpoint.ListDir()</a> · <a href="#h-snapshot">h.Checkpoint()</a> · <a href="#h-open">h.Open()</a></p>
 
 A backend-neutral snapshot. Fields are unexported; read them through the
 accessor methods below.
@@ -1062,7 +1108,7 @@ the fluent methods below.
 
 ### SnapshotHandle<span className="msb-tag is-type" style={{marginLeft: "8px"}}>struct</span>
 
-<p className="msb-backref">Returned by <a href="#snapshot-get">Snapshot.Get()</a> · <a href="#snapshot-list">Snapshot.List()</a> · <a href="#snapshot-load">Snapshot.Load()</a></p>
+<p className="msb-backref">Returned by <a href="#snapshot-get">Checkpoint.Get()</a> · <a href="#snapshot-list">Checkpoint.List()</a> · <a href="#snapshot-load">Checkpoint.Load()</a></p>
 
 A lightweight handle returned by the active backend. Fields are unexported;
 read them through the accessor methods below.
@@ -1080,16 +1126,16 @@ read them through the accessor methods below.
 | [`SizeBytes()`](#h-sizebytes) | `*uint64` | Backend-reported stored payload size |
 | `Reference()` | `string` | Stable backend-relative restore reference |
 | `ReferenceKind()` | `string` | `id` or `path` |
-| [`CreatedAt()`](#h-createdat) | `time.Time` | Snapshot creation time |
+| [`CreatedAt()`](#h-createdat) | `time.Time` | Checkpoint creation time |
 | [`Open(ctx)`](#h-open) | `(*SnapshotArtifact, error)` | Open the artifact metadata |
 | [`Remove(ctx, force)`](#h-remove) | `error` | Remove this snapshot |
 | [`SaveTo(ctx, outPath, opts)`](#h-saveto) | `error` | Bundle using this handle's typed reference |
 
 ### SnapshotCreateOptions<span className="msb-tag is-type" style={{marginLeft: "8px"}}>struct</span>
 
-<p className="msb-backref">Accepted by <a href="#snapshot-create">Snapshot.Create()</a></p>
+<p className="msb-backref">Accepted by <a href="#snapshot-create">Checkpoint.Create()</a></p>
 
-Configures [`Snapshot.Create`](#snapshot-create). `FromSandbox` is required. An empty `Name` is generated; an empty `Group` uses the source sandbox's name.
+Configures [`Checkpoint.Create`](#snapshot-create). `FromSandbox` is required. An empty `Name` is generated; an empty `Group` uses the source sandbox's name.
 
 #### <span className="msb-hn">Name</span>
 
@@ -1147,9 +1193,9 @@ Guest writeback policy; defaults to `GuestFlushAuto`. See [guest writeback](#gue
 
 ### SnapshotSaveOptions<span className="msb-tag is-type" style={{marginLeft: "8px"}}>struct</span>
 
-<p className="msb-backref">Accepted by <a href="#snapshot-save">Snapshot.Save()</a> and instance <code>SaveTo()</code> methods</p>
+<p className="msb-backref">Accepted by <a href="#snapshot-save">Checkpoint.Save()</a> and instance <code>SaveTo()</code> methods</p>
 
-Configures [`Snapshot.Save`](#snapshot-save) and instance `SaveTo()` methods.
+Configures [`Checkpoint.Save`](#snapshot-save) and instance `SaveTo()` methods.
 
 | Field | Type | Description |
 |-------|------|-------------|

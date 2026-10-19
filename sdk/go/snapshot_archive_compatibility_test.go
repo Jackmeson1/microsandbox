@@ -47,6 +47,19 @@ func TestArchiveCompatibilityNative(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The canonical receiver API has a useful no-options form as well as the
+	// historical SaveTo form. Reject conflicting options before creating output.
+	defaultArchive := filepath.Join(t.TempDir(), "default.msb")
+	if err := snapshot.Save(ctx, defaultArchive); err != nil {
+		t.Fatal(err)
+	}
+	conflictingArchive := filepath.Join(t.TempDir(), "conflicting.msb")
+	if err := snapshot.Save(ctx, conflictingArchive, SnapshotSaveOptions{}, SnapshotSaveOptions{}); err == nil {
+		t.Fatal("accepted multiple option values")
+	}
+	if _, err := os.Stat(conflictingArchive); !os.IsNotExist(err) {
+		t.Fatalf("conflicting options touched output: %v", err)
+	}
 	for target, key := range map[string]string{"current": "microsandbox.member-names", "0.7.8": "msb-snapshot-member-names"} {
 		out := filepath.Join(t.TempDir(), "out.tar")
 		if err := snapshot.SaveTo(ctx, out, SnapshotSaveOptions{PlainTar: true, Compatibility: target}); err != nil {

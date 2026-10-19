@@ -19,7 +19,7 @@ use crate::{
 /// Capture, restore, and manage disk or full snapshots.
 #[derive(Debug, Args)]
 #[command(
-    after_help = "Examples:\n  msb snap create templates --sandbox app --name ready\n  msb checkpoint templates --name next\n  msb snap list templates\n  msb snap modify templates --set-head ready\n  msb snap export templates --output ready.msb\n\n'snap' and 'snapshot' are equivalent. Live forking uses 'msb fork'."
+    after_help = "Examples:\n  msb snap create templates --sandbox app --name ready\n  msb snap checkpoint templates --name next\n  msb snap list templates\n  msb snap modify templates --set-head ready\n  msb snap export templates --output ready.msb\n\n'snap' and 'snapshot' are equivalent. Live forking uses 'msb fork'."
 )]
 pub struct SnapshotArgs {
     /// Snapshot subcommand.

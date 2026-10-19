@@ -123,7 +123,7 @@ export type { DiskCompactionOptions, DiskCompactionDiskResult, DiskCompactionRes
 import { Snapshot as _Snapshot, type SnapshotBuilder as _SnapBT } from "./snapshot.js";
 /**
  * Native fluent builder for a snapshot. `new SnapshotBuilder(name)`
- * is equivalent to `Snapshot.builder(name)`.
+ * is equivalent to `Checkpoint.builder(name)`.
  */
 export const SnapshotBuilder = function SnapshotBuilder(
   this: unknown,
