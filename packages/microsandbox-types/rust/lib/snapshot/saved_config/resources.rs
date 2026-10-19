@@ -1,10 +1,12 @@
 //! Recorded guest allocation, distinct from host placement and authoritative checkpoint geometry.
 
+use serde::{Deserialize, Serialize};
+
+use crate::{SnapshotManifestResult, TransparentHugePagePolicy};
+
 use super::validation::{decode, encoded_size, invalid};
 use super::value::deserialize_present;
 use super::{SavedOrigin, SavedValue};
-use crate::{SnapshotManifestResult, TransparentHugePagePolicy};
-use serde::{Deserialize, Serialize};
 
 //--------------------------------------------------------------------------------------------------
 // Types

@@ -1,12 +1,15 @@
 //! Portable new-command defaults and fresh lifetime policy, excluding invocation and ownership.
 
+use std::collections::BTreeMap;
+use std::fmt;
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use crate::{Rlimit, RlimitResource, SandboxPolicy, SecurityProfile, SnapshotManifestResult};
+
 use super::SavedValue;
 use super::validation::{MAX_NAME_BYTES, MAX_TEXT_BYTES, count, decode, encoded_size, invalid};
 use super::value::deserialize_present;
-use crate::{Rlimit, RlimitResource, SandboxPolicy, SecurityProfile, SnapshotManifestResult};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::BTreeMap;
-use std::fmt;
 
 //--------------------------------------------------------------------------------------------------
 // Types
