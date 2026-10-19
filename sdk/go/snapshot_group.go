@@ -116,6 +116,17 @@ type CheckpointCaptureResult struct {
 	HeadUpdate *SnapshotHeadUpdate
 }
 
+// SnapshotImportOptions configures a canonical import; the destination group is positional.
+// Legacy Checkpoint.LoadWithOptions/LoadMany retain SnapshotLoadOptions and its Group field.
+type SnapshotImportOptions struct {
+	// Parent directory containing snapshot groups; empty selects the default.
+	Dest string
+	// External snapshot or archive for dependencies absent from the batch/group.
+	Base string
+	// Select the unique imported tip even when it is not a fast-forward.
+	SetHead bool
+}
+
 // SnapshotImportResult contains only facts from this committed import attempt.
 type SnapshotImportResult struct {
 	OperationID string
@@ -182,11 +193,11 @@ func snapshotObjectRequest(ctx context.Context, object *ffi.SnapshotObject, requ
 }
 
 // Load atomically imports files into a named group, with optional dependency/head policy.
-func (snapshotFactory) Load(ctx context.Context, group string, files []string, options ...SnapshotLoadOptions) (*SnapshotImportResult, error) {
+func (snapshotFactory) Load(ctx context.Context, group string, files []string, options ...SnapshotImportOptions) (*SnapshotImportResult, error) {
 	if len(options) > 1 {
 		return nil, fmt.Errorf("snapshot load accepts at most one options value")
 	}
-	var opts SnapshotLoadOptions
+	var opts SnapshotImportOptions
 	if len(options) == 1 {
 		opts = options[0]
 	}
@@ -200,7 +211,7 @@ func (snapshotFactory) Load(ctx context.Context, group string, files []string, o
 		Warnings    []string                  `json:"warnings"`
 	}
 	if err := snapshotObjectRequest(ctx, nil, map[string]any{"op": "load", "name": group, "files": files,
-		"options": ffi.SnapshotLoadOptions{Dest: opts.Dest, Base: opts.Base, Group: opts.Group, SetHead: opts.SetHead}}, &wire); err != nil {
+		"options": ffi.SnapshotLoadOptions{Dest: opts.Dest, Base: opts.Base, SetHead: opts.SetHead}}, &wire); err != nil {
 		return nil, err
 	}
 	history, err := snapshotGroupFromWire(wire.Snapshot)

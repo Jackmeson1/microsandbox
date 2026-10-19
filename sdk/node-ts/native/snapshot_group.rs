@@ -97,15 +97,27 @@ impl JsSnapshotGroup {
         opts: Option<crate::snapshot::JsLoadOpts>,
     ) -> Result<JsSnapshotImportResult> {
         let opts = opts.unwrap_or_default();
+        // Retain explicit rejection for older callers of the native options transport.
+        if opts
+            .group
+            .as_deref()
+            .is_some_and(|selected| selected != group)
+        {
+            return Err(to_napi_error(
+                microsandbox::MicrosandboxError::InvalidConfig(
+                    "import options cannot select a different destination group".into(),
+                ),
+            ));
+        }
         let files = archives.into_iter().map(PathBuf::from).collect::<Vec<_>>();
-        let result = RustGroup::load_with(&group, &files, |_| microsandbox::LoadOpts {
-            dest: opts.dest.map(PathBuf::from),
-            base: opts.base,
-            group: opts.group,
-            set_head: opts.set_head.unwrap_or(false),
-        })
-        .await
-        .map_err(to_napi_error)?;
+        let result =
+            RustGroup::load_with(&group, &files, |_| microsandbox::SnapshotImportOptions {
+                dest: opts.dest.map(PathBuf::from),
+                base: opts.base,
+                set_head: opts.set_head.unwrap_or(false),
+            })
+            .await
+            .map_err(to_napi_error)?;
         Ok(JsSnapshotImportResult {
             operation_id: result.operation_id,
             snapshot: Self::from_rust(result.snapshot),

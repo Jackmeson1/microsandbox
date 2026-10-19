@@ -259,8 +259,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn abandoned_empty_reservation_is_recovered_before_retry() {
+        // Model a terminated creator after all of its descriptors have closed.
+        // Concurrent subprocess tests can briefly inherit its lock across fork,
+        // so run this immediate-reclaim assertion in its own process.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "backend::local::snapshot::group::capture::tests::abandoned_reservation_worker",
+                "--ignored",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[tokio::test]
-    async fn abandoned_empty_reservation_is_recovered_before_retry() {
+    #[ignore = "subprocess-only immediate reservation recovery"]
+    async fn abandoned_reservation_worker() {
         let root = tempfile::tempdir().unwrap();
         let source = source(&root.path().join("home")).await;
         let reservation = claim(root.path(), "history", source.clone()).unwrap();

@@ -57,10 +57,10 @@ The receiver selects one immutable checkpoint. Use the group’s optional head o
 
 ```go
 Snapshot.Load(ctx, group, files)
-Snapshot.Load(ctx, group, files, SnapshotLoadOptions{Dest: "store", Base: "base.msb", SetHead: true})
+Snapshot.Load(ctx, group, files, SnapshotImportOptions{Dest: "store", Base: "base.msb", SetHead: true})
 ```
 
-`files` is `[]string`; at most one options value is accepted. Returns `(*SnapshotImportResult, error)` with `Snapshot`, `Checkpoints`, `Added`, `Reused`, `HeadUpdate`, `OperationID`, and `Warnings`.
+`files` is `[]string`; at most one `SnapshotImportOptions` value is accepted. It contains `Dest`, `Base`, and `SetHead`; the group is selected only by the positional argument. Legacy `Checkpoint.LoadWithOptions` and `Checkpoint.LoadMany` retain `SnapshotLoadOptions`, including its `Group` field. Returns `(*SnapshotImportResult, error)` with `Snapshot`, `Checkpoints`, `Added`, `Reused`, `HeadUpdate`, `OperationID`, and `Warnings`.
 
 The result contains every unique supplied checkpoint, including bundled dependencies, in stable ID order. `Added` and `Reused` identify what was new versus already installed at publication; archive argument order does not select the head. The head outcome belongs to this operation and does not change when another operation edits the group. Multiple incomparable tips can commit a headless group; explicit head selection refuses ambiguous tips.
 
@@ -575,7 +575,7 @@ Read a group’s head, or select an exact member with `group:member`. Returns th
 
 ### Import options
 
-Options for `SnapshotLoadOptions`.
+Legacy options for `Checkpoint.LoadWithOptions` and `Checkpoint.LoadMany`. Canonical `Snapshot.Load` uses `SnapshotImportOptions` with the same destination/base/head controls and no `Group` field.
 
 | Option | Purpose |
 | --- | --- |

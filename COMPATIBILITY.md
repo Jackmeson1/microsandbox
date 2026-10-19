@@ -570,3 +570,7 @@ Readers continue to accept both archive dialects without normalizing input metad
 ## Snapshot spawn guest-clock parity
 
 Python `guest_clock`, TypeScript `guestClock`, and Go `WithRestoreGuestClock` now project the existing restore clock policy through both group and checkpoint spawn, including progress variants. Omission remains distinct from explicit `sync`: it retains a recorded `off` policy, whereas explicit `sync` overrides it. The existing descriptor extension and runtime capability contract are unchanged. Go probes native support only for explicit selection; TypeScript reports unsupported when an older addon lacks the setter. Existing calls that omit the option retain their prior native path. The runtime must advertise support before an off policy can launch; no unsupported policy is silently dropped.
+
+## Canonical group import options
+
+Rust `Snapshot::load_with` and Go `Snapshot.Load` use `SnapshotImportOptions`, containing destination-store, external-base and head-selection controls. The group is supplied only by the positional argument. Legacy Rust `LoadOpts` and Go `SnapshotLoadOptions` retain their group field and existing artifact-loading behavior. This finalizes the unreleased group API within the 0.8 source migration; callers explicitly naming the draft canonical options type must use `SnapshotImportOptions`. Native transports still reject a conflicting legacy group field instead of silently ignoring it. Snapshot storage, archive bytes and runtime protocols are unchanged.

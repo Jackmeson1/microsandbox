@@ -101,10 +101,9 @@ impl RubyGroup {
         let (group, files) = parsed.required;
         let keywords = parsed.keywords;
         reject_unknown_keywords(ruby, keywords, &["dest", "base", "set_head"])?;
-        let options = microsandbox_core::LoadOpts {
+        let options = microsandbox_core::SnapshotImportOptions {
             dest: keyword::<String>(keywords, "dest")?.map(Into::into),
             base: keyword(keywords, "base")?,
-            group: None,
             set_head: keyword::<bool>(keywords, "set_head")?.unwrap_or(false),
         };
         let files = files

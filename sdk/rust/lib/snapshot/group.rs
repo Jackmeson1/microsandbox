@@ -8,8 +8,8 @@ use crate::backend::Backend;
 use crate::{MicrosandboxError, MicrosandboxResult, Sandbox};
 
 use super::{
-    Checkpoint, GuestFlush, HeadUpdate, LoadOpts, SnapshotConfig, SnapshotHandle, SnapshotId,
-    SnapshotReference,
+    Checkpoint, GuestFlush, HeadUpdate, SnapshotConfig, SnapshotHandle, SnapshotId,
+    SnapshotImportOptions, SnapshotReference,
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -126,7 +126,7 @@ impl Snapshot {
     pub async fn load_with(
         group: impl AsRef<str>,
         files: &[PathBuf],
-        configure: impl FnOnce(LoadOpts) -> LoadOpts,
+        configure: impl FnOnce(SnapshotImportOptions) -> SnapshotImportOptions,
     ) -> MicrosandboxResult<SnapshotImportResult> {
         let backend = crate::backend::default_backend();
         backend
@@ -135,7 +135,7 @@ impl Snapshot {
                 backend.clone(),
                 group.as_ref(),
                 files,
-                configure(LoadOpts::default()),
+                configure(SnapshotImportOptions::default()).into_load_opts(),
             )
             .await
     }

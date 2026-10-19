@@ -236,13 +236,23 @@ async fn dispatch(id: u64, request: Request, pending: &PendingObjects) -> Result
             files,
             options,
         } => {
-            let result = Snapshot::load_with(name, &files, |_| microsandbox::LoadOpts {
-                dest: options.dest,
-                base: options.base,
-                group: options.group,
-                set_head: options.set_head,
-            })
-            .await?;
+            // Older callers may still send group in the native transport. Never ignore a conflict.
+            if options
+                .group
+                .as_deref()
+                .is_some_and(|selected| selected != name)
+            {
+                return Err(FfiError::invalid_argument(
+                    "import options cannot select a different destination group",
+                ));
+            }
+            let result =
+                Snapshot::load_with(name, &files, |_| microsandbox::SnapshotImportOptions {
+                    dest: options.dest,
+                    base: options.base,
+                    set_head: options.set_head,
+                })
+                .await?;
             Ok(json!({
                 "operation_id": result.operation_id,
                 "snapshot": pending.insert(Object::Group(result.snapshot))?,
@@ -513,6 +523,19 @@ mod tests {
             assert!(receiver.head().await.is_err());
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn import_refuses_conflicting_legacy_group_before_loading_files() {
+        let request: Request = serde_json::from_value(json!({
+            "op": "load", "name": "selected", "files": ["missing.msb"],
+            "options": {"group": "other"}
+        }))
+        .unwrap();
+        let error = dispatch(0, request, &PendingObjects::default())
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("different destination group"));
     }
 
     #[test]

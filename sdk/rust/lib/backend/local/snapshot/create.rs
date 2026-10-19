@@ -3036,11 +3036,20 @@ mod tests {
             assert!(!root.exists());
         }
         drop(guard);
-        assert!(
-            microsandbox_runtime::ipc::try_acquire_lifecycle_guard(&run, "box")
-                .unwrap()
-                .is_some()
-        );
+        // Concurrent fork/exec tests can briefly retain an inherited CLOEXEC handle.
+        // Require release within a bound; the held-guard assertions above stay immediate.
+        let _reacquired = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if let Some(guard) =
+                    microsandbox_runtime::ipc::try_acquire_lifecycle_guard(&run, "box").unwrap()
+                {
+                    break guard;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("capture lifecycle ownership did not release");
     }
 
     #[test]

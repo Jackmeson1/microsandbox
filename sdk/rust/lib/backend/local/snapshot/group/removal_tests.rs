@@ -18,6 +18,25 @@ use crate::{HeadUpdateReason, test_support};
 use group::tests::{add, id};
 
 //--------------------------------------------------------------------------------------------------
+// Functions
+//--------------------------------------------------------------------------------------------------
+
+async fn released_deletion(path: &Path) -> lease::DeletionLease {
+    // Other tests fork while this test's setup holds a lock. CLOEXEC closes that
+    // inherited handle at exec, not at fork, so successful acquisition may lag setup.
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(pin) = lease::deletion(path).unwrap() {
+                break pin;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("setup reader leases did not release")
+}
+
+//--------------------------------------------------------------------------------------------------
 // Tests
 //--------------------------------------------------------------------------------------------------
 
@@ -34,7 +53,7 @@ async fn removal_never_selects_unrelated_or_cross_group_history() {
             .await
             .unwrap();
         let path = directory.join(id(2).as_str());
-        let pin = lease::deletion(&path).unwrap().unwrap();
+        let pin = released_deletion(&path).await;
         let removed = group::remove_member_leased(&path, pin)
             .await
             .unwrap()
@@ -61,7 +80,7 @@ async fn non_head_removal_keeps_the_selected_head() {
     add(&directory, 2, None).await;
     let before = group::read_group(&directory).unwrap().head;
     let path = directory.join(id(2).as_str());
-    let pin = lease::deletion(&path).unwrap().unwrap();
+    let pin = released_deletion(&path).await;
     let removed = group::remove_member_leased(&path, pin)
         .await
         .unwrap()

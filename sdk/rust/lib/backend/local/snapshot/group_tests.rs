@@ -87,6 +87,30 @@ pub(super) async fn add(group: &Path, value: u128, parent: Option<u128>) -> Head
 
 #[test]
 fn cancelled_head_selection_retains_writer_until_blocking_mutation_finishes() {
+    // A single poll below must reach the blocked worker queue. In the parallel
+    // harness another test can fork with setup's writer lock, making that poll
+    // wait for admission instead. Isolate the schedule, rather than allowing
+    // either head outcome and weakening the cancellation contract.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "backend::local::snapshot::group::tests::cancelled_head_selection_worker",
+            "--ignored",
+            "--nocapture",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[ignore = "subprocess-only deterministic cancellation schedule"]
+fn cancelled_head_selection_worker() {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(1)

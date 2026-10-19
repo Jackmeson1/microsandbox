@@ -51,7 +51,8 @@ type SnapshotSaveOptions struct {
 	PlainTar    bool
 }
 
-// SnapshotLoadOptions configures importing one or more archives into a snapshot group.
+// SnapshotLoadOptions configures legacy Checkpoint.LoadWithOptions/LoadMany.
+// Canonical Snapshot.Load uses SnapshotImportOptions with a separately selected group.
 type SnapshotLoadOptions struct {
 	// Parent directory containing snapshot groups; empty selects the default.
 	Dest string

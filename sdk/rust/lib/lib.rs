@@ -104,8 +104,8 @@ pub use snapshot::{
     CheckpointRemoveResult, CheckpointSnapshotState, FileSnapshotState, HeadUpdate,
     HeadUpdateReason, LoadOpts, SaveOpts, Snapshot, SnapshotArchive, SnapshotBuilder,
     SnapshotCaptureOptions, SnapshotConfig, SnapshotCopyBuilder, SnapshotCreateResult,
-    SnapshotDescriptor, SnapshotFormat, SnapshotGroupInfo, SnapshotHandle, SnapshotImportResult,
-    SnapshotReference, SnapshotRemoveResult, SnapshotRootDisk, SnapshotScope,
+    SnapshotDescriptor, SnapshotFormat, SnapshotGroupInfo, SnapshotHandle, SnapshotImportOptions,
+    SnapshotImportResult, SnapshotReference, SnapshotRemoveResult, SnapshotRootDisk, SnapshotScope,
     SnapshotSourceBinding, SnapshotSourceStatus, SnapshotSpec, SnapshotState, SnapshotVerifyReport,
     UpperIntegrity, UpperVerifyStatus,
 };

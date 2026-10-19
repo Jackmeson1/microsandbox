@@ -203,7 +203,18 @@ pub struct SnapshotGroupVerifyReport {
     pub payload_hashes: usize,
 }
 
-/// Options for installing an archive in a local snapshot group.
+/// Options for a canonical group import. The destination group is a separate argument.
+#[derive(Debug, Clone, Default)]
+pub struct SnapshotImportOptions {
+    /// Group-store root; defaults to the configured snapshots directory.
+    pub dest: Option<PathBuf>,
+    /// Explicit base selector for omitted disk layers and RAM objects.
+    pub base: Option<String>,
+    /// Select the unique imported tip even when it is not a fast-forward.
+    pub set_head: bool,
+}
+
+/// Legacy artifact-loading options. Canonical group import uses [`SnapshotImportOptions`].
 #[derive(Debug, Clone, Default)]
 pub struct LoadOpts {
     /// Group-store root; defaults to the configured snapshots directory.
@@ -279,6 +290,36 @@ pub enum HeadUpdateReason {
 //--------------------------------------------------------------------------------------------------
 // Methods
 //--------------------------------------------------------------------------------------------------
+
+impl SnapshotImportOptions {
+    /// Supply a base for omitted disk layers or memory objects.
+    pub fn base(mut self, base: impl Into<String>) -> Self {
+        self.base = Some(base.into());
+        self
+    }
+
+    /// Install the named group beneath this local store root.
+    pub fn dest_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.dest = Some(path.into());
+        self
+    }
+
+    /// Select the unique imported tip even when it is not a fast-forward.
+    pub fn set_head(mut self) -> Self {
+        self.set_head = true;
+        self
+    }
+
+    /// Keep the legacy backend transport internal; callers cannot provide a second group.
+    pub(crate) fn into_load_opts(self) -> LoadOpts {
+        LoadOpts {
+            dest: self.dest,
+            base: self.base,
+            group: None,
+            set_head: self.set_head,
+        }
+    }
+}
 
 impl LoadOpts {
     /// Supply a base for omitted disk layers or memory objects.

@@ -56,7 +56,7 @@ Snapshot::load(group, files).await?
 Snapshot::load_with(group, files, |load| load.dest_dir("store").base("base.msb").set_head()).await?
 ```
 
-`group` is a name and `files` is `&[PathBuf]`. Returns `SnapshotImportResult`: `snapshot`, `checkpoints`, `added`, `reused`, `head_update`, `operation_id`, and `warnings`.
+`group` is a name and `files` is `&[PathBuf]`. The callback receives `SnapshotImportOptions`, with destination/base/head controls and no second group selector. Legacy artifact-loading methods retain `LoadOpts` and its optional `group` field. Returns `SnapshotImportResult`: `snapshot`, `checkpoints`, `added`, `reused`, `head_update`, `operation_id`, and `warnings`.
 
 The result contains every unique supplied checkpoint, including bundled dependencies, in stable ID order. `added` and `reused` identify what was new versus already installed at publication; archive argument order does not select the head. The head outcome belongs to this operation and does not change when another operation edits the group. Multiple incomparable tips can commit a headless group; explicit head selection refuses ambiguous tips.
 
