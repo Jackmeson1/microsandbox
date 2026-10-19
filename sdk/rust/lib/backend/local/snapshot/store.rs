@@ -41,13 +41,22 @@ pub(super) async fn open_snapshot_leased(
     local: &LocalBackend,
     path_or_name: &str,
 ) -> MicrosandboxResult<Snapshot> {
-    open_snapshot_impl(local, path_or_name, true).await
+    open_snapshot_impl(local, path_or_name, true, true).await
+}
+
+/// Verification retains payload leases but must not repair the discovery index as a side effect.
+pub(super) async fn open_for_verification(
+    local: &LocalBackend,
+    path: &Path,
+) -> MicrosandboxResult<Snapshot> {
+    open_snapshot_impl(local, &path.to_string_lossy(), true, false).await
 }
 
 async fn open_snapshot_impl(
     local: &LocalBackend,
     path_or_name: &str,
     reader: bool,
+    index: bool,
 ) -> MicrosandboxResult<Snapshot> {
     if path_or_name.is_empty() {
         return Err(MicrosandboxError::InvalidConfig(
@@ -81,6 +90,17 @@ async fn open_snapshot_impl(
 
     let manifest_path = dir.join(DESCRIPTOR_FILENAME);
     if !manifest_path.exists() && dir.join(V066_DESCRIPTOR_FILENAME).exists() {
+        if !index {
+            // Verification owns stable writer admission while selecting readers. It must not
+            // start a catalog/descriptor migration inside that read operation.
+            return Err(MicrosandboxError::Unsupported {
+                op: crate::Operation::SnapshotOps,
+                reason: crate::error::UnsupportedReason::NotAvailable(
+                    "legacy manifest.json requires explicit migration before group verification"
+                        .into(),
+                ),
+            });
+        }
         // Migration changes the descriptor inode. Keep the namespace admitted until
         // the reader has transferred protection to the newly published descriptor.
         let _namespace = microsandbox_image::storage_lease::StorageLease::shared(&dir)?;
@@ -184,6 +204,7 @@ async fn open_snapshot_impl(
                 .all(|part| !part.as_os_str().to_string_lossy().starts_with('.'))
         });
     if reader
+        && index
         && managed
         && (super::group::group_path(&dir).is_some()
             || dir.parent() == Some(snapshots_dir.as_path()))
@@ -590,7 +611,7 @@ pub(crate) async fn remove_snapshot_expected(
         return Ok(());
     }
 
-    let snapshot = open_snapshot_impl(local, path.to_string_lossy().as_ref(), false).await?;
+    let snapshot = open_snapshot_impl(local, path.to_string_lossy().as_ref(), false, true).await?;
     if expected.is_some_and(|expected| expected != snapshot.digest()) {
         return Err(MicrosandboxError::SnapshotIntegrity(
             "snapshot handle refers to a replaced artifact".into(),

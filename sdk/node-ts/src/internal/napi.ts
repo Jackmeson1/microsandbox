@@ -1528,6 +1528,7 @@ export interface NapiSnapshotGroupStatic {
 }
 
 export interface NapiSnapshotGroup {
+  verifyJson(): Promise<string>;
   spawnSandboxWithBuilder(builder: NapiRestoreBuilder): Promise<NapiSandbox>;
   spawnSandboxWithProgressBuilder(builder: NapiRestoreBuilder): Promise<NapiPullProgressCreate>;
   readonly name: string;

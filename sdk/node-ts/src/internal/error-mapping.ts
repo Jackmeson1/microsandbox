@@ -31,12 +31,14 @@ import {
   SandboxStillRunningError,
   SnapshotSourceRecoveryError,
   SnapshotImportError,
+  SnapshotVerificationError,
   TerminalError,
   UnsupportedOperationError,
   UnsupportedError,
   VolumeAlreadyExistsError,
   VolumeNotFoundError,
 } from "../errors.js";
+import { parseGroupVerification } from "../snapshot-verification.js";
 
 // The recovery variant carries a JSON envelope after the usual tag; all others carry text.
 const PATTERN = /^\[(\w+)\] ([\s\S]*)$/;
@@ -97,6 +99,13 @@ export function mapNapiError(err: unknown): unknown {
   const m = PATTERN.exec(err.message);
   if (!m) return err;
   if (m[1] === "SnapshotImport") return mapImportError(m[2]!, err);
+  if (m[1] === "SnapshotVerification") {
+    try {
+      const envelope = JSON.parse(m[2]!);
+      if (typeof envelope.message !== "string") return err;
+      return new SnapshotVerificationError(envelope.message, parseGroupVerification(envelope.report), { cause: err });
+    } catch { return err; }
+  }
   if (m[1] === "SnapshotSourceRecovery") {
     return mapRecoveryError(m[2]!, err);
   }

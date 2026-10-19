@@ -200,8 +200,16 @@ pub struct SnapshotInspectArgs {
 /// Arguments for `msb snapshot verify`.
 #[derive(Debug, Args)]
 pub struct SnapshotVerifyArgs {
-    /// Snapshot to verify (path, name, or digest).
+    /// Snapshot group whose head, exact member, or whole history should be verified.
     pub snapshot: String,
+
+    /// Verify this group-local checkpoint name or ID instead of head.
+    #[arg(long, conflicts_with = "all")]
+    pub checkpoint: Option<String>,
+
+    /// Verify all members, including when the group has no selected head.
+    #[arg(long)]
+    pub all: bool,
 }
 
 /// Arguments for `msb snapshot remove`.
@@ -710,7 +718,20 @@ async fn inspect(args: SnapshotInspectArgs) -> anyhow::Result<()> {
 }
 
 async fn verify(args: SnapshotVerifyArgs) -> anyhow::Result<()> {
-    let snap = Snapshot::open(&args.snapshot).await?;
+    if args.all {
+        let group = SnapshotGroup::get(&args.snapshot).await?;
+        return match group.verify().await {
+            Ok(report) => display_group_verification(&report),
+            Err(microsandbox::MicrosandboxError::SnapshotVerification(report)) => {
+                // Print the structured partial report before returning failure. A corrupt
+                // sibling must not hide the results for the rest of the selected history.
+                display_group_verification(&report)?;
+                anyhow::bail!("snapshot group verification failed");
+            }
+            Err(error) => Err(error.into()),
+        };
+    }
+    let snap = select_checkpoint(&args.snapshot, args.checkpoint.as_deref()).await?;
     let report = snap.verify().await?;
     ui::detail_kv("Digest", &report.digest);
     ui::detail_kv("Path", &report.path.display().to_string());
@@ -726,6 +747,44 @@ async fn verify(args: SnapshotVerifyArgs) -> anyhow::Result<()> {
         ui::detail_kv("Verification", &format_verify_status(&report.upper));
     }
     require_complete_verification(&report.coverage)
+}
+
+fn display_group_verification(
+    report: &microsandbox::snapshot::SnapshotGroupVerifyReport,
+) -> anyhow::Result<()> {
+    use microsandbox::snapshot::SnapshotVerificationState;
+    let state = |state| match state {
+        SnapshotVerificationState::Complete => "complete",
+        SnapshotVerificationState::Incomplete => "incomplete",
+        SnapshotVerificationState::Invalid => "invalid",
+        SnapshotVerificationState::Empty => "empty (0 checkpoints checked)",
+    };
+    ui::detail_kv("Group", &report.group);
+    ui::detail_kv("Verification", state(report.state));
+    ui::detail_kv(
+        "Selected checkpoints",
+        &report.checkpoints.len().to_string(),
+    );
+    for member in &report.checkpoints {
+        ui::detail_header(
+            &member
+                .id
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| member.path.display().to_string()),
+        );
+        ui::detail_kv_indent("Verification", state(member.state));
+        for finding in &member.findings {
+            ui::detail_kv_indent(&finding.path.display().to_string(), &finding.detail);
+        }
+    }
+    match report.state {
+        SnapshotVerificationState::Complete | SnapshotVerificationState::Empty => Ok(()),
+        SnapshotVerificationState::Incomplete => {
+            anyhow::bail!("snapshot group verification incomplete")
+        }
+        SnapshotVerificationState::Invalid => anyhow::bail!("snapshot group verification failed"),
+    }
 }
 
 fn require_complete_verification(
@@ -1323,6 +1382,30 @@ mod tests {
         assert_eq!(
             args.dest.as_deref(),
             Some(std::path::Path::new("/tmp/snaps"))
+        );
+    }
+
+    #[test]
+    fn verify_selects_head_exact_member_or_whole_group() {
+        for (tail, exact, all) in [
+            (vec![], None, false),
+            (vec!["--checkpoint", "ready"], Some("ready"), false),
+            (vec!["--all"], None, true),
+        ] {
+            let args = ["verify", "work"]
+                .into_iter()
+                .chain(tail)
+                .collect::<Vec<_>>();
+            let SnapshotCommands::Verify(args) = parse_snapshot_args(&args).command else {
+                panic!("expected verify command");
+            };
+            assert_eq!(args.snapshot, "work");
+            assert_eq!(args.checkpoint.as_deref(), exact);
+            assert_eq!(args.all, all);
+        }
+        assert!(
+            TestCli::try_parse_from(["msb", "verify", "work", "--all", "--checkpoint", "ready"])
+                .is_err()
         );
     }
 

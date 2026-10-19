@@ -1005,6 +1005,177 @@ async fn verify_reports_not_recorded_without_reading_payload_contents() {
     );
 }
 
+/// Install fixtures in the released group layout without running an import that would reject
+/// corruption first. These tests exercise the public reader against already-damaged storage.
+fn verification_group(home: &Path, members: &[PathBuf], head: Option<&str>) -> PathBuf {
+    let group = home.join("snapshots/verification");
+    std::fs::create_dir_all(&group).unwrap();
+    std::fs::write(
+        group.join("group.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema": "microsandbox.snapshot-group/1", "head": head,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    for member in members {
+        std::fs::rename(member, group.join(artifact_id(member))).unwrap();
+    }
+    group
+}
+
+#[tokio::test]
+async fn group_verify_headless_members_share_only_physical_hashes() {
+    use microsandbox::snapshot::SnapshotVerificationState;
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    let backend = isolated_backend(&home).await;
+    let (first, _) = make_artifact_with_integrity(tmp.path(), "first", b"original", true);
+    let (second, _) = make_artifact_with_integrity(tmp.path(), "second", b"original", true);
+    let (third, _) = make_artifact_with_integrity(tmp.path(), "third", b"original", true);
+    std::fs::remove_file(second.join(DEFAULT_UPPER_FILE)).unwrap();
+    std::fs::hard_link(
+        first.join(DEFAULT_UPPER_FILE),
+        second.join(DEFAULT_UPPER_FILE),
+    )
+    .unwrap();
+    verification_group(&home, &[first, second, third], None);
+    microsandbox::with_backend(backend, async {
+        let group = microsandbox::Snapshot::get("verification").await.unwrap();
+        assert!(group.head().await.unwrap().is_none());
+        let report = group.verify().await.unwrap();
+        assert_eq!(report.state, SnapshotVerificationState::Complete);
+        assert_eq!(report.checkpoints.len(), 3);
+        assert_eq!(report.payload_hashes, 2);
+        assert!(
+            report
+                .checkpoints
+                .iter()
+                .all(|member| member.report.is_some() && member.findings.is_empty())
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn group_verify_errors_keep_valid_corrupt_and_missing_members_in_report() {
+    use microsandbox::snapshot::{SnapshotVerificationFindingKind, SnapshotVerificationState};
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    let backend = isolated_backend(&home).await;
+    let (first, _) = make_artifact_with_integrity(tmp.path(), "first", b"original", true);
+    let first_id = artifact_id(&first);
+    let (second, _) = make_artifact_with_integrity(tmp.path(), "second", b"original", true);
+    std::fs::write(second.join(DEFAULT_UPPER_FILE), b"tampered").unwrap();
+    let missing = format!("snap_{:032x}", 999);
+    verification_group(&home, &[first, second], Some(&missing));
+    microsandbox::with_backend(backend, async {
+        let group = microsandbox::Snapshot::get("verification").await.unwrap();
+        assert!(group.head().await.is_err());
+        let microsandbox::MicrosandboxError::SnapshotVerification(report) =
+            group.verify().await.unwrap_err()
+        else {
+            panic!("group failures must preserve the full report");
+        };
+        assert_eq!(report.state, SnapshotVerificationState::Invalid);
+        assert_eq!(report.checkpoints.len(), 3);
+        assert_eq!(report.payload_hashes, 2);
+        assert_eq!(
+            report
+                .checkpoints
+                .iter()
+                .find(|member| member.id.as_ref().is_some_and(|id| id.as_str() == first_id))
+                .unwrap()
+                .state,
+            SnapshotVerificationState::Complete
+        );
+        assert!(
+            report
+                .checkpoints
+                .iter()
+                .flat_map(|member| &member.findings)
+                .any(|finding| finding.kind == SnapshotVerificationFindingKind::Missing)
+        );
+        assert!(
+            report
+                .checkpoints
+                .iter()
+                .flat_map(|member| &member.findings)
+                .any(|finding| finding.kind == SnapshotVerificationFindingKind::Invalid)
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn group_verify_empty_and_unrecorded_are_explicit() {
+    use microsandbox::snapshot::SnapshotVerificationState;
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    let backend = isolated_backend(&home).await;
+    let directory = verification_group(&home, &[], None);
+    microsandbox::with_backend(backend, async {
+        let group = microsandbox::Snapshot::get("verification").await.unwrap();
+        let empty = group.verify().await.unwrap();
+        assert_eq!(empty.state, SnapshotVerificationState::Empty);
+        assert!(empty.checkpoints.is_empty());
+        assert_eq!(empty.payload_hashes, 0);
+        let (member, _) = make_artifact(tmp.path(), "unrecorded", b"original");
+        std::fs::rename(&member, directory.join(artifact_id(&member))).unwrap();
+        let report = group.verify().await.unwrap();
+        assert_eq!(report.state, SnapshotVerificationState::Incomplete);
+        assert_eq!(report.payload_hashes, 0);
+        assert_eq!(report.checkpoints.len(), 1);
+        assert!(report.checkpoints[0].report.is_some());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn group_verify_reports_malformed_and_unsupported_members() {
+    use microsandbox::snapshot::SnapshotVerificationFindingKind;
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    let backend = isolated_backend(&home).await;
+    let (member, _) = make_artifact_with_unknown_require(tmp.path(), "future", b"original");
+    let directory = verification_group(&home, &[member], None);
+    std::fs::create_dir(directory.join("broken")).unwrap();
+    let legacy = directory.join(format!("snap_{:032x}", 997));
+    std::fs::create_dir(&legacy).unwrap();
+    std::fs::write(legacy.join("manifest.json"), b"{}").unwrap();
+    // A non-directory entry bearing a member ID must not disappear from the report.
+    std::fs::write(directory.join(format!("snap_{:032x}", 998)), b"wrong kind").unwrap();
+    microsandbox::with_backend(backend, async {
+        let group = microsandbox::Snapshot::get("verification").await.unwrap();
+        let microsandbox::MicrosandboxError::SnapshotVerification(report) =
+            group.verify().await.unwrap_err()
+        else {
+            panic!("group failures must preserve the full report");
+        };
+        assert_eq!(report.checkpoints.len(), 4);
+        assert_eq!(report.payload_hashes, 0);
+        assert_eq!(std::fs::read(legacy.join("manifest.json")).unwrap(), b"{}");
+        assert!(
+            !legacy.join(DESCRIPTOR_FILENAME).exists(),
+            "verification must not migrate a descriptor"
+        );
+        assert!(
+            report
+                .checkpoints
+                .iter()
+                .flat_map(|member| &member.findings)
+                .any(|finding| finding.kind == SnapshotVerificationFindingKind::Unsupported)
+        );
+        assert!(
+            report
+                .checkpoints
+                .iter()
+                .all(|member| member.report.is_none())
+        );
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn verified_head_does_not_hide_unrecorded_ancestor_integrity() {
     use microsandbox::snapshot::{SnapshotVerifyCoverage, UpperVerifyStatus};

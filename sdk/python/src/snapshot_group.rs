@@ -40,6 +40,16 @@ pub struct PySnapshotImportResult {
 
 #[pymethods]
 impl PySnapshotGroup {
+    /// Verify every selected member, preserving a complete report on verification errors.
+    fn verify<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let group = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let report = group.verify().await.map_err(to_py_err)?;
+            let value = serde_json::to_value(report).map_err(|error| to_py_err(error.into()))?;
+            Python::with_gil(|py| crate::sandbox_handle::json_value_to_py(py, value))
+        })
+    }
+
     #[staticmethod]
     #[pyo3(signature = (group, files, *, dest=None, base=None, set_head=false))]
     fn load<'py>(

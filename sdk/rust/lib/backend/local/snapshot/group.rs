@@ -263,6 +263,45 @@ pub(super) async fn inspect_directory(directory: &Path) -> MicrosandboxResult<Op
     .await
 }
 
+/// Validate group metadata without requiring its selected head to be readable.
+pub(super) async fn validate_directory(directory: &Path) -> MicrosandboxResult<()> {
+    let directory = directory.to_path_buf();
+    blocking(move || {
+        let _lock = lock_group(&directory)?;
+        read_group(&directory)?;
+        Ok(())
+    })
+    .await
+}
+
+/// Verification must report malformed member entries instead of silently skipping them.
+pub(super) async fn verification_paths(directory: &Path) -> MicrosandboxResult<Vec<PathBuf>> {
+    let directory = directory.to_path_buf();
+    blocking(move || {
+        let _lock = lock_group(&directory)?;
+        let state = read_group(&directory)?;
+        let mut paths = Vec::new();
+        for entry in fs::read_dir(&directory)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with('.')
+                && (entry.file_type()?.is_dir() || SnapshotId::new(name.as_ref()).is_ok())
+            {
+                paths.push(entry.path());
+            }
+        }
+        // A dangling selected head is a missing member, not an empty verified group.
+        if let Some(head) = state.head {
+            paths.push(directory.join(head));
+        }
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    })
+    .await
+}
+
 /// Group-local member lookup never interprets a member name as a host path.
 pub(super) async fn selected_path(directory: &Path, member: &str) -> MicrosandboxResult<PathBuf> {
     validate_name(member, "checkpoint selector")?;

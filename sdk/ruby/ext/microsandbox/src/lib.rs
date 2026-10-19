@@ -274,6 +274,7 @@ fn core_error_class_name(error: &MicrosandboxError) -> &'static str {
         MicrosandboxError::SnapshotIntegrity(_) => "SnapshotIntegrityError",
         MicrosandboxError::SnapshotSourceRecovery(_) => "SnapshotSourceRecoveryError",
         MicrosandboxError::SnapshotImport(_) => "SnapshotImportError",
+        MicrosandboxError::SnapshotVerification(_) => "SnapshotVerificationError",
         MicrosandboxError::SnapshotMigration { .. } => "SnapshotMigrationError",
         // Always present: the extension enables the core's `net` feature.
         MicrosandboxError::NetworkBuilder(_) => "NetworkPolicyError",
@@ -304,6 +305,23 @@ fn exception_class(ruby: &Ruby, name: &str) -> ExceptionClass {
 /// always the core error's `Display` rendering, except for `Unsupported`,
 /// which names the Ruby API instead of the Rust path.
 fn core_error(ruby: &Ruby, error: MicrosandboxError) -> Error {
+    if let MicrosandboxError::SnapshotVerification(report) = &error {
+        let class = exception_class(ruby, "SnapshotVerificationError");
+        let message = error.to_string();
+        let exception = match class.new_instance((message.as_str(),)) {
+            Ok(exception) => exception,
+            Err(_) => return Error::new(class, message),
+        };
+        if let Some(object) = RObject::from_value(exception.as_value()) {
+            match snapshot_group::verification_report(ruby, report)
+                .and_then(|report| object.ivar_set("@report", report))
+            {
+                Ok(()) => {}
+                Err(error) => return error,
+            }
+        }
+        return Error::from(exception);
+    }
     if let MicrosandboxError::Unsupported { op, reason } = &error {
         return unsupported_error(ruby, &ruby_api_name(*op), &ruby_hint(reason));
     }

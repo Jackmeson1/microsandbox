@@ -116,6 +116,7 @@ export {
 export { Snapshot as Checkpoint, SnapshotSaveOptions, SnapshotArchive } from "./snapshot.js";
 export { Snapshot, SnapshotCaptureOptions, SnapshotLoadOptions } from "./snapshot-group.js";
 export type { SnapshotCreateResult, CheckpointCaptureResult, SnapshotImportResult } from "./snapshot-group.js";
+export type { SnapshotGroupVerifyReport, CheckpointVerification, SnapshotVerificationFinding, SnapshotVerificationFindingKind, SnapshotVerificationState } from "./snapshot-verification.js";
 export type { DiskCompactionOptions, DiskCompactionDiskResult, DiskCompactionResult } from "./compact.js";
 import { Snapshot as _Snapshot, type SnapshotBuilder as _SnapBT } from "./snapshot.js";
 /**
@@ -497,6 +498,7 @@ export {
   SandboxStillRunningError,
   SnapshotSourceRecoveryError,
   SnapshotImportError,
+  SnapshotVerificationError,
   TerminalError,
   UnsupportedOperationError,
   UnsupportedError,

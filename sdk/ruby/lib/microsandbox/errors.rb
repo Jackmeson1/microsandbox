@@ -92,6 +92,12 @@ module Microsandbox
   # execution state; see the class body below for the recovery locator.
   define_error(:SnapshotSourceRecoveryError, "snapshot-source-recovery")
   define_error(:SnapshotImportError, "snapshot-import")
+  define_error(:SnapshotVerificationError, "snapshot-verification")
+
+  class SnapshotVerificationError
+    # All selected members remain available when corruption makes verification fail.
+    attr_reader :report
+  end
   # The automatic adjacent-release snapshot migration was blocked.
   define_error(:SnapshotMigrationError, "snapshot-migration")
 

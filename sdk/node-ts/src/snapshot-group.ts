@@ -4,6 +4,7 @@ import { napi, type NapiSnapshotGroup, type NapiSnapshotCreateResult, type NapiS
 import { Snapshot as Checkpoint, type HeadUpdate } from "./snapshot.js";
 import { SnapshotHandle as CheckpointHandle } from "./snapshot-handle.js";
 import { Sandbox, CreationProgressCreate, type RestoreBuilder } from "./sandbox.js";
+import { parseGroupVerification, type SnapshotGroupVerifyReport } from "./snapshot-verification.js";
 
 /** Controls for capturing one immutable member of a source-bound history. */
 export class SnapshotCaptureOptions {
@@ -62,6 +63,11 @@ export interface SnapshotImportResult {
 export class Snapshot {
   /** @internal */
   constructor(readonly inner: NapiSnapshotGroup) {}
+
+  /** Verify every selected member. Failures reject with a SnapshotVerificationError and report. */
+  async verify(): Promise<SnapshotGroupVerifyReport> {
+    return parseGroupVerification(JSON.parse(await withMappedErrors(() => this.inner.verifyJson())));
+  }
 
   static async load(group: string, files: string[]): Promise<SnapshotImportResult> {
     return Snapshot.loadWith(group, files, options => options);

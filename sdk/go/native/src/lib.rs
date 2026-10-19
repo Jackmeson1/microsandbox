@@ -483,6 +483,7 @@ mod error_kind {
     pub const SNAPSHOT_MIGRATION: &str = "snapshot_migration";
     pub const SNAPSHOT_SOURCE_RECOVERY: &str = "snapshot_source_recovery";
     pub const SNAPSHOT_IMPORT: &str = "snapshot_import";
+    pub const SNAPSHOT_VERIFICATION: &str = "snapshot_verification";
     pub const PATCH_FAILED: &str = "patch_failed";
     pub const METRICS_DISABLED: &str = "metrics_disabled";
     pub const METRICS_UNAVAILABLE: &str = "metrics_unavailable";
@@ -495,6 +496,7 @@ struct FfiError {
     message: String,
     recovery: Option<Box<microsandbox::SnapshotSourceRecoveryError>>,
     import: Option<Box<microsandbox::SnapshotImportError>>,
+    verification: Option<Box<microsandbox::snapshot::SnapshotGroupVerifyReport>>,
     os_error: Option<i32>,
 }
 
@@ -515,6 +517,7 @@ impl FfiError {
             message: message.into(),
             recovery: None,
             import: None,
+            verification: None,
             os_error: None,
         }
     }
@@ -543,6 +546,9 @@ impl FfiError {
                 r#"{{"kind":"{}","message":{},"os_error":{}}}"#,
                 self.kind, msg, os_error
             );
+        }
+        if let Some(report) = &self.verification {
+            return serde_json::json!({ "kind": self.kind, "message": self.message, "report": report }).to_string();
         }
         if let Some(details) = &self.import
             && let Ok(details) = serde_json::to_string(details)
@@ -591,6 +597,7 @@ impl From<MicrosandboxError> for FfiError {
             MicrosandboxError::SnapshotMigration { .. } => error_kind::SNAPSHOT_MIGRATION,
             MicrosandboxError::SnapshotSourceRecovery(_) => error_kind::SNAPSHOT_SOURCE_RECOVERY,
             MicrosandboxError::SnapshotImport(_) => error_kind::SNAPSHOT_IMPORT,
+            MicrosandboxError::SnapshotVerification(_) => error_kind::SNAPSHOT_VERIFICATION,
             MicrosandboxError::PatchFailed(_) => error_kind::PATCH_FAILED,
             MicrosandboxError::MetricsDisabled(_) => error_kind::METRICS_DISABLED,
             MicrosandboxError::MetricsUnavailable(_) => error_kind::METRICS_UNAVAILABLE,
@@ -601,10 +608,11 @@ impl From<MicrosandboxError> for FfiError {
             _ => error_kind::INTERNAL,
         };
         let message = e.to_string();
-        let (recovery, import) = match e {
-            MicrosandboxError::SnapshotSourceRecovery(recovery) => (Some(recovery), None),
-            MicrosandboxError::SnapshotImport(details) => (None, Some(details)),
-            _ => (None, None),
+        let (recovery, import, verification) = match e {
+            MicrosandboxError::SnapshotSourceRecovery(recovery) => (Some(recovery), None, None),
+            MicrosandboxError::SnapshotImport(details) => (None, Some(details), None),
+            MicrosandboxError::SnapshotVerification(report) => (None, None, Some(report)),
+            _ => (None, None, None),
         };
         Self {
             kind,
@@ -612,6 +620,7 @@ impl From<MicrosandboxError> for FfiError {
             os_error: None,
             recovery,
             import,
+            verification,
         }
     }
 }

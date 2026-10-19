@@ -170,6 +170,15 @@ class PublishedSnapshotArtifact:
     digest: str
 
 
+class SnapshotVerificationError(MicrosandboxError):
+    """Verification failed; report retains every selected member and its findings."""
+    code = "snapshot-verification"
+
+    def __init__(self, message: str, report: dict) -> None:
+        super().__init__(message)
+        self.report = report
+
+
 class SnapshotImportError(MicrosandboxError):
     """An import failure retaining whether the entire batch committed.
 

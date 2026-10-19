@@ -51,7 +51,7 @@ impl SnapshotBackend for LocalBackend {
         Box::pin(async move {
             group::validate_group_name(name)?;
             let directory = self.snapshots_dir().join(name);
-            group::inspect_directory(&directory).await?;
+            group::validate_directory(&directory).await?;
             Ok(crate::Snapshot {
                 backend,
                 name: name.into(),
@@ -273,6 +273,13 @@ impl SnapshotBackend for LocalBackend {
             SnapshotReference::Path(path) => Ok(Path::new(path)),
             _ => Err(MicrosandboxError::local_only(Operation::SnapshotOps)),
         }
+    }
+
+    fn verify_group<'a>(
+        &'a self,
+        reference: &'a SnapshotReference,
+    ) -> BoxFuture<'a, MicrosandboxResult<crate::snapshot::SnapshotGroupVerifyReport>> {
+        Box::pin(async move { verify::verify_group(self, self.path(reference)?).await })
     }
 
     fn verify<'a>(

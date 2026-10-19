@@ -1,3 +1,5 @@
+import type { SnapshotGroupVerifyReport } from "./snapshot-verification.js";
+
 export type MicrosandboxErrorCode =
   | "io"
   | "http"
@@ -30,6 +32,7 @@ export type MicrosandboxErrorCode =
   | "patchFailed"
   | "snapshotSourceRecovery"
   | "snapshotImport"
+  | "snapshotVerification"
   | "metricsDisabled"
   | "metricsUnavailable"
   | "unsupportedOperation"
@@ -275,6 +278,13 @@ export interface SnapshotImportDetails {
 export class SnapshotImportError extends MicrosandboxError {
   constructor(message: string, readonly details: SnapshotImportDetails, options?: ErrorOptions) {
     super("snapshotImport", message, options);
+  }
+}
+
+/** Failed verification retains results for every selected checkpoint. */
+export class SnapshotVerificationError extends MicrosandboxError {
+  constructor(message: string, readonly report: SnapshotGroupVerifyReport, options?: ErrorOptions) {
+    super("snapshotVerification", message, options);
   }
 }
 

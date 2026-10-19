@@ -8,7 +8,7 @@ use std::path::PathBuf;
 //--------------------------------------------------------------------------------------------------
 
 /// Result of explicit snapshot verification.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SnapshotVerifyReport {
     /// Snapshot manifest digest.
     pub digest: String,
@@ -37,14 +37,16 @@ pub enum SnapshotVerifyCoverage {
 }
 
 /// Verified identity of a composite-checkpoint closure.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename = "verified")]
 pub struct CheckpointVerifyStatus {
     /// SHA-256 identity of the canonical checkpoint root manifest.
     pub root: String,
 }
 
 /// Upper-layer content verification result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UpperVerifyStatus {
     /// The snapshot intentionally has no persistent payload integrity.
     NotRecorded,
@@ -55,6 +57,78 @@ pub enum UpperVerifyStatus {
         /// Matching digest or Merkle root.
         digest: String,
     },
+}
+
+/// Outcome of verification, with empty selections distinct from checked artifacts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotVerificationState {
+    /// All selected members and required payload bindings were verified.
+    Complete,
+    /// Required integrity was unrecorded or could not be checked.
+    Incomplete,
+    /// A selected artifact was missing, changed, malformed, or corrupt.
+    Invalid,
+    /// The group contained no members; no checkpoint was verified.
+    Empty,
+}
+
+/// Why one payload or member could not be fully verified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotVerificationFindingKind {
+    /// A required file or dependency was absent.
+    Missing,
+    /// Content or structure did not match its recorded binding.
+    Invalid,
+    /// The file could not be read because of an operational failure.
+    Unavailable,
+    /// A selected file changed while verification was in progress.
+    Changed,
+    /// This reader cannot interpret a required artifact feature.
+    Unsupported,
+    /// No checksum was recorded for this required payload.
+    NotRecorded,
+}
+
+/// A specific verification failure or coverage gap, attached to every affected checkpoint.
+#[derive(Debug, Clone, Serialize)]
+pub struct SnapshotVerificationFinding {
+    /// File or member whose verification could not complete.
+    pub path: PathBuf,
+    /// Machine-readable reason, independent of the human diagnostic.
+    pub kind: SnapshotVerificationFindingKind,
+    /// Diagnostic explaining the failed check.
+    pub detail: String,
+}
+
+/// Verification of one member in the group membership selected at operation start.
+#[derive(Debug, Clone, Serialize)]
+pub struct CheckpointVerification {
+    /// Stable member identity, if the directory name or descriptor provided a valid identity.
+    pub id: Option<super::SnapshotId>,
+    /// Selected member directory.
+    pub path: PathBuf,
+    /// Complete, incomplete or invalid; members never have the group's empty state.
+    pub state: SnapshotVerificationState,
+    /// Existing artifact report when all recorded checks succeeded, even if coverage is incomplete.
+    pub report: Option<SnapshotVerifyReport>,
+    /// Every observed failure or missing checksum, including shared dependency failures.
+    pub findings: Vec<SnapshotVerificationFinding>,
+}
+
+/// Report for one pinned whole-group verification. Corruption and operational failures return
+/// this report through `MicrosandboxError::SnapshotVerification`; they are never successful results.
+#[derive(Debug, Clone, Serialize)]
+pub struct SnapshotGroupVerifyReport {
+    /// Selected group name.
+    pub group: String,
+    /// Aggregate status; an empty group is not a verified checkpoint.
+    pub state: SnapshotVerificationState,
+    /// All selected members, in stable directory-name order, including malformed members.
+    pub checkpoints: Vec<CheckpointVerification>,
+    /// Physical payload hash passes; shared hard links use one pass per required algorithm.
+    pub payload_hashes: usize,
 }
 
 /// Options for installing an archive in a local snapshot group.

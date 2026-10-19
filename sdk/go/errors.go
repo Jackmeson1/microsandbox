@@ -2,6 +2,7 @@ package microsandbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -173,6 +174,8 @@ const (
 	ErrSandboxStopTimedOut
 	// ErrSnapshotImport retains whether a failed archive import committed its batch.
 	ErrSnapshotImport
+	// ErrSnapshotVerification retains the whole-group verification report.
+	ErrSnapshotVerification
 )
 
 func (k ErrorKind) String() string {
@@ -223,6 +226,8 @@ func (k ErrorKind) String() string {
 		return "SnapshotMigration"
 	case ErrSnapshotImport:
 		return "SnapshotImport"
+	case ErrSnapshotVerification:
+		return "SnapshotVerification"
 	case ErrSnapshotSourceRecovery:
 		return "SnapshotSourceRecovery"
 	case ErrPatchFailed:
@@ -309,6 +314,15 @@ type SnapshotImportError struct {
 func (e *SnapshotImportError) Error() string { return e.err.Message }
 func (e *SnapshotImportError) Unwrap() error { return e.err }
 
+// SnapshotVerificationError preserves per-member results without treating corruption as success.
+type SnapshotVerificationError struct {
+	Report *SnapshotGroupVerifyReport
+	err    *Error
+}
+
+func (e *SnapshotVerificationError) Error() string { return e.err.Message }
+func (e *SnapshotVerificationError) Unwrap() error { return e.err }
+
 // SnapshotSourceRecoveryDetails contains recovery locators. Their presence does not
 // imply the source is running, safely paused, or eligible for ordinary resume.
 type SnapshotSourceRecoveryDetails struct {
@@ -377,6 +391,12 @@ func wrapFFI(err error) error {
 	}
 	var fe *ffi.Error
 	if errors.As(err, &fe) {
+		if fe.Kind == ffi.KindSnapshotVerification && len(fe.Report) != 0 {
+			var report SnapshotGroupVerifyReport
+			if json.Unmarshal(fe.Report, &report) == nil {
+				return &SnapshotVerificationError{Report: &report, err: &Error{Kind: ErrSnapshotVerification, Message: fe.Message, Cause: fe}}
+			}
+		}
 		if fe.Kind == ffi.KindSnapshotImport && fe.Import != nil {
 			d := fe.Import
 			return &SnapshotImportError{
@@ -453,6 +473,8 @@ func kindFromFFI(kind string) ErrorKind {
 		return ErrSnapshotMigration
 	case ffi.KindSnapshotImport:
 		return ErrSnapshotImport
+	case ffi.KindSnapshotVerification:
+		return ErrSnapshotVerification
 	case ffi.KindSnapshotSourceRecovery:
 		return ErrSnapshotSourceRecovery
 	case ffi.KindPatchFailed:

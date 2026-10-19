@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { Snapshot, snapshotCreateResult } from "../../dist/snapshot-group.js";
 import { napi } from "../../dist/internal/napi.js";
+import { SnapshotVerificationError } from "../../dist/errors.js";
 
 vi.mock("../../dist/internal/napi.js", () => ({
   napi: { SnapshotGroup: { get: vi.fn(), list: vi.fn(), load: vi.fn() }, Snapshot: { groupHead: vi.fn() } },
@@ -19,6 +20,33 @@ function group(overrides: Record<string, unknown> = {}) {
 }
 
 describe("group and checkpoint separation", () => {
+  it("verifies the whole headless group and preserves empty reporting", async () => {
+    const native = group({ verifyJson: vi.fn().mockResolvedValue(JSON.stringify({ group: "history", state: "empty", checkpoints: [], payload_hashes: 0 })) });
+    const history = new Snapshot(native as never);
+    expect(await history.verify()).toEqual({ group: "history", state: "empty", checkpoints: [], payloadHashes: 0 });
+    expect(native.head).not.toHaveBeenCalled();
+  });
+
+  it("keeps all member findings when verification rejects", async () => {
+    const wire = { group: "history", state: "invalid", payload_hashes: 1, checkpoints: [
+      { id: "one", path: "/one", state: "complete", findings: [], report: { digest: "descriptor", path: "/one", upper: { kind: "verified", algorithm: "sha256", digest: "payload" }, checkpoint: null, coverage: { kind: "complete" } } },
+      { id: "two", path: "/two", state: "invalid", report: null, findings: [{ path: "/two/disk", kind: "missing", detail: "missing payload" }] },
+    ] };
+    const raw = new Error(`[SnapshotVerification] ${JSON.stringify({ message: "verification failed", report: wire })}`);
+    const history = new Snapshot(group({ verifyJson: vi.fn().mockRejectedValue(raw) }) as never);
+    const error = await history.verify().catch(error => error);
+    expect(error).toBeInstanceOf(SnapshotVerificationError);
+    expect(error.report.payloadHashes).toBe(1);
+    expect(error.report.checkpoints[0].report.upper.kind).toBe("verified");
+    expect(error.report.checkpoints[1].findings[0].kind).toBe("missing");
+    expect(error.cause).toBe(raw);
+  });
+
+  it("rejects an unknown report state instead of inferring completeness", async () => {
+    const history = new Snapshot(group({ verifyJson: vi.fn().mockResolvedValue(JSON.stringify({ group: "history", state: "future", checkpoints: [], payload_hashes: 0 })) }) as never);
+    await expect(history.verify()).rejects.toThrow("invalid native snapshot group verification report");
+  });
+
   it("opens a headless group without manufacturing a checkpoint", async () => {
     const native = group();
     vi.mocked(napi.SnapshotGroup.get).mockResolvedValue(native as never);

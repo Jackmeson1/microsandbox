@@ -349,7 +349,14 @@ async fn dispatch(id: u64, request: Request, pending: &PendingObjects) -> Result
                 .await?;
             Ok(json!({"ok": true}))
         }
-        Request::Verify => Ok(verify_report_json(checkpoint(id)?.verify().await?)),
+        Request::Verify => match object(id)? {
+            Object::Group(group) => serde_json::to_value(group.verify().await?)
+                .map_err(|error| FfiError::internal(error.to_string())),
+            Object::Checkpoint(checkpoint) => Ok(verify_report_json(checkpoint.verify().await?)),
+            Object::Source(_) => Err(FfiError::invalid_argument(
+                "verification requires a group or checkpoint receiver",
+            )),
+        },
         Request::Spawn { name, options } => {
             let builder = crate::restore::builder(name, &options)?;
             let checkpoint = match object(id)? {

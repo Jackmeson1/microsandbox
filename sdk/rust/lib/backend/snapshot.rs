@@ -16,6 +16,18 @@ use crate::snapshot::{
 
 /// Backend implementation for snapshot lifecycle operations.
 pub trait SnapshotBackend: Send + Sync {
+    /// Verify a pinned whole-group membership, preserving per-member failures in the error report.
+    fn verify_group<'a>(
+        &'a self,
+        _group: &'a SnapshotReference,
+    ) -> BoxFuture<'a, MicrosandboxResult<crate::snapshot::SnapshotGroupVerifyReport>> {
+        Box::pin(async {
+            Err(crate::MicrosandboxError::local_only(
+                crate::Operation::SnapshotOps,
+            ))
+        })
+    }
+
     /// Explicitly set or clear a group's selected head.
     fn change_head<'a>(
         &'a self,

@@ -1,5 +1,10 @@
 //! Snapshot content verification.
 
+mod batch;
+mod group;
+
+pub(super) use group::verify_group;
+
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::io;

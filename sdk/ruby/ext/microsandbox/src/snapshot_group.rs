@@ -47,6 +47,12 @@ struct RubySnapshotImportResult {
 //--------------------------------------------------------------------------------------------------
 
 impl RubyGroup {
+    fn verify(ruby: &Ruby, this: typed_data::Obj<Self>) -> Result<RHash, Error> {
+        let group = this.inner.clone();
+        let report = run(ruby, async move { group.verify().await })?;
+        verification_report(ruby, &report)
+    }
+
     fn load(ruby: &Ruby, args: &[Value]) -> Result<RubySnapshotImportResult, Error> {
         let parsed = scan_args::<(String, Vec<String>), (), (), (), RHash, ()>(args)?;
         let (group, files) = parsed.required;
@@ -345,6 +351,18 @@ fn head_update(update: &microsandbox_core::HeadUpdate) -> Result<RHash, Error> {
     Ok(hash)
 }
 
+/// Success and failure use the same report projection, retaining all per-member findings.
+pub(super) fn verification_report(
+    ruby: &Ruby,
+    report: &microsandbox_core::snapshot::SnapshotGroupVerifyReport,
+) -> Result<RHash, Error> {
+    ruby.require("json")?;
+    let json: RModule = ruby.class_object().const_get("JSON")?;
+    let payload =
+        serde_json::to_string(report).map_err(|error| argument_error(ruby, error.to_string()))?;
+    json.funcall("parse", (payload,))
+}
+
 pub(super) fn register(ruby: &Ruby, module: RModule) -> Result<(), Error> {
     let group = module.define_class("Snapshot", ruby.class_object())?;
     group.define_singleton_method("load", function!(RubyGroup::load, -1))?;
@@ -352,6 +370,7 @@ pub(super) fn register(ruby: &Ruby, module: RModule) -> Result<(), Error> {
     group.define_singleton_method("list", function!(RubyGroup::list, 0))?;
     group.define_method("name", method!(RubyGroup::name, 0))?;
     group.define_method("head", method!(RubyGroup::head, 0))?;
+    group.define_method("verify", method!(RubyGroup::verify, 0))?;
     group.define_method("checkpoints", method!(RubyGroup::checkpoints, 0))?;
     group.define_method("get_checkpoint", method!(RubyGroup::get_checkpoint, 1))?;
     group.define_method("set_head", method!(RubyGroup::set_head, 1))?;

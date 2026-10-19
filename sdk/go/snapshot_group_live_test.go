@@ -4,6 +4,7 @@ package microsandbox
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -211,4 +212,88 @@ func TestSnapshotVerificationCoverageLive(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSnapshotGroupVerificationLive(t *testing.T) {
+	if os.Getenv("MSB_TEST_VERIFY_GROUPS") != "1" {
+		t.Skip("requires isolated verification fixture groups")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	for _, name := range []string{"complete", "incomplete", "corrupt", "future"} {
+		t.Run(name, func(t *testing.T) {
+			group, err := Snapshot.Get(ctx, name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			report, err := group.Verify(ctx)
+			if name == "corrupt" || name == "future" {
+				var verification *SnapshotVerificationError
+				if !errors.As(err, &verification) {
+					t.Fatalf("expected structured verification error, got %T: %v", err, err)
+				}
+				report = verification.Report
+				expected := "invalid"
+				if name == "future" {
+					expected = "incomplete"
+				}
+				if report.State != expected {
+					t.Fatalf("state: %+v", report)
+				}
+				if len(report.Checkpoints) != 1 || len(report.Checkpoints[0].Findings) == 0 {
+					t.Fatalf("missing per-member failures: %+v", report)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if report.State != name || len(report.Checkpoints) != 1 || report.Checkpoints[0].Report == nil {
+					t.Fatalf("report: %+v", report)
+				}
+				if report.Checkpoints[0].Report.Coverage.Kind != name {
+					t.Fatalf("coverage: %+v", report.Checkpoints[0].Report)
+				}
+			}
+		})
+	}
+}
+
+func TestSnapshotGroupFullVerificationLive(t *testing.T) {
+	if os.Getenv("MSB_TEST_FULL_VERIFY_GROUPS") != "1" {
+		t.Skip("requires isolated fullverify/fullcorrupt fixture groups")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	group, err := Snapshot.Get(ctx, "fullverify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := group.Verify(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.State != "incomplete" || report.PayloadHashes == 0 || len(report.Checkpoints) != 1 {
+		t.Fatalf("full report: %+v", report)
+	}
+	artifact := report.Checkpoints[0].Report
+	if artifact == nil || artifact.Checkpoint == nil || artifact.Checkpoint.Kind != "verified" || artifact.Checkpoint.Root == "" || artifact.Coverage.Kind != "incomplete" {
+		t.Fatalf("full artifact: %+v", artifact)
+	}
+	corrupt, err := Snapshot.Get(ctx, "fullcorrupt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = corrupt.Verify(ctx)
+	var verification *SnapshotVerificationError
+	if !errors.As(err, &verification) || verification.Report.State != "invalid" {
+		t.Fatalf("corrupt full result: %v", err)
+	}
+	for _, member := range verification.Report.Checkpoints {
+		for _, finding := range member.Findings {
+			if finding.Kind == "invalid" && strings.Contains(finding.Detail, "integrity mismatch") {
+				return
+			}
+		}
+	}
+	t.Fatalf("missing corruption finding: %+v", verification.Report)
 }

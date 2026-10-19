@@ -8,10 +8,20 @@ use napi::Status;
 /// Convert a `MicrosandboxError` into a `napi::Error` with a typed code string.
 pub fn to_napi_error(err: MicrosandboxError) -> napi::Error {
     let code = error_type_str(&err);
-    if let Some(payload) = source_recovery_payload(&err).or_else(|| import_payload(&err)) {
+    if let Some(payload) = source_recovery_payload(&err)
+        .or_else(|| import_payload(&err))
+        .or_else(|| verification_payload(&err))
+    {
         return napi::Error::new(Status::GenericFailure, format!("[{code}] {payload}"));
     }
     napi::Error::new(Status::GenericFailure, format!("[{code}] {err}"))
+}
+
+fn verification_payload(err: &MicrosandboxError) -> Option<String> {
+    let MicrosandboxError::SnapshotVerification(report) = err else {
+        return None;
+    };
+    Some(serde_json::json!({ "message": err.to_string(), "report": report }).to_string())
 }
 
 fn source_recovery_payload(err: &MicrosandboxError) -> Option<String> {
@@ -85,6 +95,7 @@ fn error_type_str(err: &MicrosandboxError) -> &'static str {
         MicrosandboxError::SnapshotIntegrity(_) => "SnapshotIntegrity",
         MicrosandboxError::SnapshotSourceRecovery(_) => "SnapshotSourceRecovery",
         MicrosandboxError::SnapshotImport(_) => "SnapshotImport",
+        MicrosandboxError::SnapshotVerification(_) => "SnapshotVerification",
         MicrosandboxError::SnapshotMigration { .. } => "SnapshotMigration",
         MicrosandboxError::MetricsDisabled(_) => "MetricsDisabled",
         MicrosandboxError::MetricsUnavailable(_) => "MetricsUnavailable",

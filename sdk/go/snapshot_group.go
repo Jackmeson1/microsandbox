@@ -15,6 +15,41 @@ type SnapshotGroup struct {
 	name   string
 }
 
+// SnapshotGroupVerifyReport covers the membership pinned when verification began.
+// State is complete, incomplete, invalid, or empty (zero checkpoints checked).
+type SnapshotGroupVerifyReport struct {
+	Group         string                   `json:"group"`
+	State         string                   `json:"state"`
+	Checkpoints   []CheckpointVerification `json:"checkpoints"`
+	PayloadHashes uint64                   `json:"payload_hashes"`
+}
+
+// CheckpointVerification preserves existing artifact evidence and every observed finding.
+type CheckpointVerification struct {
+	ID       *string                       `json:"id"`
+	Path     string                        `json:"path"`
+	State    string                        `json:"state"`
+	Report   *SnapshotVerifyReport         `json:"report"`
+	Findings []SnapshotVerificationFinding `json:"findings"`
+}
+
+// SnapshotVerificationFinding identifies missing, invalid, unavailable, changed, unsupported,
+// or not_recorded evidence without requiring callers to parse the diagnostic.
+type SnapshotVerificationFinding struct {
+	Path   string `json:"path"`
+	Kind   string `json:"kind"`
+	Detail string `json:"detail"`
+}
+
+// Verify checks every member. Failures return a SnapshotVerificationError containing the report.
+func (g *SnapshotGroup) Verify(ctx context.Context) (*SnapshotGroupVerifyReport, error) {
+	var report SnapshotGroupVerifyReport
+	if err := snapshotObjectRequest(ctx, g.object, map[string]any{"op": "verify"}, &report); err != nil {
+		return nil, err
+	}
+	return &report, nil
+}
+
 // SnapshotCreateResult owns the initial checkpoint, even if head changes later.
 type SnapshotCreateResult struct {
 	Snapshot   *SnapshotGroup

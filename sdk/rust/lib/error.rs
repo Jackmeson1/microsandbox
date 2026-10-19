@@ -359,6 +359,10 @@ pub enum MicrosandboxError {
     #[error("{0}")]
     SnapshotImport(#[source] Box<SnapshotImportError>),
 
+    /// Group verification failed. The report retains every member outcome, including partial evidence.
+    #[error("snapshot group verification failed for '{}'", .0.group)]
+    SnapshotVerification(Box<crate::snapshot::SnapshotGroupVerifyReport>),
+
     /// An adjacent-release snapshot artifact migration is blocked.
     #[error("snapshot artifact migration failed for {artifact} during {phase}: {code}: {detail}")]
     SnapshotMigration {

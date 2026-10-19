@@ -80,6 +80,12 @@ pub struct SnapshotCaptureOptions {
 //--------------------------------------------------------------------------------------------------
 
 impl Snapshot {
+    /// Verify every member, including a headless history. Shared physical payloads are hashed
+    /// once per algorithm. Corruption returns an error containing the complete group report.
+    pub async fn verify(&self) -> MicrosandboxResult<super::SnapshotGroupVerifyReport> {
+        self.backend.snapshots().verify_group(&self.reference).await
+    }
+
     /// Reopen a named history through the active backend, including a headless history.
     pub async fn get(name: impl AsRef<str>) -> MicrosandboxResult<Self> {
         let backend = crate::backend::default_backend();

@@ -1878,6 +1878,8 @@ export type JsSnapshotCopyBuilder = SnapshotCopyBuilder
 
 /** A named snapshot history, separate from an immutable checkpoint. */
 export declare class SnapshotGroup {
+  /** Internal JSON transport preserves nested per-member results without flattening errors. */
+  verifyJson(): Promise<string>
   static load(group: string, archives: string[], opts?: LoadOpts): Promise<SnapshotImportResult>
   /**
    * Consume destination options; the receiver always selects the source and backend.

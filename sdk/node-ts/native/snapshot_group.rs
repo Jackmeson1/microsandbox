@@ -66,6 +66,13 @@ pub struct JsSnapshotImportResult {
 
 #[napi]
 impl JsSnapshotGroup {
+    /// Internal JSON transport preserves nested per-member results without flattening errors.
+    #[napi]
+    pub async fn verify_json(&self) -> Result<String> {
+        let report = self.inner.verify().await.map_err(to_napi_error)?;
+        serde_json::to_string(&report).map_err(|error| to_napi_error(error.into()))
+    }
+
     #[napi(
         ts_args_type = "group: string, archives: string[], opts?: LoadOpts",
         ts_return_type = "Promise<SnapshotImportResult>"

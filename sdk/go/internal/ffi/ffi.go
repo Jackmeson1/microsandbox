@@ -1289,6 +1289,7 @@ const logsBufSize = 48 << 20
 // serialises {kind, message} JSON with optional recovery metadata; this type unmarshals it. The public SDK
 // maps Kind back into microsandbox.ErrorKind.
 type Error struct {
+	Report   json.RawMessage                `json:"report,omitempty"`
 	Import   *SnapshotImportDetails         `json:"import,omitempty"`
 	Kind     string                         `json:"kind"`
 	Message  string                         `json:"message"`
@@ -1356,6 +1357,7 @@ const (
 	KindSnapshotMigration      = "snapshot_migration"
 	KindSnapshotSourceRecovery = "snapshot_source_recovery"
 	KindSnapshotImport         = "snapshot_import"
+	KindSnapshotVerification   = "snapshot_verification"
 	KindPatchFailed            = "patch_failed"
 	KindMetricsDisabled        = "metrics_disabled"
 	KindMetricsUnavailable     = "metrics_unavailable"

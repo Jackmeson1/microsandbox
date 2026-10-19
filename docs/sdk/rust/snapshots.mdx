@@ -24,6 +24,12 @@ The result contains every unique supplied checkpoint, including bundled dependen
 
 A successful return confirms publication and catalog completion. Warnings describe deferred cleanup after commit. A structured import error distinguishes no publication, confirmed publication with a later failure, and an unknown outcome needing recovery. Import never binds a group to a source sandbox. See [atomic import requirements](/cli/snapshot-commands#msb-snap-import) for filesystem capabilities and maintenance requirements.
 
+## Group verification
+
+`Snapshot::get("worker").await?.verify().await` checks every pinned member and returns `SnapshotGroupVerifyReport`. Its `state` distinguishes `Complete`, `Incomplete`, `Invalid`, and `Empty`; `checkpoints` preserves each member's identity, path, optional existing `SnapshotVerifyReport`, and findings. `payload_hashes` counts physical payload hash passes, deduplicated per algorithm. Headless groups are valid, while empty groups report zero checked. To check only head, obtain `group.head()` and verify that checkpoint.
+
+Missing checksums return explicit incomplete coverage. Corruption, missing files, unsupported required features, and operational failures return `MicrosandboxError::SnapshotVerification(report)` when a meaningful group report exists; failures before selection return the ordinary SDK error. Inspect the attached report without treating the failed call as success. Selected payloads stay reader-pinned until verification finishes, including after caller cancellation.
+
 ## Guest writeback
 
 Use `.guest_flush(GuestFlush::Required)` on snapshot, fork, or fork-many builders, or `source.pause_with_guest_flush(GuestFlush::Required)`. Import `GuestFlush` from `microsandbox::snapshot`. The default `Auto` flushes live disk-only captures, but adds no optional flush to full captures, forks, or pause. `Skip` retains mandatory storage barriers. A paused disk capture needs a matching prior flush; cloud rejects non-Auto policies. See [guest flush policy reference](/sandboxes/snapshots#guest-flushing).
