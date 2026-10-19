@@ -89,10 +89,18 @@ impl RubyCheckpointRemoveResult {
 }
 
 impl RubySnapshotRemoveResult {
-    fn group(&self) -> String { self.inner.group.clone() }
-    fn removed(&self) -> Vec<String> { self.inner.removed.iter().map(ToString::to_string).collect() }
-    fn head_update(&self) -> Result<RHash, Error> { head_update(&self.inner.head_update) }
-    fn warnings(&self) -> Vec<String> { self.inner.warnings.clone() }
+    fn group(&self) -> String {
+        self.inner.group.clone()
+    }
+    fn removed(&self) -> Vec<String> {
+        self.inner.removed.iter().map(ToString::to_string).collect()
+    }
+    fn head_update(&self) -> Result<RHash, Error> {
+        head_update(&self.inner.head_update)
+    }
+    fn warnings(&self) -> Vec<String> {
+        self.inner.warnings.clone()
+    }
 }
 
 impl RubyGroup {
@@ -101,13 +109,16 @@ impl RubyGroup {
         let info = run(ruby, async move { group.inspect().await })?;
         ruby.require("json")?;
         let json: RModule = ruby.class_object().const_get("JSON")?;
-        let payload = serde_json::to_string(&info).map_err(|error| argument_error(ruby, error.to_string()))?;
+        let payload = serde_json::to_string(&info)
+            .map_err(|error| argument_error(ruby, error.to_string()))?;
         json.funcall("parse", (payload,))
     }
 
     fn remove(ruby: &Ruby, this: typed_data::Obj<Self>) -> Result<RubySnapshotRemoveResult, Error> {
         let group = this.inner.clone();
-        Ok(RubySnapshotRemoveResult { inner: run(ruby, async move { group.remove().await })? })
+        Ok(RubySnapshotRemoveResult {
+            inner: run(ruby, async move { group.remove().await })?,
+        })
     }
 
     fn verify(ruby: &Ruby, this: typed_data::Obj<Self>) -> Result<RHash, Error> {
@@ -436,7 +447,10 @@ pub(super) fn register(ruby: &Ruby, module: RModule) -> Result<(), Error> {
     let removed_group = module.define_class("SnapshotRemoveResult", ruby.class_object())?;
     removed_group.define_method("group", method!(RubySnapshotRemoveResult::group, 0))?;
     removed_group.define_method("removed", method!(RubySnapshotRemoveResult::removed, 0))?;
-    removed_group.define_method("head_update", method!(RubySnapshotRemoveResult::head_update, 0))?;
+    removed_group.define_method(
+        "head_update",
+        method!(RubySnapshotRemoveResult::head_update, 0),
+    )?;
     removed_group.define_method("warnings", method!(RubySnapshotRemoveResult::warnings, 0))?;
     let group = module.define_class("Snapshot", ruby.class_object())?;
     group.define_method("remove", method!(RubyGroup::remove, 0))?;

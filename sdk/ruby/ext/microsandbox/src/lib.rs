@@ -279,7 +279,9 @@ fn core_error_class_name(error: &MicrosandboxError) -> &'static str {
         MicrosandboxError::SnapshotImport(_) => "SnapshotImportError",
         MicrosandboxError::SnapshotVerification(_) => "SnapshotVerificationError",
         MicrosandboxError::SnapshotRemovalRecovery { .. } => "SnapshotRemovalRecoveryError",
-        MicrosandboxError::SnapshotGroupRemovalRecovery { .. } => "SnapshotGroupRemovalRecoveryError",
+        MicrosandboxError::SnapshotGroupRemovalRecovery { .. } => {
+            "SnapshotGroupRemovalRecoveryError"
+        }
         MicrosandboxError::SnapshotMigration { .. } => "SnapshotMigrationError",
         // Always present: the extension enables the core's `net` feature.
         MicrosandboxError::NetworkBuilder(_) => "NetworkPolicyError",
