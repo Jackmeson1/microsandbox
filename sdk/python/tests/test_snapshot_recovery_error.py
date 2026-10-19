@@ -115,6 +115,11 @@ asyncio.run(main())
 def test_published_artifact_retains_operation_head_outcome() -> None:
     from microsandbox import PublishedSnapshotArtifact
 
-    update = {"group": "history", "previous": None, "head": "snap_1", "reason": "initialized", "changed": True}
-    artifact = PublishedSnapshotArtifact(kind="installed", path="/saved", snapshot_id="snap_1", digest="digest-1", head_update=update)
+    update = {
+        "group": "history", "previous": None, "head": "snap_1",
+        "reason": "initialized", "changed": True,
+    }
+    artifact = PublishedSnapshotArtifact(
+        kind="installed", path="/saved", snapshot_id="snap_1", digest="digest-1", head_update=update
+    )
     assert artifact.head_update == update
