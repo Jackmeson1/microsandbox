@@ -1,6 +1,6 @@
-# Saved runtime defaults
+# Saved configuration selection
 
-This module implements the runtime-default selection stage of PR3's saved-config resolver. It is not called by snapshot capture, sandbox launch or exec yet. The required saved-config extension remains unsupported until the complete consumer and capture paths are integrated in this PR.
+This module implements runtime, resource and execution selection stages of PR3's saved-config resolver. It is not called by snapshot capture, sandbox launch or exec yet. The required saved-config extension remains unsupported until the complete consumer and capture paths are integrated in this PR.
 
 `select_runtime_defaults` accepts validated portable runtime metadata, the existing sparse `SandboxSpecPatch`, structural clear selectors and trusted operation facts. It returns the surviving lower-priority saved overlay, unresolved binding consumers, unknown fields and full-resume script identity obligations. The explicit destination patch stays separate, so this stage cannot copy destination credentials or scripts into portable metadata.
 
@@ -13,3 +13,11 @@ Fresh disk boot discards optional defaults. Fresh full resume still retains capt
 The entrypoint/CMD policy remains a maintainer decision: existing image merging retains CMD when only entrypoint changes, whereas the plan also mentions clearing incompatible saved CMD. `SavedCmdPolicy` is an internal explicit review parameter with no default and no CLI flag. Neither policy is wired into launch. If reset is selected, `reset_inherited_cmd` must also block older image CMD fallback when the final layers are assembled.
 
 Integration must still resolve bindings at their actual consumer's activation time, enforce mandatory destination/security policy, preserve captured resource compatibility, validate full-state script backing, and apply the original destination patch in its existing order. Saved generated hostnames require destination identity regeneration. Optional-field clears must be reconciled with image and legacy defaults during final assembly. These responsibilities are not fulfilled by returning a surviving overlay, and import/inspect success does not authorize execution.
+
+## Resource and execution selection
+
+`select_resource_defaults` reuses optional active allocations for disk boot and checks the combination of explicit values and retained saved maxima. It keeps unknown observations distinct. Full resume takes construction geometry separately from the already checked execution closure, accepts only the existing equal-geometry overrides and refuses resource clears or THP overrides. Fresh mode cannot discard that geometry. Host CPU placement and source profile names never enter the required geometry patch. Complete document validation must precede selection, and final assembly must still validate destination defaults, host capabilities and managed limits.
+
+`select_execution_defaults` handles user labels, ordered rlimit replacement and independent lifetime fields. Lifetime output distinguishes omitted defaults from unknown values, concrete zero and concrete unlimited (`Value(None)`). Clearing or overriding one duration leaves the other unchanged. The output contains no elapsed timers or ephemeral ownership. These settings affect new processes and new destination timers; full-resume processes retain their captured state.
+
+Security admission takes destination baseline and mandatory minimum from trusted destination policy, never from the artifact. A saved weaker profile requires explicit destination intent, and explicit intent cannot bypass the mandatory minimum. Unknown disk-boot policy requires a choice, a clear or fresh mode. Full resume requires independently established captured security evidence, retains existing refusal of profile overrides, checks recorded/captured consistency and rejects incompatible destination policy even in fresh mode. The selector does not obtain that evidence or install enforcement itself; activation remains disabled until capture and all consumer paths supply and enforce the complete contract.
