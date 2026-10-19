@@ -430,37 +430,13 @@ impl SnapshotBackend for LocalBackend {
         mut opts: LoadOpts,
     ) -> BoxFuture<'a, MicrosandboxResult<crate::SnapshotImportResult>> {
         Box::pin(async move {
-            group::validate_group_name(name)?;
-            if opts.group.as_deref().is_some_and(|group| group != name) {
-                return Err(MicrosandboxError::InvalidConfig(
-                    "import options cannot select a different destination group".into(),
-                ));
-            }
-            opts.group = Some(name.into());
             let paths = paths
                 .iter()
                 .map(std::path::absolute)
                 .collect::<std::io::Result<Vec<_>>>()?;
             opts.dest = opts.dest.map(std::path::absolute).transpose()?;
             opts.base = opts.base.map(anchor_archive_selector).transpose()?;
-            let imported = archive::load_group(self, &paths, opts).await?;
-            Ok(crate::SnapshotImportResult {
-                operation_id: imported.operation_id,
-                snapshot: crate::Snapshot {
-                    backend: backend.clone(),
-                    name: name.into(),
-                    reference: SnapshotReference::path(imported.group_path.to_string_lossy()),
-                },
-                checkpoints: imported
-                    .members
-                    .into_iter()
-                    .map(|handle| from_handle(backend.clone(), handle))
-                    .collect(),
-                added: imported.added,
-                reused: imported.reused,
-                head_update: imported.head_update,
-                warnings: imported.warnings,
-            })
+            load_group_admitted(self, backend, name, &paths, opts).await
         })
     }
 
@@ -477,11 +453,7 @@ impl SnapshotBackend for LocalBackend {
                 .collect::<std::io::Result<Vec<_>>>()?;
             opts.dest = opts.dest.map(std::path::absolute).transpose()?;
             opts.base = opts.base.map(anchor_archive_selector).transpose()?;
-            Ok(archive::load_snapshots(self, &paths, opts)
-                .await?
-                .into_iter()
-                .map(|handle| from_handle(backend.clone(), handle))
-                .collect())
+            load_many_admitted(self, backend, &paths, opts).await
         })
     }
 
@@ -496,6 +468,55 @@ impl SnapshotBackend for LocalBackend {
 //--------------------------------------------------------------------------------------------------
 // Functions
 //--------------------------------------------------------------------------------------------------
+
+/// Import a call-time-admitted request without interpreting its base selector again.
+/// A bare group must stay a group even if a later working directory contains that filename.
+pub(crate) async fn load_group_admitted(
+    local: &LocalBackend,
+    backend: Arc<dyn Backend>,
+    name: &str,
+    paths: &[PathBuf],
+    mut opts: LoadOpts,
+) -> MicrosandboxResult<crate::SnapshotImportResult> {
+    group::validate_group_name(name)?;
+    if opts.group.as_deref().is_some_and(|group| group != name) {
+        return Err(MicrosandboxError::InvalidConfig(
+            "import options cannot select a different destination group".into(),
+        ));
+    }
+    opts.group = Some(name.into());
+    let imported = archive::load_group(local, paths, opts).await?;
+    Ok(crate::SnapshotImportResult {
+        operation_id: imported.operation_id,
+        snapshot: crate::Snapshot {
+            backend: backend.clone(),
+            name: name.into(),
+            reference: SnapshotReference::path(imported.group_path.to_string_lossy()),
+        },
+        checkpoints: imported
+            .members
+            .into_iter()
+            .map(|handle| from_handle(backend.clone(), handle))
+            .collect(),
+        added: imported.added,
+        reused: imported.reused,
+        head_update: imported.head_update,
+        warnings: imported.warnings,
+    })
+}
+
+pub(crate) async fn load_many_admitted(
+    local: &LocalBackend,
+    backend: Arc<dyn Backend>,
+    paths: &[PathBuf],
+    opts: LoadOpts,
+) -> MicrosandboxResult<Vec<SnapshotHandle>> {
+    Ok(archive::load_snapshots(local, paths, opts)
+        .await?
+        .into_iter()
+        .map(|handle| from_handle(backend.clone(), handle))
+        .collect())
+}
 
 async fn local_selector(
     local: &LocalBackend,
@@ -533,7 +554,7 @@ fn anchor_auto_selector(value: String) -> MicrosandboxResult<String> {
 
 /// Base selectors also accept bare archive filenames. Capture that interpretation once,
 /// before deferred work can mistake a same-named file in another directory for the base.
-pub(super) fn anchor_archive_selector(value: String) -> MicrosandboxResult<String> {
+pub(crate) fn anchor_archive_selector(value: String) -> MicrosandboxResult<String> {
     if store::looks_like_path(&value) || Path::new(&value).is_file() {
         Ok(std::path::absolute(value)?.to_string_lossy().into_owned())
     } else {

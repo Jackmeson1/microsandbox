@@ -336,19 +336,22 @@ impl PySnapshot {
         group: Option<String>,
         set_head: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let prepared = microsandbox::snapshot::PreparedSnapshotImport::new(
+            vec![archive],
+            RustLoadOpts {
+                dest,
+                base,
+                group,
+                set_head,
+            },
+        );
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let h = RustSnapshot::load_with_options(
-                &archive,
-                RustLoadOpts {
-                    dest,
-                    base,
-                    group,
-                    set_head,
-                },
-            )
-            .await
-            .map_err(to_py_err)?;
-            Ok(PySnapshotHandle::from_rust(h))
+            let handle = prepared
+                .map_err(to_py_err)?
+                .checkpoint()
+                .await
+                .map_err(to_py_err)?;
+            Ok(PySnapshotHandle::from_rust(handle))
         })
     }
 
@@ -363,18 +366,21 @@ impl PySnapshot {
         group: Option<String>,
         set_head: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let prepared = microsandbox::snapshot::PreparedSnapshotImport::new(
+            archives,
+            RustLoadOpts {
+                dest,
+                base,
+                group,
+                set_head,
+            },
+        );
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let handles = RustSnapshot::load_many(
-                &archives,
-                RustLoadOpts {
-                    dest,
-                    base,
-                    group,
-                    set_head,
-                },
-            )
-            .await
-            .map_err(to_py_err)?;
+            let handles = prepared
+                .map_err(to_py_err)?
+                .checkpoints()
+                .await
+                .map_err(to_py_err)?;
             Ok(handles
                 .into_iter()
                 .map(PySnapshotHandle::from_rust)
