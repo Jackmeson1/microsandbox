@@ -837,18 +837,27 @@ async fn explicit_selection_can_choose_a_retained_branch_or_an_older_snapshot() 
 }
 
 #[tokio::test]
-async fn removing_a_head_requires_selection_unless_it_is_the_final_member() {
+async fn removing_a_head_selects_its_surviving_parent_then_clears_the_last_member() {
     let root = tempfile::tempdir().unwrap();
     let group = ensure(root.path(), Some("removal")).await.unwrap();
     add(&group, 1, None).await;
     add(&group, 2, Some(1)).await;
-    let error = remove_member(&group.join(id(2).as_str()))
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("first select another"));
-    assert!(group.join(id(2).as_str()).is_dir());
+    let path = group.join(id(2).as_str());
+    let lease = super::super::lease::deletion(&path).unwrap().unwrap();
+    let removal = remove_member_leased(&path, lease).await.unwrap().unwrap();
+    assert_eq!(removal.head_update.reason, HeadUpdateReason::ParentSelected);
+    assert_eq!(
+        removal.head_update.previous.as_deref(),
+        Some(id(2).as_str())
+    );
+    assert_eq!(removal.head_update.head.as_deref(), Some(id(1).as_str()));
+    assert!(removal.head_update.changed);
+    assert!(!path.exists());
+    assert_eq!(
+        read_group(&group).unwrap().head.as_deref(),
+        Some(id(1).as_str())
+    );
     assert!(remove_member(&group.join(id(1).as_str())).await.unwrap());
-    assert!(remove_member(&group.join(id(2).as_str())).await.unwrap());
     assert_eq!(read_group(&group).unwrap().head, None);
     assert!(
         resolve(root.path(), "removal")
@@ -1256,6 +1265,13 @@ async fn live_public_group_capture_head_and_spawn_after_source_deletion() {
         .build()
         .await
         .unwrap();
+    eprintln!(
+        "GROUP_API_RUNTIME {}",
+        crate::setup::resolve_runtime(local.config())
+            .unwrap()
+            .msb_path
+            .display()
+    );
     crate::with_backend(local, async {
         Checkpoint::load_many(
             &[archive],
@@ -1289,7 +1305,7 @@ async fn live_public_group_capture_head_and_spawn_after_source_deletion() {
             let output = source
                 .exec(
                     "sh",
-                    ["-c", "mkdir -p /work; echo A > /work/group-api; sync"],
+                    ["-c", "set -eu; mkdir -p /work/removal-files; echo A > /work/group-api; dd if=/dev/urandom of=/work/removal-payload bs=1M count=16; sha256sum /work/removal-payload > /work/removal.sha256; for i in $(seq 1 500); do printf item-$i > /work/removal-files/$i; done; sync"],
                 )
                 .await?;
             assert!(output.status().success);
@@ -1385,9 +1401,35 @@ async fn live_public_group_capture_head_and_spawn_after_source_deletion() {
                 checkpoint.id()
             );
         }
-        eprintln!(
-            "GROUP_API_LIVE_OK source_deleted=true exact_members=2 head_clear_and_replace=true"
-        );
+        // Keep the extra live phase off the test thread's stack. Large debug-build
+        // async restore futures otherwise accumulate in this single scenario's frame.
+        Box::pin(async {
+            // Removing the newest checkpoint must expose the surviving recorded parent
+            // through the ordinary group receiver, with all payloads still bootable.
+            group.set_head("next").await.unwrap();
+            // The stopped-capture retry is an external child of `next`; its dependency
+            // protection must still apply before we exercise successful head deletion.
+            let protected = Checkpoint::remove("history:next", false).await.unwrap_err();
+            assert!(protected.to_string().contains("indexed child"), "{protected}");
+            Checkpoint::remove("failed-initial", false).await.unwrap();
+            Checkpoint::remove("history:next", false).await.unwrap();
+            let fallback = group.get_checkpoint("base").await.unwrap();
+            assert_eq!(group.head().await.unwrap().unwrap().id(), fallback.id());
+            assert!(group.get_checkpoint("next").await.is_err());
+            let child = group.spawn_sandbox_with(|options| options.cpus(2).memory(512u32).max_duration(120)).await.unwrap();
+            let checked = child.exec("sh", ["-c", "set -eu; test $(cat /work/group-api) = A; test $(find /work/removal-files -type f | wc -l) = 500; test $(cat /work/removal-files/500) = item-500; sha256sum -c /work/removal.sha256"]).await;
+            let stopped = child.stop().await;
+            let removed = Sandbox::remove(child.name()).await;
+            stopped.unwrap();
+            removed.unwrap();
+            let output = checked.unwrap();
+            assert!(output.status().success, "{}", output.stderr().unwrap());
+            Checkpoint::remove("history:base", false).await.unwrap();
+            assert!(group.head().await.unwrap().is_none());
+            assert!(group.checkpoints().await.unwrap().is_empty());
+            assert!(group.spawn_sandbox().await.is_err());
+        }).await;
+        eprintln!("GROUP_API_LIVE_OK source_deleted=true exact_members=2 head_clear_and_replace=true removal_parent_boot=true payload_bytes=16777216 files=500 final_head=none");
     })
     .await;
 }

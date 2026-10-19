@@ -962,3 +962,48 @@ async fn confirmed_publication_returns_cleanup_warning_without_losing_members() 
         Some(id(2).to_string())
     );
 }
+
+#[tokio::test]
+async fn removal_flush_failure_retains_complete_view_and_old_generation() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = group::ensure(root.path(), Some("history")).await.unwrap();
+    add(&directory, 1, None).await;
+    add(&directory, 2, Some(1)).await;
+    let path = directory.join(id(2).as_str());
+    let _pin = lease::deletion(&path).unwrap().unwrap();
+    let _lock = group::lock_group(&directory).unwrap();
+    let error = remove_with_flush(&directory, id(2).as_str(), Some(id(1).to_string()), |_| {
+        Err(io::Error::other("injected durability failure"))
+    })
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("durability is unconfirmed"),
+        "{error}"
+    );
+    assert_eq!(
+        group::read_group(&directory).unwrap().head.as_deref(),
+        Some(id(1).as_str())
+    );
+    assert!(!path.exists());
+    let retired = fs::read_dir(root.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".group-generation-")
+        })
+        .unwrap();
+    assert_eq!(
+        group::read_group(&retired).unwrap().head.as_deref(),
+        Some(id(2).as_str())
+    );
+    assert!(
+        retired
+            .join(id(2).as_str())
+            .join(group::DESCRIPTOR_FILENAME)
+            .exists()
+    );
+    assert!(directory.join(".snapshot-deletions").exists());
+}

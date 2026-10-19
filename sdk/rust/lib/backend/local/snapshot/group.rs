@@ -5,6 +5,7 @@
 //! ancestry. All group operations share one process-held lock, acquired off the async executor.
 
 mod capture;
+mod removal;
 mod transaction;
 
 #[cfg(windows)]
@@ -97,6 +98,13 @@ pub(super) struct BatchPublication {
     pub(super) head_update: Option<HeadUpdate>,
     pub(super) added: Vec<SnapshotId>,
     pub(super) reused: Vec<SnapshotId>,
+    pub(super) warnings: Vec<String>,
+}
+
+/// One member removal's immutable facts, captured before releasing publication ownership.
+#[derive(Debug)]
+pub(super) struct MemberRemoval {
+    pub(super) head_update: HeadUpdate,
     pub(super) warnings: Vec<String>,
 }
 
@@ -918,51 +926,71 @@ pub(super) async fn remove_member(path: &Path) -> MicrosandboxResult<bool> {
     let lease = super::lease::deletion(path)?.ok_or_else(|| {
         MicrosandboxError::Custom("snapshot is in use by an active operation".into())
     })?;
-    remove_member_leased(path, lease).await
+    Ok(remove_member_leased(path, lease).await?.is_some())
 }
 
 pub(super) async fn remove_member_leased(
     path: &Path,
     lease: super::lease::DeletionLease,
-) -> MicrosandboxResult<bool> {
+) -> MicrosandboxResult<Option<MemberRemoval>> {
     let path = path.to_path_buf();
     blocking(move || {
         let _lease = lease;
         let Some(directory) = group_path(&path) else {
-            return Ok(false);
+            return Ok(None);
         };
         let _lock = lock_group(&directory)?;
         if transaction::pending_index(&directory)?.is_some() {
-            return Err(integrity("snapshot batch index completion is pending; retry removal after recovery".into()));
+            return Err(integrity(
+                "snapshot batch index completion is pending; retry removal after recovery".into(),
+            ));
         }
         let state = read_group(&directory)?;
         let members = read_members(&directory, true)?;
         validate_head(&state, &members)?;
-        let id = path.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
-            MicrosandboxError::InvalidConfig("snapshot member path has no stable ID".into())
-        })?;
-        if !members.contains_key(id) {
-            return Err(MicrosandboxError::SnapshotNotFound(id.into()));
-        }
-        if state.head.as_deref() == Some(id) {
-            if members.len() > 1 {
-                return Err(MicrosandboxError::InvalidConfig(format!(
-                    "cannot remove current head {id}; first select another snapshot with 'msb snapshot head {}:<snapshot>'",
-                    directory.file_name().unwrap_or_default().to_string_lossy()
-                )));
-            }
-            // Clear first so an interrupted recursive removal cannot strand a dangling head.
-            // A failed removal is recoverable by explicitly selecting the surviving member.
-            write_group(&directory, None)?;
-        }
-        super::deletion::quarantine(&path).map_err(|error| {
-            MicrosandboxError::Custom(format!(
-                "could not fully remove snapshot {}: {error}; inspect the group before retrying",
-                path.display()
-            ))
-        })?;
-        sync_directory(&directory)?;
-        Ok(true)
+        let id = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                MicrosandboxError::InvalidConfig("snapshot member path has no stable ID".into())
+            })?;
+        let member = members
+            .get(id)
+            .ok_or_else(|| MicrosandboxError::SnapshotNotFound(id.into()))?;
+        let head = if state.head.as_deref() == Some(id) {
+            // Ancestry is immutable evidence; only a surviving parent in THIS group is
+            // eligible. Never infer a replacement from timestamps, aliases or other groups.
+            member
+                .parent
+                .as_ref()
+                .filter(|parent| parent.as_str() != id && members.contains_key(*parent))
+                .cloned()
+        } else {
+            state.head.clone()
+        };
+        let changed = head != state.head;
+        let update = HeadUpdate {
+            group: directory
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| integrity("group directory has no valid name".into()))?
+                .into(),
+            previous: state.head,
+            reason: if !changed {
+                HeadUpdateReason::Unchanged
+            } else if head.is_some() {
+                HeadUpdateReason::ParentSelected
+            } else {
+                HeadUpdateReason::Cleared
+            },
+            head,
+            changed,
+        };
+        let warnings = removal::publish(&directory, id, update.head.clone())?;
+        Ok(Some(MemberRemoval {
+            head_update: update,
+            warnings,
+        }))
     })
     .await
 }

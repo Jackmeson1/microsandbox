@@ -1,4 +1,4 @@
-//! Complete-directory publication for atomic imports on macOS and Linux.
+//! Complete-directory publication for atomic group changes on macOS and Linux.
 //!
 //! Immutable files and reader locks keep their inode identity. Only a complete private
 //! generation becomes visible; the catalog journal travels with that generation.
@@ -42,12 +42,6 @@ impl Generation {
     ) -> MicrosandboxResult<Self> {
         require_directory(group)?;
         require_directory(incoming)?;
-        let root = group
-            .parent()
-            .ok_or_else(|| integrity("group has no parent".into()))?;
-        let directory = tempfile::Builder::new()
-            .prefix(".group-generation-")
-            .tempdir_in(root)?;
         let mut members = read_members(group, true)?;
         for (id, member) in read_members(incoming, false)? {
             if let Some(existing) = members.get(&id) {
@@ -59,6 +53,22 @@ impl Generation {
             }
         }
         super::apply_aliases(&mut members, aliases)?;
+        Self::prepare_members(group, members, head)
+    }
+
+    /// Build one complete view from the chosen membership, preserving immutable payload
+    /// and lease identity for surviving readers. The caller owns group writer admission.
+    fn prepare_members(
+        group: &Path,
+        members: BTreeMap<String, super::Member>,
+        head: Option<String>,
+    ) -> MicrosandboxResult<Self> {
+        let root = group
+            .parent()
+            .ok_or_else(|| integrity("group has no parent".into()))?;
+        let directory = tempfile::Builder::new()
+            .prefix(".group-generation-")
+            .tempdir_in(root)?;
         super::validate_ancestry(&members)?;
         if let Some(head) = &head
             && !members.contains_key(head)
@@ -244,6 +254,65 @@ fn publish_with_flush(
 }
 
 /// No payload-copy fallback: a hard-link error leaves the published generation intact.
+/// Remove one member and select its replacement head as one complete publication.
+/// The deletion receipt is part of the new view, so catalog recovery cannot mistake a
+/// prepared-but-unpublished removal for a committed one.
+pub(super) fn remove(
+    group: &Path,
+    id: &str,
+    head: Option<String>,
+) -> MicrosandboxResult<Vec<String>> {
+    remove_with_flush(group, id, head, sync_directory)
+}
+
+fn remove_with_flush(
+    group: &Path,
+    id: &str,
+    head: Option<String>,
+    flush: impl FnOnce(&Path) -> io::Result<()>,
+) -> MicrosandboxResult<Vec<String>> {
+    let parent = group
+        .parent()
+        .ok_or_else(|| integrity("group has no parent".into()))?;
+    check(parent).map_err(|error| {
+        MicrosandboxError::InvalidConfig(
+            error
+                .to_string()
+                .replace("atomic snapshot import", "atomic checkpoint removal"),
+        )
+    })?;
+    let mut members = read_members(group, true)?;
+    if members.remove(id).is_none() {
+        return Err(MicrosandboxError::SnapshotNotFound(id.into()));
+    }
+    let prepared = Generation::prepare_members(group, members, head)?;
+    let (_receipt, _receipt_lock) =
+        super::super::deletion::prepare_retirement(prepared.path(), std::ffi::OsStr::new(id))?;
+    sync_directory(prepared.path())?;
+    sync_directory(parent)?;
+    #[cfg(test)]
+    super::removal::publication_boundary(group, "prepared");
+    exchange_names(group, prepared.path())?;
+    // The old generation is recovery evidence until the containing name is durable.
+    // Never let TempDir silently erase it after an uncertain post-exchange failure.
+    let retired = prepared.directory.keep();
+    #[cfg(test)]
+    super::removal::publication_boundary(group, "exchanged");
+    flush(parent).map_err(|error| integrity(format!(
+        "checkpoint removal was exchanged but durability is unconfirmed: {error}; previous generation retained at {}; recover the group before retrying",
+        retired.display()
+    )))?;
+    #[cfg(test)]
+    super::removal::publication_boundary(group, "committed");
+    if let Err(error) = fs::remove_dir_all(&retired).and_then(|()| sync_directory(parent)) {
+        return Ok(vec![format!(
+            "checkpoint removal committed; retired generation cleanup remains at {}: {error}",
+            retired.display()
+        )]);
+    }
+    Ok(Vec::new())
+}
+
 fn link_tree(source: &Path, destination: &Path) -> MicrosandboxResult<()> {
     require_directory(source)?;
     fs::create_dir(destination)?;

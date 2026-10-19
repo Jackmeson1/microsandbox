@@ -24,6 +24,42 @@ pub(super) fn quarantine(source: &Path) -> MicrosandboxResult<()> {
     let parent = source
         .parent()
         .ok_or_else(|| std::io::Error::other("snapshot has no parent"))?;
+    let (path, lock) = prepare_retirement(parent, source.file_name().unwrap())?;
+    let root = parent.join(".snapshot-deletions");
+    std::fs::rename(source, path.join("payload")).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!("move snapshot into deletion quarantine: {error}"),
+        )
+    })?;
+    sync_dir(parent)?;
+    sync_dir(&path)?;
+    std::fs::remove_dir_all(path.join("payload")).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!("remove quarantined snapshot: {error}"),
+        )
+    })?;
+    // Keep the intent until catalog deletion has committed. Recovery may finish the row
+    // removal if the process dies between retiring the directory and updating the index.
+    drop(lock);
+    sync_dir(&root)?;
+    Ok(())
+}
+
+/// Create a recoverable catalog-retirement receipt without changing the live member.
+/// The returned lock must span publication. A complete-generation publisher places this
+/// record in its private view, making the absent member and recovery intent visible together.
+pub(super) fn prepare_retirement(
+    parent: &Path,
+    name: &std::ffi::OsStr,
+) -> MicrosandboxResult<(PathBuf, File)> {
+    let name_path = Path::new(name);
+    if name_path.components().count() != 1
+        || !matches!(name_path.components().next(), Some(Component::Normal(_)))
+    {
+        return Err(std::io::Error::other("invalid snapshot retirement name").into());
+    }
     let root = parent.join(".snapshot-deletions");
     std::fs::create_dir_all(&root)?;
     if !std::fs::symlink_metadata(&root)?.file_type().is_dir() {
@@ -39,35 +75,15 @@ pub(super) fn quarantine(source: &Path) -> MicrosandboxResult<()> {
     let record = path.join("source.json");
     let temporary = path.join("source.json.part");
     let mut file = File::create(&temporary)?;
-    file.write_all(&serde_json::to_vec(&PathBuf::from(
-        source.file_name().unwrap(),
-    ))?)?;
+    file.write_all(&serde_json::to_vec(&PathBuf::from(name))?)?;
     file.sync_all()?;
     drop(file);
 
     std::fs::rename(&temporary, &record)?;
     sync_dir(&path)?;
     sync_dir(&root)?;
-    std::fs::rename(source, path.join("payload")).map_err(|error| {
-        std::io::Error::new(
-            error.kind(),
-            format!("move snapshot into deletion quarantine: {error}"),
-        )
-    })?;
-    sync_dir(parent)?;
-    sync_dir(&path)?;
     drop(coordination);
-    std::fs::remove_dir_all(path.join("payload")).map_err(|error| {
-        std::io::Error::new(
-            error.kind(),
-            format!("remove quarantined snapshot: {error}"),
-        )
-    })?;
-    // Keep the intent until catalog deletion has committed. Recovery may finish the row
-    // removal if the process dies between retiring the directory and updating the index.
-    drop(lock);
-    sync_dir(&root)?;
-    Ok(())
+    Ok((path, lock))
 }
 
 /// Recovery never removes a new artifact at the original name. Only an absent source permits
@@ -165,6 +181,13 @@ pub(super) async fn recover_parent(local: &LocalBackend, parent: &Path) -> Micro
         };
         match std::fs::symlink_metadata(&source) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // The receipt may have arrived in a complete-directory exchange whose
+                // publisher died before flushing the group's parent. Confirm that view
+                // is durable before releasing its catalog/image roots.
+                sync_dir(parent)?;
+                if let Some(container) = parent.parent() {
+                    sync_dir(container)?;
+                }
                 snapshot::Entity::delete_by_id(
                     super::store::canonical_path(&source).display().to_string(),
                 )

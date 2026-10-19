@@ -153,7 +153,9 @@ msb snap rm worker:ready
 | `-f`, `--force` | Remove even when indexed children exist |
 | `-q`, `--quiet` | Suppress output |
 
-If other group members remain, select another head before removing the current one. `--force` does not bypass this rule.
+Removing the current head selects its surviving recorded parent when that parent belongs to the same group; otherwise it clears the head. Removing a non-head member leaves the head unchanged. The member removal and head update publish atomically. Active readers still prevent removal, including with `--force`.
+
+Atomic group-member removal uses the same filesystem capabilities and older-writer maintenance requirements as atomic import below. Unsupported filesystems refuse before publication. A post-publication durability failure reports an uncertain outcome and retains recovery evidence; recover through the same group before retrying.
 
 If an indexed artifact was deleted outside Microsandbox, removing it by its indexed path clears the stale entry. For a grouped snapshot, this requires the whole group directory to be gone; a surviving group still needs its head and membership checks. Indexed children still require `--force`.
 

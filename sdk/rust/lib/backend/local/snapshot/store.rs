@@ -635,11 +635,16 @@ pub(crate) async fn remove_snapshot_expected(
         )));
     }
 
-    // The group helper validates head removal and removes the member under its publication
-    // lock. Even --force must not leave a group's head dangling while other members remain.
-    if !super::group::remove_member_leased(&artifact_path, _deletion.clone()).await?
-        && artifact_path.exists()
-    {
+    // Group publication pairs member retirement with its recorded-parent head fallback.
+    // The result is captured under ownership; never reread a head another writer can change.
+    let removal = super::group::remove_member_leased(&artifact_path, _deletion.clone()).await?;
+    if let Some(removal) = &removal {
+        tracing::debug!(head_update = ?removal.head_update, "checkpoint removed");
+        for warning in &removal.warnings {
+            tracing::warn!(%warning);
+        }
+    }
+    if removal.is_none() && artifact_path.exists() {
         let path = artifact_path.clone();
         let lease = _deletion.clone();
         tokio::task::spawn_blocking(move || {
@@ -831,7 +836,12 @@ async fn resolve_path(local: &LocalBackend, selector: &str) -> MicrosandboxResul
 }
 
 pub(super) fn canonical_path(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    // Retirement removes the entry before catalog cleanup. Preserve its address by
+    // resolving the surviving parent, even when a caller reached it through a symlink
+    // (including macOS /var -> /private/var). Otherwise recovery misses the original row.
+    std::fs::canonicalize(path)
+        .or_else(|_| microsandbox_image::storage_lease::StorageLease::key(path))
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 async fn indexed_path(
@@ -1740,7 +1750,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn distinct_child_counts_and_head_guard_survive_reindex() {
+    async fn distinct_child_counts_and_parent_fallback_survive_reindex() {
         let home = tempfile::tempdir().unwrap();
         let local = crate::test_support::local_backend_builder(home.path())
             .build()
@@ -1762,16 +1772,40 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|row| row.child_count == 1));
         assert!(
-            remove_snapshot(&local, "first:child", true)
+            remove_snapshot(&local, "first:base", false)
                 .await
                 .unwrap_err()
                 .to_string()
-                .contains("current head")
+                .contains("indexed child")
         );
+        remove_snapshot(&local, "first:child", false).await.unwrap();
         assert_eq!(
             get_handle(&local, "first").await.unwrap().id(),
+            parent.snapshot_id.as_str()
+        );
+        assert_eq!(
+            get_handle(&local, "second").await.unwrap().id(),
             child.snapshot_id.as_str()
         );
+        // A second installed copy of the same child still protects the parent;
+        // removing one copy must not reset the distinct-child count to zero.
+        assert!(
+            remove_snapshot(&local, "first:base", false)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("indexed child")
+        );
+        remove_snapshot(&local, "second:child", false)
+            .await
+            .unwrap();
+        let rows = snapshot_entity::Entity::find()
+            .filter(snapshot_entity::Column::SnapshotId.eq(parent.snapshot_id.as_str()))
+            .all(local.db().await.unwrap().read())
+            .await
+            .unwrap();
+        assert!(rows.iter().all(|row| row.child_count == 0));
+        remove_snapshot(&local, "first:base", false).await.unwrap();
     }
 
     #[tokio::test]

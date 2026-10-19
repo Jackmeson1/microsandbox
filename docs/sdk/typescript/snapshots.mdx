@@ -242,7 +242,7 @@ await Snapshot.remove("baseline:deps", { force: true });
 
 </Accordion>
 
-Remove a snapshot by group selector, unambiguous ID or digest, or path. Refuses if the snapshot has indexed children unless `force` is set. A group's head cannot be removed while other members remain, even with `force`; select another head first.
+Remove a snapshot by group selector, unambiguous ID or digest, or path. Refuses if the snapshot has indexed children unless `force` is set. Removing head atomically selects its surviving recorded same-group parent, or clears head if none survives. Non-head removal leaves head unchanged. Active readers still prevent removal, including with `force`. Group-member removal requires the same filesystem capabilities and older-writer maintenance interval as atomic import.
 
 <p className="msb-label">Parameters</p>
 

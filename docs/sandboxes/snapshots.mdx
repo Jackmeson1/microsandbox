@@ -1125,7 +1125,7 @@ msb snap head work:cp01      # Explicitly select an earlier checkpoint
 ```
 </CodeGroup>
 
-The first capture sets the head. Later captures or imports advance it only with proven ancestry; older or divergent snapshots leave it unchanged. Select another head before removing the current one if other members remain.
+The first capture sets the head. Later captures or imports advance it only with proven ancestry; older or divergent snapshots leave it unchanged. Removing head atomically selects its surviving recorded parent in the same group, or clears head when no such parent survives. It never selects an unrelated member or a parent from another group. Dependency and active-reader protections still apply.
 
 <Accordion title="Import into a group">
 
