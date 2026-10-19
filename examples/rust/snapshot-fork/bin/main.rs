@@ -28,13 +28,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .spawn_sandbox_with(|options| options.name("snapshot-fork"))
         .await?;
     let output = fork.shell("cat /root/marker.txt").await?;
+    assert_eq!(output.stdout()?.trim(), "shipped via snapshot");
     println!("fork sees: {}", output.stdout()?.trim());
 
     fork.stop().await?;
 
     Sandbox::remove("snapshot-baseline").await?;
     Sandbox::remove("snapshot-fork").await?;
-    microsandbox::Checkpoint::remove_ref(snap.reference(), false).await?;
+    created.snapshot.remove().await?;
 
     Ok(())
 }
