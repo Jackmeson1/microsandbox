@@ -78,10 +78,12 @@ impl Generation {
         // Seed every published member's namespace before copying the lock directory.
         // An older reader may first acquire its namespace lease after preparation;
         // that lease must refer to the same file in both directory generations.
-        let _namespaces = members
-            .keys()
-            .map(|id| storage_lease::StorageLease::shared(&group.join(id)))
-            .collect::<std::io::Result<Vec<_>>>()?;
+        for id in members.keys() {
+            // Writer admission protects membership during staging. These leases
+            // only seed stable lock files; retaining every descriptor would make
+            // removing one checkpoint require an fd for the entire history.
+            drop(storage_lease::StorageLease::shared(&group.join(id))?);
+        }
         for (id, member) in members {
             let destination = directory.path().join(id);
             link_tree(&member.path, &destination)?;

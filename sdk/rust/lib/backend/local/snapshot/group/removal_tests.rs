@@ -336,3 +336,49 @@ async fn crash_cases(legacy_cli: Option<&Path>) {
         );
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn removal_bounds_namespace_descriptors_for_long_histories() {
+    let result = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "backend::local::snapshot::group::removal::tests::low_descriptor_limit_removal_worker",
+            "--ignored",
+            "--nocapture",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "subprocess-only reduced descriptor limit"]
+async fn low_descriptor_limit_removal_worker() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = group::ensure(root.path(), Some("long-history"))
+        .await
+        .unwrap();
+    for ordinal in 1..=160 {
+        add(&directory, ordinal, None).await;
+    }
+    let target = directory.join(id(160).as_str());
+    let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+    // Change the process-wide limit only in this dedicated child test process.
+    assert_eq!(
+        unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) },
+        0
+    );
+    let mut limit = unsafe { limit.assume_init() };
+    limit.rlim_cur = limit.rlim_cur.min(96);
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+    group::remove_member(&target).await.unwrap();
+    assert!(!target.exists());
+    assert_eq!(group::read_members(&directory, true).unwrap().len(), 159);
+}
