@@ -219,65 +219,89 @@ impl JsSnapshot {
             .map_err(to_napi_error)
     }
 
-    #[napi]
-    pub async fn load(
+    #[napi(ts_return_type = "Promise<SnapshotHandle>")]
+    pub fn load<'env>(
+        env: &'env Env,
         archive: String,
         dest: Option<String>,
         base: Option<String>,
-    ) -> Result<JsSnapshotHandle> {
-        let dest = dest.map(PathBuf::from);
-        let h = if let Some(base) = base {
-            RustSnapshot::load_with_base(&PathBuf::from(archive), dest.as_deref(), &base).await
-        } else {
-            RustSnapshot::load(&PathBuf::from(archive), dest.as_deref()).await
-        }
-        .map_err(to_napi_error)?;
-        Ok(JsSnapshotHandle::from_rust(h))
+    ) -> Result<PromiseRaw<'env, JsSnapshotHandle>> {
+        let prepared = microsandbox::snapshot::PreparedSnapshotImport::new(
+            vec![archive.into()],
+            RustLoadOpts {
+                dest: dest.map(Into::into),
+                base,
+                ..Default::default()
+            },
+        );
+        env.spawn_future(async move {
+            Ok(JsSnapshotHandle::from_rust(
+                prepared
+                    .map_err(to_napi_error)?
+                    .legacy_checkpoint()
+                    .await
+                    .map_err(to_napi_error)?,
+            ))
+        })
     }
 
-    #[napi(js_name = "loadWithOptions")]
-    pub async fn load_with_options(
+    #[napi(
+        js_name = "loadWithOptions",
+        ts_return_type = "Promise<SnapshotHandle>"
+    )]
+    pub fn load_with_options<'env>(
+        env: &'env Env,
         archive: String,
         opts: Option<JsLoadOpts>,
-    ) -> Result<JsSnapshotHandle> {
+    ) -> Result<PromiseRaw<'env, JsSnapshotHandle>> {
         let opts = opts.unwrap_or_default();
-        let h = RustSnapshot::load_with_options(
-            &PathBuf::from(archive),
+        let prepared = microsandbox::snapshot::PreparedSnapshotImport::new(
+            vec![archive.into()],
             RustLoadOpts {
-                dest: opts.dest.map(PathBuf::from),
+                dest: opts.dest.map(Into::into),
                 base: opts.base,
                 group: opts.group,
                 set_head: opts.set_head.unwrap_or(false),
             },
-        )
-        .await
-        .map_err(to_napi_error)?;
-        Ok(JsSnapshotHandle::from_rust(h))
+        );
+        env.spawn_future(async move {
+            Ok(JsSnapshotHandle::from_rust(
+                prepared
+                    .map_err(to_napi_error)?
+                    .checkpoint()
+                    .await
+                    .map_err(to_napi_error)?,
+            ))
+        })
     }
 
-    /// Import archives together, resolving dependencies within the batch and destination group.
-    #[napi(js_name = "loadMany")]
-    pub async fn load_many(
+    /// Import archives together, retaining their call-time path interpretation.
+    #[napi(js_name = "loadMany", ts_return_type = "Promise<SnapshotHandle[]>")]
+    pub fn load_many<'env>(
+        env: &'env Env,
         archives: Vec<String>,
         opts: Option<JsLoadOpts>,
-    ) -> Result<Vec<JsSnapshotHandle>> {
+    ) -> Result<PromiseRaw<'env, Vec<JsSnapshotHandle>>> {
         let opts = opts.unwrap_or_default();
-        let paths = archives.into_iter().map(PathBuf::from).collect::<Vec<_>>();
-        let handles = RustSnapshot::load_many(
-            &paths,
+        let prepared = microsandbox::snapshot::PreparedSnapshotImport::new(
+            archives.into_iter().map(Into::into).collect(),
             RustLoadOpts {
-                dest: opts.dest.map(PathBuf::from),
+                dest: opts.dest.map(Into::into),
                 base: opts.base,
                 group: opts.group,
                 set_head: opts.set_head.unwrap_or(false),
             },
-        )
-        .await
-        .map_err(to_napi_error)?;
-        Ok(handles
-            .into_iter()
-            .map(JsSnapshotHandle::from_rust)
-            .collect())
+        );
+        env.spawn_future(async move {
+            Ok(prepared
+                .map_err(to_napi_error)?
+                .checkpoints()
+                .await
+                .map_err(to_napi_error)?
+                .into_iter()
+                .map(JsSnapshotHandle::from_rust)
+                .collect())
+        })
     }
 
     /// Read a group's head, or select `group:member` as its head.

@@ -8,6 +8,7 @@ mod api;
 mod archive_compatibility;
 mod copy;
 mod group;
+mod import;
 mod types;
 
 //--------------------------------------------------------------------------------------------------
@@ -21,6 +22,8 @@ pub use group::{
     CheckpointCaptureResult, Snapshot, SnapshotCaptureOptions, SnapshotCreateResult,
     SnapshotImportResult,
 };
+#[doc(hidden)]
+pub use import::PreparedSnapshotImport;
 pub use microsandbox_types::snapshot::{
     CheckpointSnapshotState, DESCRIPTOR_FILENAME, DiskLayer, DiskLayerId, FileSnapshotState,
     ImageRef, LayerFileKind, LayerPayload, Manifest, SnapshotCapture, SnapshotConsistency,

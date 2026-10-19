@@ -91,45 +91,52 @@ impl JsSnapshotGroup {
         ts_args_type = "group: string, archives: string[], opts?: LoadOpts",
         ts_return_type = "Promise<SnapshotImportResult>"
     )]
-    pub async fn load(
+    pub fn load<'env>(
+        env: &'env Env,
         group: String,
         archives: Vec<String>,
         opts: Option<crate::snapshot::JsLoadOpts>,
-    ) -> Result<JsSnapshotImportResult> {
+    ) -> Result<PromiseRaw<'env, JsSnapshotImportResult>> {
         let opts = opts.unwrap_or_default();
-        // Retain explicit rejection for older callers of the native options transport.
-        if opts
-            .group
-            .as_deref()
-            .is_some_and(|selected| selected != group)
-        {
-            return Err(to_napi_error(
-                microsandbox::MicrosandboxError::InvalidConfig(
-                    "import options cannot select a different destination group".into(),
-                ),
-            ));
-        }
-        let files = archives.into_iter().map(PathBuf::from).collect::<Vec<_>>();
-        let result =
-            RustGroup::load_with(&group, &files, |_| microsandbox::SnapshotImportOptions {
-                dest: opts.dest.map(PathBuf::from),
-                base: opts.base,
-                set_head: opts.set_head.unwrap_or(false),
+        // Own and anchor inputs on the JS thread, before spawning any async work.
+        let prepared = (|| -> Result<_> {
+            if opts
+                .group
+                .as_deref()
+                .is_some_and(|selected| selected != group)
+            {
+                return Err(to_napi_error(
+                    microsandbox::MicrosandboxError::InvalidConfig(
+                        "import options cannot select a different destination group".into(),
+                    ),
+                ));
+            }
+            microsandbox::snapshot::PreparedSnapshotImport::new(
+                archives.into_iter().map(PathBuf::from).collect(),
+                microsandbox::snapshot::LoadOpts {
+                    dest: opts.dest.map(PathBuf::from),
+                    base: opts.base,
+                    group: None,
+                    set_head: opts.set_head.unwrap_or(false),
+                },
+            )
+            .map_err(to_napi_error)
+        })();
+        env.spawn_future(async move {
+            let result = prepared?.group(group).await.map_err(to_napi_error)?;
+            Ok(JsSnapshotImportResult {
+                operation_id: result.operation_id,
+                snapshot: Self::from_rust(result.snapshot),
+                checkpoints: result
+                    .checkpoints
+                    .into_iter()
+                    .map(JsSnapshotHandle::from_rust)
+                    .collect(),
+                added: result.added.into_iter().map(|id| id.to_string()).collect(),
+                reused: result.reused.into_iter().map(|id| id.to_string()).collect(),
+                head_update: head_update_to_js(&result.head_update),
+                warnings: result.warnings,
             })
-            .await
-            .map_err(to_napi_error)?;
-        Ok(JsSnapshotImportResult {
-            operation_id: result.operation_id,
-            snapshot: Self::from_rust(result.snapshot),
-            checkpoints: result
-                .checkpoints
-                .into_iter()
-                .map(JsSnapshotHandle::from_rust)
-                .collect(),
-            added: result.added.into_iter().map(|id| id.to_string()).collect(),
-            reused: result.reused.into_iter().map(|id| id.to_string()).collect(),
-            head_update: head_update_to_js(&result.head_update),
-            warnings: result.warnings,
         })
     }
 

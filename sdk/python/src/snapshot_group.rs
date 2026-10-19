@@ -106,17 +106,22 @@ impl PySnapshotGroup {
         base: Option<String>,
         set_head: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let prepared = microsandbox::snapshot::PreparedSnapshotImport::new(
+            files,
+            microsandbox::snapshot::LoadOpts {
+                dest,
+                base,
+                group: None,
+                set_head,
+            },
+        );
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             Ok(PySnapshotImportResult {
-                inner: RustGroup::load_with(group, &files, |_| {
-                    microsandbox::SnapshotImportOptions {
-                        dest,
-                        base,
-                        set_head,
-                    }
-                })
-                .await
-                .map_err(to_py_err)?,
+                inner: prepared
+                    .map_err(to_py_err)?
+                    .group(group)
+                    .await
+                    .map_err(to_py_err)?,
             })
         })
     }
