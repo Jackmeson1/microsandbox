@@ -30,7 +30,7 @@ pub struct SnapshotArgs {
 /// Snapshot subcommands.
 #[derive(Debug, Subcommand)]
 pub enum SnapshotCommands {
-    /// Create a disk snapshot, or include memory and execution state with --full.
+    /// Create a group and its first checkpoint, or capture directly to an archive.
     Create(SnapshotCreateArgs),
 
     /// Append a checkpoint to an existing group from its bound source sandbox.
@@ -39,17 +39,17 @@ pub enum SnapshotCommands {
     /// Restore saved state into a new sandbox running in the background.
     Restore(Box<RestoreArgs>),
 
-    /// List indexed snapshots.
+    /// List groups, or checkpoints within a selected group.
     #[command(visible_alias = "ls")]
     List(SnapshotListArgs),
 
-    /// Show detailed snapshot information.
+    /// Inspect a group or an explicitly selected checkpoint.
     Inspect(SnapshotInspectArgs),
 
     /// Verify recorded snapshot content integrity.
     Verify(SnapshotVerifyArgs),
 
-    /// Delete one or more snapshots.
+    /// Remove an exact checkpoint or explicitly remove a whole group.
     #[command(visible_alias = "rm")]
     Remove(SnapshotRemoveArgs),
 

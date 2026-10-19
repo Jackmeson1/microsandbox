@@ -318,7 +318,7 @@ async fn batch_branches_preserve_existing_head_or_leave_new_group_unselected() {
                 assert_eq!(read_group(&group).unwrap().head, None);
                 let error = resolve(root.path(), &name).await.unwrap_err().to_string();
                 assert!(error.contains("no head selected"));
-                assert!(error.contains("msb snapshot head"));
+                assert!(error.contains("msb snapshot modify"));
                 assert_eq!(
                     resolve(root.path(), &format!("{name}:{}", id(3)))
                         .await
@@ -386,7 +386,7 @@ async fn batch_set_head_requires_one_candidate_tip_before_any_publication() {
     .await
     .unwrap_err();
     assert!(error.to_string().contains("--set-head cannot choose"));
-    assert!(error.to_string().contains("msb snapshot head"));
+    assert!(error.to_string().contains("msb snapshot modify"));
     for candidate in [2, 3] {
         assert!(!group.join(id(candidate).as_str()).exists());
         assert!(staged.path().join(id(candidate).as_str()).is_dir());

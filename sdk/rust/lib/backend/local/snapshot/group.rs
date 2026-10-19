@@ -1283,7 +1283,7 @@ fn resolve_selected(
     let selected_id = match selected {
         None => Some(state.head.clone().ok_or_else(|| {
             MicrosandboxError::SnapshotNotFound(format!(
-                "snapshot group {} has no head selected; choose an installed member with 'msb snapshot head {}:<snapshot>'",
+                "snapshot group {} has no head selected; choose an installed member with 'msb snapshot modify {} --set-head <member>'",
                 directory.display(),
                 directory.file_name().unwrap_or_default().to_string_lossy()
             ))
@@ -1419,7 +1419,7 @@ fn batch_head_update(
     }
     if explicit {
         return Err(MicrosandboxError::InvalidConfig(
-            "--set-head cannot choose between multiple snapshot archive heads with incomparable or unknown ancestry; load without --set-head, then use 'msb snapshot head <group>:<snapshot>'".into(),
+            "--set-head cannot choose between multiple snapshot archive heads with incomparable or unknown ancestry; load without --set-head, then use 'msb snapshot modify <group> --set-head <member>'".into(),
         ));
     }
     // A fresh group may contain several branches without claiming that one is current.
