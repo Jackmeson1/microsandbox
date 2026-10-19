@@ -246,7 +246,7 @@ pub async fn open_group_checkpoint(
     }
 }
 
-fn windows_root(input: &str) -> bool {
+pub(crate) fn windows_root(input: &str) -> bool {
     let bytes = input.as_bytes();
     input.starts_with("\\\\")
         || (bytes.len() >= 3
@@ -255,7 +255,7 @@ fn windows_root(input: &str) -> bool {
             && matches!(bytes[2], b'/' | b'\\'))
 }
 
-fn explicit_path(input: &str) -> bool {
+pub(crate) fn explicit_path(input: &str) -> bool {
     input == "."
         || input == ".."
         || input.contains('/')

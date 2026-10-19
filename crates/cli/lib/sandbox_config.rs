@@ -1091,7 +1091,10 @@ fn absolutize_image(image: &mut ImageInput, base: &Path) {
                 absolutize(path, base);
             }
             if let Some(snapshot) = &mut object.snapshot
-                && looks_like_local_path(snapshot)
+                && crate::snapshot_source::explicit_path(snapshot)
+                // Keep foreign absolute paths intact so launch can refuse them on
+                // this host, rather than disguising them as config-relative names.
+                && (cfg!(windows) || !crate::snapshot_source::windows_root(snapshot))
             {
                 *snapshot = absolute_path(Path::new(snapshot), base)
                     .to_string_lossy()
@@ -1871,6 +1874,95 @@ fn parse_duration_millis(value: &str) -> anyhow::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_snapshot_paths_use_the_contributing_file_directory() {
+        use crate::snapshot_source::{SnapshotLaunchSource, SnapshotSourceArgs};
+
+        let dir = tempfile::tempdir().unwrap();
+        // The config loader already anchors the contributing file's directory;
+        // use the real temporary root on macOS, where /var itself is a symlink.
+        let config_dir = dir.path().canonicalize().unwrap().join("project");
+        std::fs::create_dir(&config_dir).unwrap();
+        let file = config_dir.join("launch.json");
+        for spelling in [
+            "backups/ready.msb",
+            "./ready.msb",
+            "link/../missing.msb",
+            "sub\\ready.msb",
+        ] {
+            std::fs::write(
+                &file,
+                serde_json::to_vec(&serde_json::json!({
+                    "image": {"snapshot": spelling}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let resolved = resolve(
+                &SandboxConfigSources::default().source(SandboxConfigKind::Root, file.clone()),
+            )
+            .unwrap();
+            let expected = config_dir.join(spelling);
+            assert_eq!(resolved.snapshot_source(), expected.to_str());
+            // A later launch from another cwd must retain the selected config-relative
+            // path, including unresolved symlinks and nonexistent inputs.
+            let selected = SnapshotSourceArgs::default()
+                .resolve(resolved.snapshot_source(), false)
+                .unwrap()
+                .unwrap()
+                .anchor_paths(&dir.path().join("caller"))
+                .unwrap();
+            let SnapshotLaunchSource::Paths { paths, .. } = selected else {
+                panic!("expected path")
+            };
+            assert_eq!(paths, [expected]);
+        }
+        for group in ["history", "backup.msb"] {
+            std::fs::write(
+                &file,
+                serde_json::to_vec(&serde_json::json!({
+                    "image": {"snapshot": group}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let resolved = resolve(
+                &SandboxConfigSources::default().source(SandboxConfigKind::Root, file.clone()),
+            )
+            .unwrap();
+            assert_eq!(resolved.snapshot_source(), Some(group));
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn configured_foreign_snapshot_path_is_not_disguised_as_native_relative_path() {
+        use crate::snapshot_source::SnapshotSourceArgs;
+
+        let dir = tempfile::tempdir().unwrap();
+        for spelling in [r"C:\backups\ready.msb", r"\\server\share\ready.msb"] {
+            let mut image = ImageInput::Object(ImageObject {
+                snapshot: Some(spelling.into()),
+                ..Default::default()
+            });
+            absolutize_image(&mut image, dir.path());
+            let ImageInput::Object(object) = image else {
+                unreachable!()
+            };
+            assert_eq!(object.snapshot.as_deref(), Some(spelling));
+            assert!(
+                SnapshotSourceArgs::default()
+                    .resolve(object.snapshot.as_deref(), false)
+                    .unwrap()
+                    .unwrap()
+                    .anchor_paths(dir.path())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Windows host")
+            );
+        }
+    }
 
     #[test]
     fn network_config_tcp_aliases_reject_duplicate_names() {
