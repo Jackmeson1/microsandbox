@@ -28,6 +28,7 @@ def test_saved_artifact_is_structured(kind: str) -> None:
     assert error.artifact.kind == kind
     assert error.artifact.path == "/saved"
     assert error.artifact.snapshot_id == "snap_1"
+    assert error.artifact.head_update is None
     assert error.source_sandbox == "source"
     assert error.publication_error is None
 
@@ -109,3 +110,11 @@ asyncio.run(main())
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert not (tmp_path / "home" / "snapshots" / "history" / "group.json").exists()
+
+
+def test_published_artifact_retains_operation_head_outcome() -> None:
+    from microsandbox import PublishedSnapshotArtifact
+
+    update = {"group": "history", "previous": None, "head": "snap_1", "reason": "initialized", "changed": True}
+    artifact = PublishedSnapshotArtifact(kind="installed", path="/saved", snapshot_id="snap_1", digest="digest-1", head_update=update)
+    assert artifact.head_update == update

@@ -818,6 +818,7 @@ mod command_tests {
                     path: "/saved/snapshot.tar".into(),
                     snapshot_id: "snap_test".into(),
                     digest: "digest".into(),
+                    head_update: None,
                 }),
                 detail: "thaw acknowledgement timed out".into(),
                 publication_error: None,

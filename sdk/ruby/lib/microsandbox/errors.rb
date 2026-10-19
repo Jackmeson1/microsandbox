@@ -177,7 +177,8 @@ module Microsandbox
     # @return [String, nil] the runtime-local checkpoint path
     attr_reader :checkpoint_path
     # @return [Hash, nil] the published snapshot, with "kind" ("installed" or
-    #   "archive"), "path", "snapshot_id", and "digest" keys
+    #   "archive"), "path", "snapshot_id", and "digest" keys; installed captures may
+    #   also include their operation-owned "head_update" outcome
     attr_reader :artifact
     # @return [String, nil] the runtime's recovery diagnostic
     attr_reader :detail

@@ -33,6 +33,8 @@ Artifact helpers formerly owned by `Snapshot` are now accessed through `Checkpoi
 
 Ruby supports group capture, management, archives and verification here. It does not currently expose the sandbox-spawn methods available in the Rust, TypeScript, Python and Go bindings.
 
+A capture can publish successfully and then raise `SnapshotSourceRecoveryError` because the source failed to recover. Its `artifact` hash retains the published kind, path, snapshot identity, digest and `head_update` for an installed capture. This head outcome belongs to the capture even if another operation later changes the head. Archive-only capture and older producers omit it. Recovery locators do not prove that the source is running or safe to resume.
+
 ## Save an exact checkpoint
 
 ```ruby

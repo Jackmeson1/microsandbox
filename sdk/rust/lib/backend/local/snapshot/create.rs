@@ -980,6 +980,7 @@ async fn publish_full_archive(
             path: archive.path().to_path_buf(),
             snapshot_id: archive.id().to_string(),
             digest: archive.descriptor_digest().to_string(),
+            head_update: None,
         }
     })
 }
@@ -1170,6 +1171,7 @@ fn installed_artifact(snapshot: &Snapshot) -> PublishedSnapshotArtifact {
         path: snapshot.path().to_path_buf(),
         snapshot_id: snapshot.id().to_string(),
         digest: snapshot.digest().to_string(),
+        head_update: snapshot.head_update.clone(),
     }
 }
 
@@ -2630,6 +2632,17 @@ mod tests {
             assert!(failure.publication_error.is_none());
             let artifact = failure.artifact.unwrap();
             assert_eq!(artifact.kind, SnapshotArtifactKind::Installed);
+            let outcome = artifact
+                .head_update
+                .as_ref()
+                .expect("published head outcome");
+            assert_eq!(outcome.head.as_deref(), Some(snapshot_id.as_str()));
+            assert_eq!(outcome.previous, None);
+            assert_eq!(
+                outcome.reason,
+                crate::snapshot::HeadUpdateReason::Initialized
+            );
+            assert!(outcome.changed);
             assert_eq!(artifact.path, destination);
             assert_ne!(artifact.path, staged_path);
             assert!(!staged_path.exists());
@@ -2676,6 +2689,15 @@ mod tests {
                     .unwrap();
             assert_eq!(artifact.snapshot_id, reopened.id().to_string());
             assert_eq!(artifact.digest, reopened.digest());
+            // Another operation may change the head before the caller handles this error.
+            // The captured outcome must still describe the publication that failed recovery.
+            super::super::group::change_head(&group, None)
+                .await
+                .unwrap();
+            assert_eq!(outcome.head.as_deref(), Some(artifact.snapshot_id.as_str()));
+            let serialized = serde_json::to_value(&artifact).unwrap();
+            assert_eq!(serialized["head_update"]["head"], artifact.snapshot_id);
+            assert_eq!(serialized["head_update"]["reason"], "initialized");
         }
     }
 
@@ -2715,6 +2737,13 @@ mod tests {
         assert!(failure.publication_error.is_none());
         let artifact = failure.artifact.unwrap();
         assert_eq!(artifact.kind, SnapshotArtifactKind::Archive);
+        assert!(artifact.head_update.is_none());
+        assert!(
+            serde_json::to_value(&artifact)
+                .unwrap()
+                .get("head_update")
+                .is_none()
+        );
         assert_eq!(artifact.path, out);
         let restored = super::super::archive::materialize_archive_for_child(
             &local,

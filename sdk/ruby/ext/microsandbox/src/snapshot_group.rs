@@ -382,7 +382,7 @@ pub(super) fn capture_options(
     Ok(options)
 }
 
-fn head_update(update: &microsandbox_core::HeadUpdate) -> Result<RHash, Error> {
+pub(super) fn head_update(update: &microsandbox_core::HeadUpdate) -> Result<RHash, Error> {
     let hash = current_ruby().hash_new();
     hash.aset("group", update.group.as_str())?;
     hash.aset("head", update.head.as_deref())?;

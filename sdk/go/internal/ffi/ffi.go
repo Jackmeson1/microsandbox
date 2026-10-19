@@ -1322,10 +1322,11 @@ type SnapshotSourceRecoveryDetails struct {
 
 // PublishedSnapshotArtifact names a completed installed snapshot or archive.
 type PublishedSnapshotArtifact struct {
-	Kind       string `json:"kind"`
-	Path       string `json:"path"`
-	SnapshotID string `json:"snapshot_id"`
-	Digest     string `json:"digest"`
+	Kind       string              `json:"kind"`
+	Path       string              `json:"path"`
+	SnapshotID string              `json:"snapshot_id"`
+	Digest     string              `json:"digest"`
+	HeadUpdate *SnapshotHeadUpdate `json:"head_update,omitempty"`
 }
 
 func (e *Error) Error() string { return e.Message }

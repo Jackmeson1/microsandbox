@@ -18,6 +18,7 @@ class MicrosandboxTest < Test::Unit::TestCase
     VolumeNotFoundError VolumeAlreadyExistsError ImageNotFoundError ImageInUseError ImagePullFailedError
     SnapshotNotFoundError SnapshotAlreadyExistsError SnapshotSandboxRunningError
     SnapshotImageMissingError SnapshotIntegrityError SnapshotSourceRecoveryError SnapshotImportError SnapshotMigrationError
+    SnapshotVerificationError SnapshotRemovalRecoveryError SnapshotGroupRemovalRecoveryError
     NetworkPolicyError SecretViolationError TlsError
     IoError
     MetricsDisabledError MetricsUnavailableError

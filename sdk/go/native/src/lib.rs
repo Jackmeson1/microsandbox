@@ -8040,6 +8040,7 @@ mod tests {
                     path: "/saved.msb".into(),
                     snapshot_id: "snap_1".into(),
                     digest: "sha256:descriptor".into(),
+                    head_update: None,
                 }),
                 detail: "thaw acknowledgement lost".into(),
                 publication_error: None,

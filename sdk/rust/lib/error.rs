@@ -32,6 +32,10 @@ pub struct PublishedSnapshotArtifact {
     pub snapshot_id: String,
     /// Digest of the canonical snapshot descriptor.
     pub digest: String,
+    /// Head outcome recorded by this publication, never a later read of the mutable group head.
+    /// Absent for archive-only capture or producers that did not report an outcome.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_update: Option<crate::snapshot::HeadUpdate>,
 }
 
 /// Capture completed, but restoring the source's prior execution state failed.
@@ -903,6 +907,7 @@ mod tests {
                 path: "/snapshots/saved.tar".into(),
                 snapshot_id: "snap_test".into(),
                 digest: "sha256:descriptor".into(),
+                head_update: None,
             }),
             detail: "thaw timed out; re-pause failed".into(),
             publication_error: None,

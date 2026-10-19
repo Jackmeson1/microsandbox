@@ -142,6 +142,11 @@ function mapRecoveryError(payload: string, raw: Error): unknown {
     const a = r.artifact;
     if (a !== null && (!a || !(a.kind === "installed" || a.kind === "archive") ||
         !["path", "snapshot_id", "digest"].every((key) => typeof a[key] === "string"))) return raw;
+    const head = a?.head_update;
+    if (head != null && (typeof head !== "object" || typeof head.group !== "string" ||
+        typeof head.reason !== "string" || typeof head.changed !== "boolean" ||
+        !(head.previous === null || typeof head.previous === "string") ||
+        !(head.head === null || typeof head.head === "string"))) return raw;
     return new SnapshotSourceRecoveryError(envelope.message, {
       sourceSandbox: r.source_sandbox,
       checkpointId: r.checkpoint_id,
@@ -151,6 +156,7 @@ function mapRecoveryError(payload: string, raw: Error): unknown {
       publicationError: r.publication_error,
       artifact: a === null ? null : {
         kind: a.kind, path: a.path, snapshotId: a.snapshot_id, digest: a.digest,
+        ...(a.head_update === undefined ? {} : { headUpdate: head }),
       },
     }, { cause: raw });
   } catch {

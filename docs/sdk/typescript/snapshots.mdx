@@ -102,7 +102,7 @@ If removal commits but catalog cleanup fails, the call returns `SnapshotRemovalR
 
 ## Capture recovery
 
-A failed capture can still have published its requested artifact before source recovery failed. `SnapshotSourceRecoveryError` preserves the source checkpoint recovery locator and, when publication completed, the published artifact’s kind, path, identity and digest. Inspect those details before retrying or removing the source. The error does not prove that the source is running or safely paused.
+A failed capture can still have published its requested artifact before source recovery failed. `SnapshotSourceRecoveryError` preserves the source checkpoint recovery locator and, when publication completed, the published artifact’s kind, path, identity, digest and `headUpdate`. The head outcome belongs to that publication even if another operation changes the group afterward. Archive-only capture and older producers omit it; do not infer it by reading the current head. Inspect those details before retrying or removing the source. The error does not prove that the source is running or safely paused.
 
 ## Guest writeback
 

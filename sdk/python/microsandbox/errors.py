@@ -171,6 +171,8 @@ class PublishedSnapshotArtifact:
     path: str
     snapshot_id: str
     digest: str
+    # Missing in older producers and archive-only captures. Never inferred from current head.
+    head_update: dict | None = None
 
 
 class SnapshotRemovalRecoveryError(MicrosandboxError):

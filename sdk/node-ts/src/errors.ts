@@ -1,3 +1,4 @@
+import type { HeadUpdate } from "./snapshot.js";
 import type { CheckpointRemoveResult, SnapshotRemoveResult } from "./snapshot-removal.js";
 import type { SnapshotGroupVerifyReport } from "./snapshot-verification.js";
 
@@ -242,6 +243,8 @@ export interface PublishedSnapshotArtifact {
   readonly path: string;
   readonly snapshotId: string;
   readonly digest: string;
+  /** This publication’s outcome; omitted by older producers and archive-only captures. */
+  readonly headUpdate?: HeadUpdate | null;
 }
 
 /** Recovery locators do not imply that the source is running or safe to resume. */

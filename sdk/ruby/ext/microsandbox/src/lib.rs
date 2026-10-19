@@ -454,6 +454,9 @@ fn published_artifact_hash(
     hash.aset("path", artifact.path.to_string_lossy().into_owned())?;
     hash.aset("snapshot_id", artifact.snapshot_id.as_str())?;
     hash.aset("digest", artifact.digest.as_str())?;
+    if let Some(update) = &artifact.head_update {
+        hash.aset("head_update", snapshot_group::head_update(update)?)?;
+    }
     Ok(hash)
 }
 

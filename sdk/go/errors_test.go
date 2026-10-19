@@ -141,6 +141,29 @@ func TestSnapshotSourceRecoveryError(t *testing.T) {
 	}
 }
 
+// Missing fields from older native producers remain unknown, not a guessed head.
+func TestSnapshotRecoveryPublicationHead(t *testing.T) {
+	for _, head := range []string{`null`, `{"group":"history","previous":null,"head":"snap_1","reason":"initialized","changed":true}`} {
+		payload := `{"kind":"snapshot_source_recovery","message":"source recovery failed","recovery":{"artifact":{"kind":"installed","path":"/saved","snapshot_id":"snap_1","digest":"digest","head_update":` + head + `}}}`
+		var native ffi.Error
+		if err := json.Unmarshal([]byte(payload), &native); err != nil {
+			t.Fatal(err)
+		}
+		var recovery *SnapshotSourceRecoveryError
+		if !errors.As(wrapFFI(&native), &recovery) {
+			t.Fatal("lost typed error")
+		}
+		update := recovery.Recovery.Artifact.HeadUpdate
+		if head == "null" {
+			if update != nil {
+				t.Fatal("invented head outcome")
+			}
+		} else if update == nil || update.Group != "history" || update.Head == nil || *update.Head != "snap_1" || update.Reason != "initialized" || !update.Changed {
+			t.Fatalf("lost publication outcome: %+v", update)
+		}
+	}
+}
+
 func TestWrapFFIFfiError(t *testing.T) {
 	fe := &ffi.Error{Kind: ffi.KindSandboxNotFound, Message: "missing"}
 	err := wrapFFI(fe)

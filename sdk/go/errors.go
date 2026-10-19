@@ -293,6 +293,8 @@ type PublishedSnapshotArtifact struct {
 	Path       string
 	SnapshotID string
 	Digest     string
+	// HeadUpdate describes this publication; nil means no group outcome was reported.
+	HeadUpdate *SnapshotHeadUpdate
 }
 
 // SnapshotImportOutcome describes publication certainty, not whether the call succeeded.
@@ -457,6 +459,7 @@ func wrapFFI(err error) error {
 			if a := r.Artifact; a != nil {
 				recovery.Artifact = &PublishedSnapshotArtifact{
 					Kind: a.Kind, Path: a.Path, SnapshotID: a.SnapshotID, Digest: a.Digest,
+					HeadUpdate: snapshotHeadUpdateFromInfo(a.HeadUpdate),
 				}
 			}
 			return &SnapshotSourceRecoveryError{

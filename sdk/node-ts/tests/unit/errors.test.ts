@@ -53,6 +53,22 @@ describe("mapNapiError", () => {
     });
   }
 
+  for (const head of [null, { group: "history", previous: null, head: "snap_1", reason: "initialized", changed: true }]) {
+    it(`retains the operation's head outcome: ${JSON.stringify(head)}`, () => {
+      const raw = new Error(`[SnapshotSourceRecovery] ${JSON.stringify({
+        message: "source recovery failed",
+        recovery: {
+          source_sandbox: "source", checkpoint_id: "checkpoint-1", checkpoint_root: "root",
+          checkpoint_path: "/runtime/checkpoint", detail: "thaw failed", publication_error: null,
+          artifact: { kind: "installed", path: "/saved", snapshot_id: "snap_1", digest: "digest", head_update: head },
+        },
+      })}`);
+      const mapped = mapNapiError(raw) as SnapshotSourceRecoveryError;
+      expect(mapped).toBeInstanceOf(SnapshotSourceRecoveryError);
+      expect(mapped.recovery.artifact?.headUpdate).toEqual(head);
+    });
+  }
+
   for (const payload of ["not json", "null", "{}", '{"message":"failed","recovery":{}}']) {
     it(`preserves malformed recovery envelopes: ${payload}`, () => {
       const raw = new Error(`[SnapshotSourceRecovery] ${payload}`);
