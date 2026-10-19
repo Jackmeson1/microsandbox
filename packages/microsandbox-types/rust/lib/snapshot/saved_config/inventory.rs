@@ -31,6 +31,20 @@ pub enum SavedBindingKind {
     ProxyEndpoint,
     /// Destination proxy authentication, never a URL with embedded credentials.
     ProxyCredentials,
+    /// One ordinary host file exported through the runtime filesystem share.
+    FilesystemFile,
+    /// A host directory tree exported through the runtime filesystem share.
+    FilesystemDirectory,
+    /// A destination named directory volume, without source-name fallback.
+    NamedDirectory,
+    /// A destination named disk volume.
+    NamedDisk,
+    /// An external disk-image file with separately validated format/layout.
+    DiskImage,
+    /// A destination stream socket or supported local pipe.
+    StreamSocket,
+    /// A destination datagram socket.
+    DatagramSocket,
 }
 
 /// All consumers implied by the saved fields. These are not archive-selected activation timing.
@@ -48,6 +62,10 @@ pub enum SavedBindingConsumer {
     GuestTrust,
     /// Destination host listener before guest activation.
     Listener,
+    /// External guest mount backing before activation, with full-state identity checks.
+    Mount,
+    /// Guest-to-host IPC route before activation.
+    Vsock,
 }
 
 /// One logical binding can have several consumers, but exactly one destination value shape.
@@ -251,7 +269,7 @@ pub(super) fn merge_binding_uses(
     Ok(())
 }
 
-fn record(
+pub(super) fn record(
     uses: &mut SavedBindingUses,
     id: &str,
     kind: SavedBindingKind,

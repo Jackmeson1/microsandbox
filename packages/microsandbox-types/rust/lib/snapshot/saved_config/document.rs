@@ -1,7 +1,7 @@
 //! Versioned portable document and cross-section consistency checks.
 //!
 //! This is an internal schema under construction. It does not enable the required
-//! extension; storage/IPC identity, capture evidence and activation remain separate gates.
+//! extension; captured resource identity, capture evidence and activation remain separate gates.
 
 use std::collections::BTreeMap;
 
@@ -15,7 +15,8 @@ use super::validation::{MAX_NAME_BYTES, MAX_SAVED_SCRIPTS_BYTES, decode, encoded
 use super::value::deserialize_present;
 use super::{
     SavedBindingKind, SavedBindingUses, SavedExecutionConfig, SavedNetworkConfig,
-    SavedResourcesConfig, SavedRuntimeConfig, SavedScript, SavedValue, collect_binding_uses,
+    SavedResourcesConfig, SavedRuntimeConfig, SavedScript, SavedStorageConfig, SavedValue,
+    collect_binding_uses,
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -51,7 +52,7 @@ pub struct SavedSandboxConfig {
     pub pending: Option<SavedActiveConfig>,
 }
 
-/// Implemented portable policy sections. Storage and IPC must be added before writer enablement.
+/// Portable policy sections; authoritative captured-resource checks remain activation gates.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SavedActiveConfig {
@@ -67,6 +68,9 @@ pub struct SavedActiveConfig {
     /// User labels, new-process security/limits and fresh lifetime durations.
     #[serde(default)]
     pub execution: SavedExecutionConfig,
+    /// Guest mount and IPC requirements; source paths and sockets are never defaults.
+    #[serde(default)]
+    pub storage: SavedStorageConfig,
 }
 
 /// A deliberately small safe provenance record; no arbitrary config or source paths.
@@ -120,11 +124,16 @@ impl SavedSandboxConfig {
         self.active.resources.validate_active_observations()?;
         self.provenance.validate()?;
         let mut uses = collect_binding_uses(&self.active.runtime, &self.active.network)?;
+        merge_binding_uses(&mut uses, self.active.storage.binding_uses()?)?;
         let mut script_bytes = self.active.inline_script_bytes();
         if let Some(pending) = &self.pending {
             // Pending input receives the same exclusion/validation contract, but it
             // contributes no activation demand. Do not hand this union to a launcher.
             pending.validate().map_err(pending_error)?;
+            merge_binding_uses(
+                &mut uses,
+                pending.storage.binding_uses().map_err(pending_error)?,
+            )?;
             script_bytes += pending.inline_script_bytes();
             merge_binding_uses(
                 &mut uses,
@@ -145,13 +154,16 @@ impl SavedSandboxConfig {
     /// Resolve saved/fresh mode and destination overrides before activation demand is decided.
     pub fn active_binding_uses(&self) -> SnapshotManifestResult<SavedBindingUses> {
         self.validate()?;
-        collect_binding_uses(&self.active.runtime, &self.active.network)
+        let mut uses = collect_binding_uses(&self.active.runtime, &self.active.network)?;
+        merge_binding_uses(&mut uses, self.active.storage.binding_uses()?)?;
+        Ok(uses)
     }
 
     /// Check duplicated legacy projections without mutating their released encodings.
     /// This method is not registered with the manifest reader until the feature is complete.
     pub fn validate_legacy_projections(&self, manifest: &Manifest) -> SnapshotManifestResult<()> {
         self.validate()?;
+        self.active.storage.validate_owned_projection(manifest)?;
         if manifest.extensions.contains_key(RESTORE_DEFAULTS_EXTENSION)
             && let Some(saved) = &self.active.runtime.user
         {
@@ -192,7 +204,8 @@ impl SavedActiveConfig {
         self.resources.validate()?;
         self.runtime.validate()?;
         self.network.validate()?;
-        self.execution.validate()
+        self.execution.validate()?;
+        self.storage.validate()
     }
 
     fn inline_script_bytes(&self) -> usize {

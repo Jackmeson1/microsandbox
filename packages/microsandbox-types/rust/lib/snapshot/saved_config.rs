@@ -12,6 +12,9 @@ mod network_capture;
 mod network_validation;
 mod resources;
 mod runtime;
+mod storage;
+mod storage_capture;
+mod storage_validation;
 mod validation;
 mod value;
 
@@ -19,6 +22,8 @@ mod value;
 mod document_tests;
 #[cfg(test)]
 mod network_tests;
+#[cfg(test)]
+mod storage_tests;
 #[cfg(test)]
 mod tests;
 
@@ -38,6 +43,11 @@ pub use inventory::{
 pub use network::*;
 pub use resources::SavedResourcesConfig;
 pub use runtime::{SavedHostname, SavedInit, SavedInitSelection, SavedRuntimeConfig, SavedScript};
+pub use storage::{
+    SavedBindRootKind, SavedMount, SavedMountOptions, SavedNamedStorage, SavedStorageConfig,
+    SavedVsockRoute,
+};
+pub use storage_capture::SavedExternalMountCapture;
 pub use value::{SavedOrigin, SavedText, SavedUnknownReason, SavedValue};
 
 pub use validation::{

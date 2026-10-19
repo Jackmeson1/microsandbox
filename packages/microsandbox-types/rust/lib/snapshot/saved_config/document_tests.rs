@@ -522,7 +522,7 @@ fn schema_document_is_still_not_advertised_as_a_supported_extension() {
 // Functions
 //--------------------------------------------------------------------------------------------------
 
-fn document() -> Value {
+pub(super) fn document() -> Value {
     json!({"schema_version":1,"active":{"resources":{},"runtime":{},"network":{},"execution":{}},"bindings":{},
         "provenance":{"producer_version":"0.8.0","active_generation":{"state":"unknown","reason":"not_observed"}}})
 }
@@ -544,7 +544,7 @@ fn reject(value: &Value, expected: &str) -> String {
     error
 }
 
-fn descriptor() -> Manifest {
+pub(super) fn descriptor() -> Manifest {
     serde_json::from_value(json!({
         "schema":crate::snapshot::manifest::SCHEMA, "snapshot_id":"snap_0123456789abcdef0123456789abcdef", "scope":"file",
         "state":{"kind":"file","disk_format":"raw","filesystem":"ext4","virtual_size":4,"head":"layer_0123456789abcdef0123456789abcdef",

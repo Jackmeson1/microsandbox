@@ -4,7 +4,7 @@ This is an internal PR3 implementation stage, not an enabled capture or restore 
 
 ## Runtime representation
 
-The runtime section has a closed field inventory: workdir, shell, entrypoint, cmd, env, scripts, init, hostname, user and guest clock. Invocation, logging, metrics configuration, host paths, credentials and arbitrary operational fields are not runtime fallback fields. Resources, labels, guest security, lifetime, binding inventory, provenance and pending configuration now have separate typed sections described below. Storage/IPC identity and the remaining provenance families are still incomplete. Portable network records are described below.
+The runtime section has a closed field inventory: workdir, shell, entrypoint, cmd, env, scripts, init, hostname, user and guest clock. Invocation, logging, metrics configuration, host paths, credentials and arbitrary operational fields are not runtime fallback fields. Resources, labels, guest security, lifetime, binding inventory, provenance and pending configuration now have separate typed sections described below. Storage/IPC requirements are described below; authoritative full-state resource identity and remaining provenance families still need integration. Portable network records are described below.
 
 Each field distinguishes absence from `{ "state": "default" }`, `{ "state": "unknown", "reason": "not_recorded" }`, and `{ "state": "value", "value": ..., "origin": "configured" }`. Unknown reasons are closed (`not_recorded`, `not_observed`, `converging`), and origins are closed (`configured`, `image`, `platform`, `observed`). Origins describe evidence; they are never authorization or archive-selected reuse policy. Present null is invalid. Explicit empty argv/maps and false/zero in applicable typed fields remain values.
 
@@ -36,7 +36,7 @@ Saved disabled safeguards remain recorded rather than silently rewritten. Parsin
 
 ## Document, resources and execution policy
 
-`SavedSandboxConfig` carries `schema_version: 1`, `active`, `bindings`, `provenance`, and optional `pending`. Each active/pending record currently contains resources, runtime, network and execution sections. This is still an internal incomplete schema: storage/IPC and expanded placement/network identity provenance must be completed before writing artifacts. Unknown versions, extra operational fields, duplicate keys and present null values fail. The whole document, including pending/provenance, shares the byte/depth/map bounds; the script budget is combined across active and pending.
+`SavedSandboxConfig` carries `schema_version: 1`, `active`, `bindings`, `provenance`, and optional `pending`. Each active/pending record currently contains resources, runtime, network, execution and storage sections. This is still an internal incomplete schema: expanded placement/network identity provenance and authoritative full-state checks must be completed before writing artifacts. Unknown versions, extra operational fields, duplicate keys and present null values fail. The whole document, including pending/provenance, shares the byte/depth/map bounds; the script budget is combined across active and pending.
 
 Resource records separate CPU/memory allocation, maxima and THP. Zero allocation/maxima and concrete allocation greater than its maximum fail. Active concrete CPU/memory values require observed origin; requested values can appear in pending intent, never promoted into confirmed active capacity. Missing/default/unknown observations retain their distinction. A recorded generation must be observed or explicitly unknown, but the capture path must still prove coherence; an origin tag is not evidence by itself. Full resume must also validate the existing authoritative checkpoint geometry and backing.
 
@@ -46,7 +46,19 @@ Rlimits and lifetime durations use `SavedU64`, encoded as canonical unsigned dec
 
 The binding inventory declares destination value shapes, not credential values, source lookup instructions or activation timing. Consumers are derived from runtime and network fields. Shared IDs retain all consumers, so a future-command use cannot weaken a gateway or init requirement. Compatible certificate uses can share a binding; incompatible destination shapes cannot. Missing, wrong-kind and unreferenced entries reject. Pending references are checked against the inventory but `active_binding_uses()` deliberately excludes their consumers. The resolver must recompute demand after saved/fresh selection, clears and explicit overrides; this method alone cannot authorize launch or deferred exec.
 
-`validate_legacy_projections()` checks duplicated user/clock records against the released extensions, without changing their serialization or registering a manifest reader. Conflicting concrete values or unknown/default claims that disagree with an existing legacy projection fail with redacted field diagnostics. Existing owned-storage and checkpoint geometry remain authoritative and need their own integration checks.
+`validate_legacy_projections()` checks duplicated user/clock records against the released extensions, without changing their serialization or registering a manifest reader. Conflicting concrete values or unknown/default claims that disagree with an existing legacy projection fail with redacted field diagnostics. The same explicit projection check now also validates owned references against existing authoritative owned-storage records. Runtime checkpoint geometry and full resource identity still require activation integration.
+
+## Storage and IPC representation
+
+The storage section retains canonical guest mount targets, resource kinds, mount flags, guest ownership, filesystem metadata policy, quota/capacity and logical destination bindings. Bind files and directories are distinct observed kinds. Named storage records its observed directory/disk kind rather than guessing from a source volume name or transient create/ensure intent. External disk images retain format and optional guest filesystem type. Tmpfs retains capacity/options without claiming that a disk snapshot includes its transient contents. Root layout remains in the existing authoritative artifact metadata.
+
+Owned mounts contain only guest path and the existing mount ID. Their options, backing closure and layout remain in `microsandbox.owned-volumes`, with no duplicate mutable copy in saved config. A concrete saved mount list must reference that complete inventory exactly; replacing an owned target with an external mount or omitting its reference rejects. Unknown or absent saved lists do not erase existing authoritative owned requirements. Validation includes a real collision fixture for the existing 32-bit mount-ID suffix: distinct guest paths that hash to the same ID must not alias one backing. This adds no new ID format or migration.
+
+Guest paths use the existing cross-platform Unix normalizer, but archive input must already be canonical; it is not silently repaired. Mounts require the existing parent-before-child ordering and unique guest paths. Kind-specific ownership/metadata checks follow existing SDK rules. Recorded mirroring, symlink-following and other relaxations remain data, not destination permission. Full resume must still match authoritative captured handles/resources; equal path/options/content do not prove identity.
+
+Vsock records guest port, stream/datagram type and a logical destination endpoint. Port zero/wildcard and datagram clock port 123 reject, and identity is type plus port. Stream and datagram routes can use the same number. Destination platform and deployment constraints remain activation checks; no unsupported host endpoint is silently substituted. Mount and IPC references join the document's typed binding inventory, including cross-family collision checks. Pending routes validate but never enter active demand.
+
+`SavedMount::from_source()` and `SavedVsockRoute::from_source()` exhaustively project source fields without reading or cloning host paths, source volume names, creation directives or socket paths. The caller must provide logical bindings and guarded observed bind/named backing evidence. Missing or wrong-kind evidence refuses instead of consulting source paths or guessing. Owned options/backing are obtained from the authoritative existing inventory. These helpers do not yet connect capture, prove coherent resource identity, materialize resources or authorize activation.
 
 ## Draft bounds and diagnostics
 
@@ -56,7 +68,7 @@ Decode rejects duplicate keys before typed conversion and unknown fields at ever
 
 ## Remaining integration gates
 
-- Complete the current-head field/API inventory and the rest of the typed schema, including storage/IPC, remaining provenance and authoritative owned-storage/checkpoint checks.
+- Complete the current-head field/API inventory and the rest of the typed schema, including remaining provenance and authoritative runtime checkpoint/resource identity checks.
 - Implement saved/fresh, field/key clears, explicit input precedence and destination constraints in the shared resolver.
 - Capture coherent active configuration, separate pending intent, and trustworthy resolved init/script/resource evidence. The current catalog has `active_config`, but terminal maintenance clears it; desired `config` is not evidence of the last active state.
 - Preserve exclusions and secret provenance through all fields, pending data and errors; implement every deferred exec consumer before enabling deferred bindings.
