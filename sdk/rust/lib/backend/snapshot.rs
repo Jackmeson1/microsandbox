@@ -16,6 +16,18 @@ use crate::snapshot::{
 
 /// Backend implementation for snapshot lifecycle operations.
 pub trait SnapshotBackend: Send + Sync {
+    /// Read one group's head, membership count and saved capture association.
+    fn inspect_group<'a>(
+        &'a self,
+        _reference: &'a SnapshotReference,
+    ) -> BoxFuture<'a, MicrosandboxResult<crate::snapshot::SnapshotGroupInfo>> {
+        Box::pin(async {
+            Err(crate::MicrosandboxError::local_only(
+                crate::Operation::SnapshotOps,
+            ))
+        })
+    }
+
     /// Explicitly retire the entire history; surviving external dependents always prevent it.
     fn remove_group<'a>(
         &'a self,

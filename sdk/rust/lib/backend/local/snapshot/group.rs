@@ -5,6 +5,7 @@
 //! ancestry. All group operations share one process-held lock, acquired off the async executor.
 
 mod capture;
+mod inspection;
 mod removal;
 mod remove_history;
 mod retirement;
@@ -1608,6 +1609,7 @@ mod tests;
 //--------------------------------------------------------------------------------------------------
 
 pub(super) use capture::CaptureReservation;
+pub(super) use inspection::inspect as inspect_history;
 
 //--------------------------------------------------------------------------------------------------
 // Re-Exports

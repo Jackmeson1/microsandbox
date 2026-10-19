@@ -113,6 +113,7 @@ export {
 } from "./volume-fs.js";
 
 // Snapshots
+export type { SnapshotGroupInfo, SnapshotSourceBinding, SnapshotSourceStatus } from "./snapshot-inspection.js";
 export type { CheckpointRemoveResult, SnapshotRemoveResult } from "./snapshot-removal.js";
 export { Snapshot as Checkpoint, CheckpointRemoveOptions, SnapshotSaveOptions, SnapshotArchive } from "./snapshot.js";
 export { Snapshot, SnapshotCaptureOptions, SnapshotLoadOptions } from "./snapshot-group.js";

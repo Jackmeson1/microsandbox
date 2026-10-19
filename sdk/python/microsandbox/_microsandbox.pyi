@@ -42,6 +42,7 @@ from microsandbox.types import (
     SecretModifySpec,
     SecurityProfile,
     SnapshotFormat,
+    SnapshotGroupInfo,
     SnapshotScope,
     SnapshotStateKind,
     StatVirtualization,
@@ -97,7 +98,17 @@ class SandboxPage:
     def next_cursor(self) -> str | None: ...
 
 class Sandbox:
-    async def snapshot(self, name: str, *, initial_checkpoint: str | None = None, dest_dir: str | os.PathLike[str] | None = None, labels: dict[str, str] | None = None, full: bool = False, record_integrity: bool = False, guest_flush: str | None = None) -> SnapshotCreateResult: ...
+    async def snapshot(
+        self,
+        name: str,
+        *,
+        initial_checkpoint: str | None = None,
+        dest_dir: str | os.PathLike[str] | None = None,
+        labels: dict[str, str] | None = None,
+        full: bool = False,
+        record_integrity: bool = False,
+        guest_flush: str | None = None,
+    ) -> SnapshotCreateResult: ...
     """Sandbox lifecycle API.
 
     Sandbox names are limited to 128 UTF-8 bytes.
@@ -654,7 +665,17 @@ class SandboxHandle:
     async def destroy(self, *, force: bool = False, timeout: float | None = None) -> None: ...
     async def wait_until_stopped(self) -> SandboxStopResult: ...
     async def remove(self) -> None: ...
-    async def snapshot(self, name: str, *, initial_checkpoint: str | None = None, dest_dir: str | os.PathLike[str] | None = None, labels: dict[str, str] | None = None, full: bool = False, record_integrity: bool = False, guest_flush: str | None = None) -> SnapshotCreateResult: ...
+    async def snapshot(
+        self,
+        name: str,
+        *,
+        initial_checkpoint: str | None = None,
+        dest_dir: str | os.PathLike[str] | None = None,
+        labels: dict[str, str] | None = None,
+        full: bool = False,
+        record_integrity: bool = False,
+        guest_flush: str | None = None,
+    ) -> SnapshotCreateResult: ...
 
 class ExecOutput:
     @property
@@ -1167,8 +1188,19 @@ class ExternalMountWarning:
 
 class Snapshot:
     async def spawn_sandbox(self, *, name: str | None = None, **kwargs: Any) -> Sandbox: ...
-    async def spawn_sandbox_with_progress(self, *, name: str | None = None, **kwargs: Any) -> PullSession: ...
-    async def save(self, out: str | os.PathLike[str], *, with_parents: bool = False, with_image: bool = False, plain_tar: bool = False, since: str | None = None, last_layers: int | None = None) -> None: ...
+    async def spawn_sandbox_with_progress(
+        self, *, name: str | None = None, **kwargs: Any
+    ) -> PullSession: ...
+    async def save(
+        self,
+        out: str | os.PathLike[str],
+        *,
+        with_parents: bool = False,
+        with_image: bool = False,
+        plain_tar: bool = False,
+        since: str | None = None,
+        last_layers: int | None = None,
+    ) -> None: ...
     async def storage_usage(self) -> StorageItemUsage: ...
     @staticmethod
     async def create(
@@ -1480,12 +1512,22 @@ class JobLogStream:
 
 
 class SnapshotGroup:
+    async def inspect(self) -> SnapshotGroupInfo: ...
     async def remove(self) -> SnapshotRemoveResult: ...
     async def verify(self) -> dict[str, Any]: ...
     @staticmethod
-    async def load(group: str, files: list[str | os.PathLike[str]], *, dest: str | os.PathLike[str] | None = None, base: str | None = None, set_head: bool = False) -> SnapshotImportResult: ...
+    async def load(
+        group: str,
+        files: list[str | os.PathLike[str]],
+        *,
+        dest: str | os.PathLike[str] | None = None,
+        base: str | None = None,
+        set_head: bool = False,
+    ) -> SnapshotImportResult: ...
     async def spawn_sandbox(self, *, name: str | None = None, **kwargs: Any) -> Sandbox: ...
-    async def spawn_sandbox_with_progress(self, *, name: str | None = None, **kwargs: Any) -> PullSession: ...
+    async def spawn_sandbox_with_progress(
+        self, *, name: str | None = None, **kwargs: Any
+    ) -> PullSession: ...
     """Named checkpoint history; a cleared head does not remove its members."""
     @staticmethod
     async def get(name: str) -> SnapshotGroup: ...
@@ -1498,7 +1540,15 @@ class SnapshotGroup:
     async def get_checkpoint(self, member: str) -> Snapshot: ...
     async def set_head(self, member: str) -> dict[str, Any]: ...
     async def clear_head(self) -> dict[str, Any]: ...
-    async def checkpoint(self, *, name: str | None = None, labels: dict[str, str] | None = None, full: bool = False, record_integrity: bool = False, guest_flush: str | None = None) -> CheckpointCaptureResult: ...
+    async def checkpoint(
+        self,
+        *,
+        name: str | None = None,
+        labels: dict[str, str] | None = None,
+        full: bool = False,
+        record_integrity: bool = False,
+        guest_flush: str | None = None,
+    ) -> CheckpointCaptureResult: ...
 
 class SnapshotCreateResult:
     @property

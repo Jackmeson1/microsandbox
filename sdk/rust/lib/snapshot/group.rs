@@ -80,6 +80,14 @@ pub struct SnapshotCaptureOptions {
 //--------------------------------------------------------------------------------------------------
 
 impl Snapshot {
+    /// Inspect group metadata and the exact saved source association without capturing.
+    pub async fn inspect(&self) -> MicrosandboxResult<super::SnapshotGroupInfo> {
+        self.backend
+            .snapshots()
+            .inspect_group(&self.reference)
+            .await
+    }
+
     /// Remove this whole history, refusing surviving external dependents and active readers.
     pub async fn remove(&self) -> MicrosandboxResult<super::SnapshotRemoveResult> {
         self.backend.snapshots().remove_group(&self.reference).await

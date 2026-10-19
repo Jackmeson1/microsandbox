@@ -80,6 +80,13 @@ func TestCheckpointRemovalNative(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	info, err := group.Inspect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Name != "history" || info.Head == nil || *info.Head != id || info.CheckpointCount != 1 || info.Source != nil {
+		t.Fatalf("lost group metadata: %+v", info)
+	}
 	removedGroup, err := group.Remove(ctx)
 	if err != nil {
 		t.Fatal(err)

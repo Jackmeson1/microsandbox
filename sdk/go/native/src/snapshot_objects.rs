@@ -71,6 +71,7 @@ enum Request {
         options: crate::SnapshotSaveOptsJson,
     },
     Verify,
+    InspectGroup,
     RemoveGroup,
     Remove {
         force: bool,
@@ -352,6 +353,10 @@ async fn dispatch(id: u64, request: Request, pending: &PendingObjects) -> Result
                 )
                 .await?;
             Ok(json!({"ok": true}))
+        }
+        Request::InspectGroup => {
+            let info = group(id)?.inspect().await?;
+            serde_json::to_value(info).map_err(|error| FfiError::internal(error.to_string()))
         }
         Request::RemoveGroup => {
             let result = group(id)?.remove().await?;

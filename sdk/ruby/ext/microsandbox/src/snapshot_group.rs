@@ -76,6 +76,15 @@ impl RubySnapshotRemoveResult {
 }
 
 impl RubyGroup {
+    fn inspect_info(ruby: &Ruby, this: typed_data::Obj<Self>) -> Result<RHash, Error> {
+        let group = this.inner.clone();
+        let info = run(ruby, async move { group.inspect().await })?;
+        ruby.require("json")?;
+        let json: RModule = ruby.class_object().const_get("JSON")?;
+        let payload = serde_json::to_string(&info).map_err(|error| argument_error(ruby, error.to_string()))?;
+        json.funcall("parse", (payload,))
+    }
+
     fn remove(ruby: &Ruby, this: typed_data::Obj<Self>) -> Result<RubySnapshotRemoveResult, Error> {
         let group = this.inner.clone();
         Ok(RubySnapshotRemoveResult { inner: run(ruby, async move { group.remove().await })? })
@@ -418,6 +427,7 @@ pub(super) fn register(ruby: &Ruby, module: RModule) -> Result<(), Error> {
     group.define_method("name", method!(RubyGroup::name, 0))?;
     group.define_method("head", method!(RubyGroup::head, 0))?;
     group.define_method("verify", method!(RubyGroup::verify, 0))?;
+    group.define_method("info", method!(RubyGroup::inspect_info, 0))?;
     group.define_method("checkpoints", method!(RubyGroup::checkpoints, 0))?;
     group.define_method("get_checkpoint", method!(RubyGroup::get_checkpoint, 1))?;
     group.define_method("set_head", method!(RubyGroup::set_head, 1))?;

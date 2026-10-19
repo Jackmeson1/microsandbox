@@ -67,6 +67,42 @@ func (g *SnapshotGroup) Remove(ctx context.Context) (*SnapshotRemoveResult, erro
 	return &result, nil
 }
 
+// SnapshotSourceStatus describes association availability, not future capture readiness.
+type SnapshotSourceStatus string
+
+const (
+	SnapshotSourceAvailable        SnapshotSourceStatus = "available"
+	SnapshotSourceMissingSandbox   SnapshotSourceStatus = "missing_sandbox"
+	SnapshotSourceDifferentCatalog SnapshotSourceStatus = "different_catalog"
+)
+
+// SnapshotSourceBinding identifies the original instance independently of its name.
+type SnapshotSourceBinding struct {
+	DatabaseUUID string               `json:"database_uuid"`
+	SandboxID    int32                `json:"sandbox_id"`
+	RecordedName string               `json:"recorded_name"`
+	CurrentName  *string              `json:"current_name"`
+	Status       SnapshotSourceStatus `json:"status"`
+}
+
+// SnapshotGroupInfo is one protected metadata observation. Source is nil when unbound.
+type SnapshotGroupInfo struct {
+	Name            string                 `json:"name"`
+	Path            string                 `json:"path"`
+	Head            *string                `json:"head"`
+	CheckpointCount uint64                 `json:"checkpoint_count"`
+	Source          *SnapshotSourceBinding `json:"source"`
+}
+
+// Inspect observes history metadata and its saved source without changing selection.
+func (g *SnapshotGroup) Inspect(ctx context.Context) (*SnapshotGroupInfo, error) {
+	var info SnapshotGroupInfo
+	if err := snapshotObjectRequest(ctx, g.object, map[string]any{"op": "inspect_group"}, &info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
 // SnapshotCreateResult owns the initial checkpoint, even if head changes later.
 type SnapshotCreateResult struct {
 	Snapshot   *SnapshotGroup

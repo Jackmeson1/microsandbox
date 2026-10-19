@@ -23,6 +23,16 @@ The result contains every unique supplied checkpoint, including bundled dependen
 
 A successful return confirms publication and catalog completion. Warnings describe deferred cleanup after commit. A structured import error distinguishes no publication, confirmed publication with a later failure, and an unknown outcome needing recovery. Import never binds a group to a source sandbox. See [atomic import requirements](/cli/snapshot-commands#msb-snap-import) for filesystem capabilities and maintenance requirements.
 
+## Group inspection
+
+```python
+async def inspect(self) -> SnapshotGroupInfo
+```
+
+Returns the group's name, backend path, optional head, member count and optional saved source binding. Head and count come from one protected metadata read. Field names include `checkpoint_count`, `source.recorded_name`, `source.current_name`, `source.database_uuid`, `source.sandbox_id`; access them as dictionary keys, for example `info["source"]["recorded_name"]`. The source is absent for an unbound history; otherwise its status is `available`, `missing_sandbox` or `different_catalog`. Saved and current names distinguish renames; identity is the catalog UUID plus sandbox row ID, so deleting and recreating the same name does not rebind the group.
+
+Source availability is observed separately from group metadata and is not a guarantee of later capture readiness. Inspection does not change the selected head or create a missing catalog identity. Invalid metadata and database failures remain errors, rather than being reported as unbound. Obtain a member with `get_checkpoint` for its immutable metadata.
+
 ## Group verification
 
 `await (await Snapshot.get("worker")).verify()` checks all pinned members and returns a dictionary with `group`, `state`, `checkpoints`, and `payload_hashes`. States distinguish `complete`, `incomplete`, `invalid`, and `empty` (zero checkpoints checked). Every member includes `id`, `path`, `state`, optional `report` using the existing checkpoint verification fields, and specific `findings`. Headless groups can be verified; to check only head, obtain the optional checkpoint and call its `verify()`.

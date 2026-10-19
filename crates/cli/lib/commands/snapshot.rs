@@ -189,11 +189,16 @@ pub struct SnapshotListArgs {
 /// Arguments for `msb snapshot inspect`.
 #[derive(Debug, Args)]
 pub struct SnapshotInspectArgs {
-    /// Snapshot to inspect (path, name, or digest).
+    /// Group to inspect, or the group containing an explicitly selected checkpoint.
+    #[arg(value_name = "GROUP")]
     pub snapshot: String,
 
-    /// Also verify recorded content integrity.
+    /// Inspect this group-local member name or ID instead of the history.
     #[arg(long)]
+    pub checkpoint: Option<String>,
+
+    /// Also verify the selected checkpoint; use `verify GROUP --all` for a whole history.
+    #[arg(long, requires = "checkpoint")]
     pub verify: bool,
 }
 
@@ -648,7 +653,36 @@ async fn list(args: SnapshotListArgs) -> anyhow::Result<()> {
 }
 
 async fn inspect(args: SnapshotInspectArgs) -> anyhow::Result<()> {
-    let snap = Snapshot::open(&args.snapshot).await?;
+    let group = SnapshotGroup::get(&args.snapshot).await?;
+    let Some(member) = args.checkpoint else {
+        let info = group.inspect().await?;
+        ui::detail_kv("Group", &info.name);
+        ui::detail_kv("Path", &info.path.display().to_string());
+        ui::detail_kv(
+            "Head",
+            info.head.as_ref().map(|head| head.as_str()).unwrap_or("-"),
+        );
+        ui::detail_kv("Checkpoints", &info.checkpoint_count.to_string());
+        if let Some(source) = info.source {
+            let status = match source.status {
+                microsandbox::SnapshotSourceStatus::Available => "available",
+                microsandbox::SnapshotSourceStatus::MissingSandbox => "missing sandbox",
+                microsandbox::SnapshotSourceStatus::DifferentCatalog => "different catalog",
+            };
+            ui::detail_kv("Source", status);
+            ui::detail_kv("Recorded Source", &source.recorded_name);
+            ui::detail_kv(
+                "Current Source",
+                source.current_name.as_deref().unwrap_or("-"),
+            );
+            ui::detail_kv("Source ID", &source.sandbox_id.to_string());
+            ui::detail_kv("Source Catalog", &source.database_uuid);
+        } else {
+            ui::detail_kv("Source", "unbound");
+        }
+        return Ok(());
+    };
+    let snap = group.get_checkpoint(&member).await?;
     let m = snap.manifest();
 
     ui::detail_kv("Snapshot ID", snap.id().as_str());
@@ -1573,5 +1607,25 @@ mod tests {
                 TestCli::try_parse_from(["msb", command, "history", "other", "--all"]).is_err()
             );
         }
+    }
+    #[test]
+    fn inspect_distinguishes_history_from_an_explicit_checkpoint() {
+        assert!(TestCli::try_parse_from(["msb", "inspect", "history"]).is_ok());
+        assert!(
+            TestCli::try_parse_from(["msb", "inspect", "history", "--checkpoint", "one"]).is_ok()
+        );
+        assert!(TestCli::try_parse_from(["msb", "inspect", "history", "--verify"]).is_err());
+        assert!(
+            TestCli::try_parse_from([
+                "msb",
+                "inspect",
+                "history",
+                "--checkpoint",
+                "one",
+                "--verify"
+            ])
+            .is_ok()
+        );
+        assert!(TestCli::try_parse_from(["msb", "inspect", "history", "extra"]).is_err());
     }
 }

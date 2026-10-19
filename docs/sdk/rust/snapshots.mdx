@@ -24,6 +24,16 @@ The result contains every unique supplied checkpoint, including bundled dependen
 
 A successful return confirms publication and catalog completion. Warnings describe deferred cleanup after commit. A structured import error distinguishes no publication, confirmed publication with a later failure, and an unknown outcome needing recovery. Import never binds a group to a source sandbox. See [atomic import requirements](/cli/snapshot-commands#msb-snap-import) for filesystem capabilities and maintenance requirements.
 
+## Group inspection
+
+```rust
+async fn inspect(&self) -> MicrosandboxResult<SnapshotGroupInfo>
+```
+
+Returns the group's name, backend path, optional head, member count and optional saved source binding. Head and count come from one protected metadata read. Field names include `checkpoint_count`, `source.recorded_name`, `source.current_name`, `source.database_uuid`, `source.sandbox_id`. The source is absent for an unbound history; otherwise its `SnapshotSourceStatus` is `Available`, `MissingSandbox` or `DifferentCatalog`. Saved and current names distinguish renames; identity is the catalog UUID plus sandbox row ID, so deleting and recreating the same name does not rebind the group.
+
+Source availability is observed separately from group metadata and is not a guarantee of later capture readiness. Inspection does not change the selected head or create a missing catalog identity. Invalid metadata and database failures remain errors, rather than being reported as unbound. Obtain a member with `get_checkpoint` for its immutable metadata.
+
 ## Group verification
 
 `Snapshot::get("worker").await?.verify().await` checks every pinned member and returns `SnapshotGroupVerifyReport`. Its `state` distinguishes `Complete`, `Incomplete`, `Invalid`, and `Empty`; `checkpoints` preserves each member's identity, path, optional existing `SnapshotVerifyReport`, and findings. `payload_hashes` counts physical payload hash passes, deduplicated per algorithm. Headless groups are valid, while empty groups report zero checked. To check only head, obtain `group.head()` and verify that checkpoint.

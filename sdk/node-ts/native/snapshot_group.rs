@@ -66,6 +66,13 @@ pub struct JsSnapshotImportResult {
 
 #[napi]
 impl JsSnapshotGroup {
+    /// Observe metadata and source association without selecting a checkpoint for execution.
+    #[napi]
+    pub async fn inspect_json(&self) -> Result<String> {
+        let info = self.inner.inspect().await.map_err(to_napi_error)?;
+        serde_json::to_string(&info).map_err(|error| to_napi_error(error.into()))
+    }
+
     /// Return the committed member set and head outcome without a later catalog read.
     #[napi]
     pub async fn remove_group(&self) -> Result<String> {

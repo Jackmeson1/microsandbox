@@ -18,6 +18,16 @@ The result contains every unique supplied checkpoint, including bundled dependen
 
 A successful return confirms publication and catalog completion. Warnings describe deferred cleanup after commit. A structured import error distinguishes no publication, confirmed publication with a later failure, and an unknown outcome needing recovery. Import never binds a group to a source sandbox. See [atomic import requirements](/cli/snapshot-commands#msb-snap-import) for filesystem capabilities and maintenance requirements.
 
+## Group inspection
+
+```ruby
+group.info # => Hash
+```
+
+Returns `name`, `path`, optional `head`, `checkpoint_count` and optional `source` as string-keyed hash fields. Head and count come from one protected read. Source fields are `database_uuid`, `sandbox_id`, `recorded_name`, `current_name` and `status`. An unbound group has no source; other statuses are `available`, `missing_sandbox` or `different_catalog`. Availability is observed separately and does not guarantee future capture readiness. A replacement sandbox with the old name never replaces the recorded identity.
+
+`info` preserves Ruby's standard `Object#inspect` diagnostic. Invalid metadata or database failures raise errors; inspection does not change head or manufacture a missing catalog identity. Use `group.get_checkpoint(member)` for immutable checkpoint metadata.
+
 ## Whole-group removal
 
 ```ruby

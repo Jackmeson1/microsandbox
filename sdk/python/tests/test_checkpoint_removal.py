@@ -186,3 +186,55 @@ asyncio.run(main())
         timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_native_group_inspection(tmp_path: Path) -> None:
+    ids = checkpoint_fixture(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            r"""
+import asyncio, json, os, sqlite3, sys
+from pathlib import Path
+from microsandbox import Snapshot
+
+async def main():
+    home = Path(os.environ["MSB_HOME"])
+    group = await Snapshot.get("history")
+    info = await group.inspect()
+    assert info["name"] == "history"
+    assert info["head"] == sys.argv[2] and info["checkpoint_count"] == 2
+    assert info["source"] is None
+    await group.clear_head()
+    assert (await group.inspect())["head"] is None
+    assert info["head"] == sys.argv[2]  # No later head read overwrites this observation.
+    source = home / "snapshots/history/group-source.json"
+    source.write_text(json.dumps({
+        "schema": "microsandbox.snapshot-group-source/1",
+        "database_uuid": "12345678-1234-4234-8234-123456789012",
+        "sandbox_id": 99, "name": "original",
+    }))
+    observed = (await group.inspect())["source"]
+    assert observed["recorded_name"] == "original" and observed["sandbox_id"] == 99
+    assert observed["current_name"] is None and observed["status"] == "different_catalog"
+    db = sqlite3.connect(home / "db/msb.db")
+    assert not db.execute(
+        "SELECT name FROM sqlite_master WHERE name = 'microsandbox_catalog_identity'"
+    ).fetchall()
+    db.close()
+
+asyncio.run(main())
+""",
+            *ids,
+        ],
+        env={
+            **os.environ,
+            "MSB_HOME": str(tmp_path),
+            "MSB_CONFIG_PATH": str(tmp_path / "missing.json"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

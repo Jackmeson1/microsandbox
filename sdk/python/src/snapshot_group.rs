@@ -66,6 +66,16 @@ impl PySnapshotRemoveResult {
 
 #[pymethods]
 impl PySnapshotGroup {
+    /// Observe the history and saved source association without changing its selection.
+    fn inspect<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let group = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let info = group.inspect().await.map_err(to_py_err)?;
+            let value = serde_json::to_value(info).map_err(|error| to_py_err(error.into()))?;
+            Python::with_gil(|py| crate::sandbox_handle::json_value_to_py(py, value))
+        })
+    }
+
     /// Remove the entire history without bypassing readers or external dependents.
     fn remove<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let group = self.inner.clone();

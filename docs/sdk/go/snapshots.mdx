@@ -24,6 +24,16 @@ The result contains every unique supplied checkpoint, including bundled dependen
 
 A successful return confirms publication and catalog completion. Warnings describe deferred cleanup after commit. A structured import error distinguishes no publication, confirmed publication with a later failure, and an unknown outcome needing recovery. Import never binds a group to a source sandbox. See [atomic import requirements](/cli/snapshot-commands#msb-snap-import) for filesystem capabilities and maintenance requirements.
 
+## Group inspection
+
+```go
+func (g *SnapshotGroup) Inspect(ctx context.Context) (*SnapshotGroupInfo, error)
+```
+
+Returns the group's name, backend path, optional head, member count and optional saved source binding. Head and count come from one protected metadata read. Field names include `CheckpointCount`, `Source.RecordedName`, `Source.CurrentName`, `Source.DatabaseUUID`, `Source.SandboxID`. The source is absent for an unbound history; otherwise its status is `available`, `missing_sandbox` or `different_catalog`. Saved and current names distinguish renames; identity is the catalog UUID plus sandbox row ID, so deleting and recreating the same name does not rebind the group.
+
+Source availability is observed separately from group metadata and is not a guarantee of later capture readiness. Inspection does not change the selected head or create a missing catalog identity. Invalid metadata and database failures remain errors, rather than being reported as unbound. Obtain a member with `GetCheckpoint` for its immutable metadata.
+
 ## Group verification
 
 `group.Verify(ctx)` checks every pinned member and returns `(*SnapshotGroupVerifyReport, error)`. `State` distinguishes `complete`, `incomplete`, `invalid`, and `empty` (zero checked). `Checkpoints` contains each member's `ID`, `Path`, `State`, optional existing `SnapshotVerifyReport`, and `Findings`; `PayloadHashes` counts physical hash passes. Headless groups are valid verification targets. To verify only head, obtain the optional checkpoint and call its `Verify(ctx)` method.

@@ -20,6 +20,13 @@ use crate::{MicrosandboxError, MicrosandboxResult, Operation};
 //--------------------------------------------------------------------------------------------------
 
 impl SnapshotBackend for LocalBackend {
+    fn inspect_group<'a>(
+        &'a self,
+        reference: &'a SnapshotReference,
+    ) -> BoxFuture<'a, MicrosandboxResult<crate::snapshot::SnapshotGroupInfo>> {
+        Box::pin(async move { group::inspect_history(self, self.path(reference)?).await })
+    }
+
     fn remove_group<'a>(
         &'a self,
         reference: &'a SnapshotReference,

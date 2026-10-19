@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::backend::LocalBackend;
 use crate::db::entity::sandbox;
-use crate::{MicrosandboxError, MicrosandboxResult};
+use crate::{MicrosandboxError, MicrosandboxResult, SnapshotSourceBinding, SnapshotSourceStatus};
 
 //--------------------------------------------------------------------------------------------------
 // Constants
@@ -35,6 +35,52 @@ pub(super) struct Source {
 //--------------------------------------------------------------------------------------------------
 
 impl Source {
+    /// Inspect the binding without manufacturing a catalog identity or resolving by name.
+    pub(super) async fn inspect(
+        &self,
+        local: &LocalBackend,
+    ) -> MicrosandboxResult<SnapshotSourceBinding> {
+        self.validate()?;
+        let pools = local.db().await?;
+        let db = pools.read();
+        let mut status = SnapshotSourceStatus::DifferentCatalog;
+        let mut current_name = None;
+        if has_table(db, IDENTITY_TABLE).await? {
+            let rows = db
+                .query_all_raw(Statement::from_string(
+                    DbBackend::Sqlite,
+                    "SELECT singleton, version, uuid FROM microsandbox_catalog_identity",
+                ))
+                .await?;
+            if rows.len() != 1
+                || rows[0].try_get_by_index::<i64>(0)? != 1
+                || rows[0].try_get_by_index::<i64>(1)? != 1
+            {
+                return Err(invalid("invalid or unsupported catalog identity metadata"));
+            }
+            let uuid: String = rows[0].try_get_by_index(2)?;
+            if !valid_uuid(&uuid) {
+                return Err(invalid("invalid catalog UUID"));
+            }
+            if uuid == self.database_uuid {
+                let row = sandbox::Entity::find_by_id(self.sandbox_id).one(db).await?;
+                current_name = row.map(|row| row.name);
+                status = if current_name.is_some() {
+                    SnapshotSourceStatus::Available
+                } else {
+                    SnapshotSourceStatus::MissingSandbox
+                };
+            }
+        }
+        Ok(SnapshotSourceBinding {
+            database_uuid: self.database_uuid.clone(),
+            sandbox_id: self.sandbox_id,
+            recorded_name: self.name.clone(),
+            current_name,
+            status,
+        })
+    }
+
     pub(super) async fn capture(
         db: &DbWriteConnection,
         sandbox_id: i32,
@@ -263,5 +309,74 @@ mod tests {
                 .require_same(&Source::capture(db, 2, "app").await.unwrap())
                 .is_err()
         );
+    }
+    #[tokio::test]
+    async fn inspection_distinguishes_rename_replacement_and_foreign_catalog_without_rebinding() {
+        use sea_orm::{ActiveModelTrait, ActiveValue::Set};
+        let home = tempfile::tempdir().unwrap();
+        let local = crate::test_support::local_backend_builder(home.path())
+            .build()
+            .await
+            .unwrap();
+        let db = local.db().await.unwrap();
+        let insert = || sandbox::ActiveModel {
+            name: Set("app".into()),
+            config: Set(serde_json::to_string(&crate::sandbox::SandboxConfig::default()).unwrap()),
+            status: Set(sandbox::SandboxStatus::Stopped),
+            ephemeral: Set(false),
+            ..Default::default()
+        };
+        let row = insert().insert(db.write()).await.unwrap();
+        let source = Source::capture(db.write(), row.id, "app").await.unwrap();
+        assert_eq!(
+            source.inspect(&local).await.unwrap().status,
+            SnapshotSourceStatus::Available
+        );
+        db.write()
+            .execute_raw(Statement::from_sql_and_values(
+                DbBackend::Sqlite,
+                "UPDATE sandbox SET name = ? WHERE id = ?",
+                ["renamed".into(), row.id.into()],
+            ))
+            .await
+            .unwrap();
+        let renamed = source.inspect(&local).await.unwrap();
+        assert_eq!(renamed.recorded_name, "app");
+        assert_eq!(renamed.current_name.as_deref(), Some("renamed"));
+        sandbox::Entity::delete_by_id(row.id)
+            .exec(db.write())
+            .await
+            .unwrap();
+        let replacement = insert().insert(db.write()).await.unwrap();
+        assert_ne!(replacement.id, row.id);
+        let missing = source.inspect(&local).await.unwrap();
+        assert_eq!(missing.status, SnapshotSourceStatus::MissingSandbox);
+        assert!(missing.current_name.is_none());
+        let other_home = tempfile::tempdir().unwrap();
+        let other = crate::test_support::local_backend_builder(other_home.path())
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(
+            source.inspect(&other).await.unwrap().status,
+            SnapshotSourceStatus::DifferentCatalog
+        );
+        assert!(
+            !has_table(other.db().await.unwrap().read(), IDENTITY_TABLE)
+                .await
+                .unwrap()
+        );
+        Source::capture(other.db().await.unwrap().write(), 1, "app")
+            .await
+            .unwrap();
+        assert_eq!(
+            source.inspect(&other).await.unwrap().status,
+            SnapshotSourceStatus::DifferentCatalog
+        );
+        db.write()
+            .execute_unprepared("UPDATE microsandbox_catalog_identity SET version = 2")
+            .await
+            .unwrap();
+        assert!(source.inspect(&local).await.is_err());
     }
 }

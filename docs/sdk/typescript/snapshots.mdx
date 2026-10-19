@@ -24,6 +24,16 @@ The result contains every unique supplied checkpoint, including bundled dependen
 
 A successful return confirms publication and catalog completion. Warnings describe deferred cleanup after commit. A structured import error distinguishes no publication, confirmed publication with a later failure, and an unknown outcome needing recovery. Import never binds a group to a source sandbox. See [atomic import requirements](/cli/snapshot-commands#msb-snap-import) for filesystem capabilities and maintenance requirements.
 
+## Group inspection
+
+```typescript
+inspect(): Promise<SnapshotGroupInfo>
+```
+
+Returns the group's name, backend path, optional head, member count and optional saved source binding. Head and count come from one protected metadata read. Field names include `checkpointCount`, `source.recordedName`, `source.currentName`, `source.databaseUuid`, `source.sandboxId`. The source is absent for an unbound history; otherwise its status is `available`, `missing_sandbox` or `different_catalog`. Saved and current names distinguish renames; identity is the catalog UUID plus sandbox row ID, so deleting and recreating the same name does not rebind the group.
+
+Source availability is observed separately from group metadata and is not a guarantee of later capture readiness. Inspection does not change the selected head or create a missing catalog identity. Invalid metadata and database failures remain errors, rather than being reported as unbound. Obtain a member with `getCheckpoint` for its immutable metadata.
+
 ## Group verification
 
 `await (await Snapshot.get("worker")).verify()` checks every pinned member and returns `SnapshotGroupVerifyReport`: `group`, `state`, `checkpoints`, and `payloadHashes`. States are `complete`, `incomplete`, `invalid`, or `empty`; an empty group explicitly means zero checkpoints checked. Each member has `id`, `path`, `state`, `report` (the existing `SnapshotVerifyReport`, or `null`), and specific `findings`. Shared physical files are hashed once per algorithm; independent copies are checked separately. Headless groups can be verified. To verify only head, obtain the optional checkpoint with `head()` and call its `verify()`.

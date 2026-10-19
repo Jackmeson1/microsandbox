@@ -28,10 +28,10 @@ pub use microsandbox_types::snapshot::{
 pub use microsandbox_types::{GuestFlush, SnapshotSpec, SnapshotSpec as SnapshotConfig};
 pub use types::{
     CheckpointRemoveOptions, CheckpointRemoveResult, CheckpointVerification,
-    CheckpointVerifyStatus, HeadUpdate, HeadUpdateReason, LoadOpts, SaveOpts,
-    SnapshotGroupVerifyReport, SnapshotRemoveResult, SnapshotVerificationFinding,
-    SnapshotVerificationFindingKind, SnapshotVerificationState, SnapshotVerifyCoverage,
-    SnapshotVerifyReport, UpperVerifyStatus,
+    CheckpointVerifyStatus, HeadUpdate, HeadUpdateReason, LoadOpts, SaveOpts, SnapshotGroupInfo,
+    SnapshotGroupVerifyReport, SnapshotRemoveResult, SnapshotSourceBinding, SnapshotSourceStatus,
+    SnapshotVerificationFinding, SnapshotVerificationFindingKind, SnapshotVerificationState,
+    SnapshotVerifyCoverage, SnapshotVerifyReport, UpperVerifyStatus,
 };
 
 #[cfg(feature = "local")]

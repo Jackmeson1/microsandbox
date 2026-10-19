@@ -111,12 +111,17 @@ msb snap ls --group worker
 
 ## msb snap inspect
 
-Show snapshot metadata. Add `--verify` to check recorded content hashes.
+Inspect a group, its saved source association and selected head, or select one immutable checkpoint explicitly.
 
 ```bash
-msb snap inspect worker:ready
-msb snap inspect worker:ready --verify
+msb snap inspect worker
+msb snap inspect worker --checkpoint ready
+msb snap inspect worker --checkpoint ready --verify
 ```
+
+Group output includes the member count and source status: available, missing sandbox, different catalog, or unbound. A renamed source shows its recorded and current names. A new sandbox with the old name does not become the source. Availability describes the observed association, not whether a future capture will succeed. Headless groups remain inspectable.
+
+`--verify` requires `--checkpoint`; whole-group verification uses `msb snap verify worker --all`. Migration: replace `inspect worker:ready` with `inspect worker --checkpoint ready`. Bare group inspection now describes the history rather than implicitly displaying its head's artifact. Standalone artifacts remain inspectable through the SDK's `Checkpoint.open(...)` metadata accessors.
 
 <span id="msb-snapshot-verify" />
 

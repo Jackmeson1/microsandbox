@@ -7,6 +7,48 @@ use std::path::PathBuf;
 // Types
 //--------------------------------------------------------------------------------------------------
 
+/// Metadata observed from one protected read of a named history.
+#[derive(Debug, Clone, Serialize)]
+pub struct SnapshotGroupInfo {
+    /// Selected group's name.
+    pub name: String,
+    /// Group location in the backend's filesystem, not a client-relative path.
+    pub path: PathBuf,
+    /// Selected checkpoint, including an explicitly headless history.
+    pub head: Option<super::SnapshotId>,
+    /// Number of installed members observed with this head.
+    pub checkpoint_count: u64,
+    /// Local capture association; absent for unbound/imported histories.
+    pub source: Option<SnapshotSourceBinding>,
+}
+
+/// A saved local association and the status of that exact sandbox instance.
+#[derive(Debug, Clone, Serialize)]
+pub struct SnapshotSourceBinding {
+    /// Catalog instance that owns the recorded sandbox row.
+    pub database_uuid: String,
+    /// Stable row identity within that catalog, never resolved by its display name.
+    pub sandbox_id: i32,
+    /// Sandbox name when this association was recorded.
+    pub recorded_name: String,
+    /// Current name of the same sandbox instance, when available.
+    pub current_name: Option<String>,
+    /// Whether the recorded source still belongs to this catalog and exists.
+    pub status: SnapshotSourceStatus,
+}
+
+/// Availability of the saved capture association at inspection time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotSourceStatus {
+    /// The exact catalog and sandbox row still exist; this is not a capture-readiness check.
+    Available,
+    /// The owning catalog matches, but its recorded sandbox row was deleted.
+    MissingSandbox,
+    /// This installation has another catalog identity, or has no recorded identity.
+    DifferentCatalog,
+}
+
 /// Outcome of explicitly removing a whole history and its members.
 #[derive(Debug, Clone, Serialize)]
 pub struct SnapshotRemoveResult {
