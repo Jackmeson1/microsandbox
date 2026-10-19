@@ -1570,6 +1570,8 @@ jobs:
           python3 -m unittest discover -s scripts/ci -p test_runner_storage.py
           python3 -m unittest discover -s scripts/smoke/cli -p test_snapshot_branch.py
           python3 -m unittest discover -s scripts/smoke/cli -p test_restore_resource_intent.py
+          python3 -m unittest discover -s scripts/smoke/cli -p test_snapshot_compatibility.py
+          python3 -m unittest discover -s scripts/smoke/cli -p test_checkpoint_integration.py
           python3 -m unittest discover -s scripts/smoke/cli -p test_catalog_history.py
           python3 -m unittest discover -s scripts/smoke/cli -p test_managed_job_integration.py
 
@@ -1706,12 +1708,15 @@ jobs:
           # historical binaries, existing VMs, and dummy secrets. The jobs binary also requires
           # MSB_JOB_TEST_SANDBOX and an idle, caller-provisioned VM, with serial execution and
           # an explicit restart opt-in. Keep these out of this self-provisioning batch; the
-          # catalog and managed-job fixtures are provisioned separately below.
+          # catalog and managed-job fixtures are provisioned separately below. Snapshot unit
+          # helpers are invoked by their parent crash/cancellation tests, not standalone;
+          # historical readers get a pinned release in the dedicated fixture below. The
+          # artifact-dependent live snapshot diagnostics remain explicit qualification tests.
           cargo-nextest nextest run \
             --archive-file build/rust-integration-tests.tar.zst \
             --workspace-remap "${{ github.workspace }}" \
             --run-ignored=only \
-            -E 'not (binary(=jobs) or binary(=creation_progress_live) or binary(=eager_lifecycle_live) or test(/^backend::local::control::.*::live_/) or test(/^runtime::launch_contract::tests::released_/) or test(/^backend::local::database::tests::live_sdk_upgrades_catalog_with_previous_version_runtime$/))' \
+            -E 'not (binary(=jobs) or binary(=creation_progress_live) or binary(=eager_lifecycle_live) or test(/^backend::local::control::.*::live_/) or test(/^runtime::launch_contract::tests::released_/) or test(/^backend::local::snapshot::/) or test(/^backend::local::database::tests::live_sdk_upgrades_catalog_with_previous_version_runtime$/))' \
             --test-threads 2
 
       - name: Managed-job integration fixtures
@@ -1752,6 +1757,23 @@ jobs:
           name: catalog-history-results
           path: build/catalog-history-results/*.log
           if-no-files-found: ignore
+
+      - name: Snapshot reader compatibility (v0.7.8)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: |
+          python3 scripts/smoke/cli/snapshot-compatibility.py \
+            --archive build/rust-integration-tests.tar.zst \
+            --workspace "${{ github.workspace }}" \
+            --output build/snapshot-compatibility-results
+
+      - name: Upload snapshot compatibility results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: snapshot-compatibility-results
+          path: build/snapshot-compatibility-results/
+          if-no-files-found: warn
 
       # These tests require a captured guest and scoped fault injection; run every case
       # explicitly, including all three eager modes, even if the general batch failed.
