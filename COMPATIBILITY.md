@@ -122,6 +122,8 @@ Sources: [`crates/runtime/lib/client/ipc.rs`](crates/runtime/lib/client/ipc.rs),
 
 Path changes require an old-path probe or alias for the supported horizon. Never change a path hash or delete a socket until liveness and ownership have been resolved through the existing lock and endpoint checks.
 
+Unix endpoint liveness probes connect directly to each existing canonical and historical pathname rather than queueing a redundant filesystem metadata lookup first. This prevents unrelated blocking-pool saturation from exhausting the shared 50 ms probe budget for absent endpoints. Live or busy listeners remain protected, timeout remains conservative, and uncertain connection errors still propagate before cleanup. NUL-containing paths remain invalid filesystem names and are not reinterpreted as Linux abstract sockets. Path identities, lifecycle ownership, cleanup ordering, wire data and old-runtime listener support are unchanged. Permission diagnostics now identify the connect operation even when directory traversal caused the denial.
+
 ## 4. Live-Control Protocol
 
 The host runtime exposes a separate Unix socket or Windows named pipe for live modifications. Each connection exchanges one JSON request line and one JSON response line. Operations currently cover capability discovery, CPU and memory state or targets, and secret updates.
