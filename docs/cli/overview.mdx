@@ -72,7 +72,7 @@ Saved-state operations are grouped under `msb snap`. The equivalent long form, `
 <CodeGroup>
 ```bash Shell
 msb snap create devbox-history --sandbox devbox --name ready --full
-msb snap restore devbox-history:ready --name worker
+msb create --from-snapshot devbox-history --checkpoint ready --name worker
 msb snap ls devbox-history
 msb snap export devbox-history --checkpoint ready --output ready.msb
 msb snap import received --file ready.msb
