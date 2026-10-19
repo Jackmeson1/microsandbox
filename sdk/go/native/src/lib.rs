@@ -483,6 +483,7 @@ mod error_kind {
     pub const SNAPSHOT_MIGRATION: &str = "snapshot_migration";
     pub const SNAPSHOT_SOURCE_RECOVERY: &str = "snapshot_source_recovery";
     pub const SNAPSHOT_IMPORT: &str = "snapshot_import";
+    pub const SNAPSHOT_GROUP_REMOVAL_RECOVERY: &str = "snapshot_group_removal_recovery";
     pub const SNAPSHOT_REMOVAL_RECOVERY: &str = "snapshot_removal_recovery";
     pub const SNAPSHOT_VERIFICATION: &str = "snapshot_verification";
     pub const PATCH_FAILED: &str = "patch_failed";
@@ -499,6 +500,7 @@ struct FfiError {
     import: Option<Box<microsandbox::SnapshotImportError>>,
     verification: Option<Box<microsandbox::snapshot::SnapshotGroupVerifyReport>>,
     removal: Option<(Box<microsandbox::CheckpointRemoveResult>, String)>,
+    group_removal: Option<Box<(microsandbox::SnapshotRemoveResult, String)>>,
     os_error: Option<i32>,
 }
 
@@ -521,6 +523,7 @@ impl FfiError {
             import: None,
             verification: None,
             removal: None,
+            group_removal: None,
             os_error: None,
         }
     }
@@ -549,6 +552,9 @@ impl FfiError {
                 r#"{{"kind":"{}","message":{},"os_error":{}}}"#,
                 self.kind, msg, os_error
             );
+        }
+        if let Some((result, detail)) = self.group_removal.as_deref() {
+            return serde_json::json!({ "kind": self.kind, "message": self.message, "removal": result, "detail": detail }).to_string();
         }
         if let Some((result, detail)) = &self.removal {
             return serde_json::json!({ "kind": self.kind, "message": self.message, "removal": result, "detail": detail }).to_string();
@@ -604,6 +610,9 @@ impl From<MicrosandboxError> for FfiError {
             MicrosandboxError::SnapshotSourceRecovery(_) => error_kind::SNAPSHOT_SOURCE_RECOVERY,
             MicrosandboxError::SnapshotImport(_) => error_kind::SNAPSHOT_IMPORT,
             MicrosandboxError::SnapshotVerification(_) => error_kind::SNAPSHOT_VERIFICATION,
+            MicrosandboxError::SnapshotGroupRemovalRecovery { .. } => {
+                error_kind::SNAPSHOT_GROUP_REMOVAL_RECOVERY
+            }
             MicrosandboxError::SnapshotRemovalRecovery { .. } => {
                 error_kind::SNAPSHOT_REMOVAL_RECOVERY
             }
@@ -617,6 +626,11 @@ impl From<MicrosandboxError> for FfiError {
             _ => error_kind::INTERNAL,
         };
         let message = e.to_string();
+        if let MicrosandboxError::SnapshotGroupRemovalRecovery { result, source } = e {
+            let mut error = Self::new(kind, message);
+            error.group_removal = Some(Box::new((*result, source.to_string())));
+            return error;
+        }
         let (recovery, import, verification, removal) = match e {
             MicrosandboxError::SnapshotSourceRecovery(recovery) => {
                 (Some(recovery), None, None, None)
@@ -636,6 +650,7 @@ impl From<MicrosandboxError> for FfiError {
             import,
             verification,
             removal,
+            group_removal: None,
         }
     }
 }

@@ -1,4 +1,4 @@
-import { parseCheckpointRemoval } from "../snapshot-removal.js";
+import { parseCheckpointRemoval, parseGroupRemoval } from "../snapshot-removal.js";
 import {
   CustomError,
   CloudHttpError,
@@ -34,6 +34,7 @@ import {
   SnapshotImportError,
   SnapshotVerificationError,
   SnapshotRemovalRecoveryError,
+  SnapshotGroupRemovalRecoveryError,
   TerminalError,
   UnsupportedOperationError,
   UnsupportedError,
@@ -106,6 +107,13 @@ export function mapNapiError(err: unknown): unknown {
       const envelope = JSON.parse(m[2]!);
       if (typeof envelope.message !== "string" || typeof envelope.detail !== "string") return err;
       return new SnapshotRemovalRecoveryError(envelope.message, parseCheckpointRemoval(envelope.result), envelope.detail, { cause: err });
+    } catch { return err; }
+  }
+  if (m[1] === "SnapshotGroupRemovalRecovery") {
+    try {
+      const envelope = JSON.parse(m[2]!);
+      if (typeof envelope.message !== "string" || typeof envelope.detail !== "string") return err;
+      return new SnapshotGroupRemovalRecoveryError(envelope.message, parseGroupRemoval(envelope.result), envelope.detail, { cause: err });
     } catch { return err; }
   }
   if (m[1] === "SnapshotVerification") {

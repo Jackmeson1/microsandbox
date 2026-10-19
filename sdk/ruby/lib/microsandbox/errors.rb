@@ -100,6 +100,12 @@ module Microsandbox
     attr_reader :result, :detail
   end
 
+  define_error(:SnapshotGroupRemovalRecoveryError, "snapshot-group-removal-recovery")
+  class SnapshotGroupRemovalRecoveryError
+    # The entire history was removed even though catalog cleanup needs recovery.
+    attr_reader :result, :detail
+  end
+
   class SnapshotVerificationError
     # All selected members remain available when corruption makes verification fail.
     attr_reader :report

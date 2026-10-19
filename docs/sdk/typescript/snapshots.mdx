@@ -30,6 +30,16 @@ A successful return confirms publication and catalog completion. Warnings descri
 
 Unrecorded checksums produce incomplete coverage. Corruption, missing files, unsupported requirements, and operational failures reject with `SnapshotVerificationError`, whose `report` retains all selected members and findings. Errors before a meaningful group report exists retain their ordinary error type. Cancellation does not release reader protection while hashing continues.
 
+## Whole-group removal
+
+```typescript
+remove(): Promise<SnapshotRemoveResult>
+```
+
+Removes the selected history and returns `SnapshotRemoveResult` with `group`, `removed`, `headUpdate`, and `warnings`. The member IDs and cleared-head outcome belong to this operation. Empty groups can be removed. Active readers and surviving external dependents refuse removal; there is no force bypass for an entire group.
+
+If publication commits but catalog cleanup fails, the call raises or returns `SnapshotGroupRemovalRecoveryError` with `result` and `detail`. The attached result means removal already happened. Cleanup warnings after successful catalog reconciliation are returned in the result. An uncertain durability outcome is an error requiring recovery rather than a claimed successful removal. Later listing recovers pending cleanup without deleting a replacement group.
+
 ## Exact checkpoint removal
 
 ```typescript

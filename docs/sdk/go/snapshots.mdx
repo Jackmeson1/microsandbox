@@ -30,6 +30,16 @@ A successful return confirms publication and catalog completion. Warnings descri
 
 Unrecorded checksums return incomplete coverage. Corruption, missing files, unsupported requirements, and operational failures return a `*SnapshotVerificationError`; use `errors.As` and inspect its `Report` for every selected member. Errors before meaningful selection retain the ordinary error type. Shared physical payloads are hashed once per algorithm; independent copies are checked separately. Cancellation retains reader protection until the hashing worker finishes.
 
+## Whole-group removal
+
+```go
+func (g *SnapshotGroup) Remove(ctx context.Context) (*SnapshotRemoveResult, error)
+```
+
+Removes the selected history and returns `SnapshotRemoveResult` with `Group`, `Removed`, `HeadUpdate`, and `Warnings`. The member IDs and cleared-head outcome belong to this operation. Empty groups can be removed. Active readers and surviving external dependents refuse removal; there is no force bypass for an entire group.
+
+If publication commits but catalog cleanup fails, the call raises or returns `SnapshotGroupRemovalRecoveryError` with `Result` and `Detail`. The attached result means removal already happened. Cleanup warnings after successful catalog reconciliation are returned in the result. An uncertain durability outcome is an error requiring recovery rather than a claimed successful removal. Later listing recovers pending cleanup without deleting a replacement group.
+
 ## Exact checkpoint removal
 
 ```go

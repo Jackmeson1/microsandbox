@@ -30,6 +30,16 @@ A successful return confirms publication and catalog completion. Warnings descri
 
 Missing checksums return explicit incomplete coverage. Corruption, missing files, unsupported required features, and operational failures return `MicrosandboxError::SnapshotVerification(report)` when a meaningful group report exists; failures before selection return the ordinary SDK error. Inspect the attached report without treating the failed call as success. Selected payloads stay reader-pinned until verification finishes, including after caller cancellation.
 
+## Whole-group removal
+
+```rust
+async fn remove(&self) -> MicrosandboxResult<SnapshotRemoveResult>
+```
+
+Removes the selected history and returns `SnapshotRemoveResult` with `group`, `removed`, `head_update`, and `warnings`. The member IDs and cleared-head outcome belong to this operation. Empty groups can be removed. Active readers and surviving external dependents refuse removal; there is no force bypass for an entire group.
+
+If publication commits but catalog cleanup fails, the call raises or returns `MicrosandboxError::SnapshotGroupRemovalRecovery { result, source }`. The attached result means removal already happened. Cleanup warnings after successful catalog reconciliation are returned in the result. An uncertain durability outcome is an error requiring recovery rather than a claimed successful removal. Later listing recovers pending cleanup without deleting a replacement group.
+
 ## Exact checkpoint removal
 
 Migration: static Rust `Snapshot::remove(reference, force)` becomes `Checkpoint::remove_by_reference(reference, force)`. Use the instance method below for exact identity and a removal result. Legacy `SnapshotHandle::remove(force)` retains its unit-returning contract.

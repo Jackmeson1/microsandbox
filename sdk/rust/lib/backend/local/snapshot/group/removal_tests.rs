@@ -397,3 +397,121 @@ async fn low_descriptor_limit_removal_worker() {
     assert!(!target.exists());
     assert_eq!(group::read_members(&directory, true).unwrap().len(), 159);
 }
+
+#[tokio::test]
+#[ignore = "subprocess worker invoked by whole-group crash qualification"]
+async fn whole_group_removal_crash_worker() {
+    let home = std::env::var_os("MSB_TEST_GROUP_REMOVAL_HOME").unwrap();
+    let local = test_support::local_backend_builder(Path::new(&home))
+        .build()
+        .await
+        .unwrap();
+    let directory = std::path::PathBuf::from(std::env::var_os("MSB_TEST_REMOVAL_GROUP").unwrap());
+    group::remove_history(&local, &directory).await.unwrap();
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn killed_whole_group_remover_preserves_old_or_absent_view() {
+    whole_group_crash_cases(None).await;
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+#[ignore = "requires a released CLI in MSB_TEST_LEGACY_CLI"]
+async fn released_reader_observes_whole_group_removal_crash() {
+    let cli = std::env::var_os("MSB_TEST_LEGACY_CLI").unwrap();
+    whole_group_crash_cases(Some(Path::new(&cli))).await;
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+async fn whole_group_crash_cases(legacy_cli: Option<&Path>) {
+    for boundary in ["group-prepared", "group-renamed", "group-committed"] {
+        let home = tempfile::tempdir().unwrap();
+        let local = test_support::local_backend_builder(home.path())
+            .build()
+            .await
+            .unwrap();
+        let directory = group::ensure(&local.snapshots_dir(), Some("history"))
+            .await
+            .unwrap()
+            .canonicalize()
+            .unwrap();
+        add(&directory, 1, None).await;
+        add(&directory, 2, Some(1)).await;
+        store::reindex_dir(&local, &local.snapshots_dir())
+            .await
+            .unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "backend::local::snapshot::group::removal::tests::whole_group_removal_crash_worker",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("MSB_TEST_GROUP_REMOVAL_HOME", home.path())
+            .env("MSB_TEST_REMOVAL_GROUP", &directory)
+            .env("MSB_TEST_REMOVAL_BOUNDARY", boundary)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let output = child.stdout.take().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(output).lines() {
+                if line.unwrap().contains("ATOMIC_REMOVAL_BOUNDARY_READY") {
+                    let _ = sender.send(());
+                    break;
+                }
+            }
+        });
+        let reached = receiver.recv_timeout(Duration::from_secs(20));
+        let _ = child.kill();
+        child.wait().unwrap();
+        reader.join().unwrap();
+        reached.expect("whole-group removal did not reach its boundary");
+        let removed = boundary != "group-prepared";
+        assert_eq!(directory.exists(), !removed);
+        if !removed {
+            assert_eq!(group::read_members(&directory, true).unwrap().len(), 2);
+            assert_eq!(
+                group::read_group(&directory).unwrap().head.as_deref(),
+                Some(id(2).as_str())
+            );
+        }
+        // Released readers do not understand retirement journals. Exercise them before
+        // recovery so only atomic namespace visibility can make these checks pass.
+        if let Some(cli) = legacy_cli {
+            for number in [1, 2] {
+                let result = Command::new(cli)
+                    .env("MSB_HOME", home.path().join("legacy"))
+                    .args(["snapshot", "inspect"])
+                    .arg(directory.join(id(number).as_str()))
+                    .output()
+                    .unwrap();
+                assert_eq!(
+                    result.status.success(),
+                    !removed,
+                    "boundary={boundary}: {} {}",
+                    String::from_utf8_lossy(&result.stdout),
+                    String::from_utf8_lossy(&result.stderr)
+                );
+            }
+        }
+        // Before recovery every old catalog row still roots its dependencies.
+        for number in [1, 2] {
+            let key = directory.join(id(number).as_str()).display().to_string();
+            assert!(
+                snapshot::Entity::find_by_id(key)
+                    .one(local.db().await.unwrap().read())
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        let rows = store::list_indexed(&local).await.unwrap();
+        assert_eq!(rows.len(), if removed { 0 } else { 2 });
+        assert_eq!(store::list_indexed(&local).await.unwrap().len(), rows.len());
+        assert_eq!(directory.exists(), !removed);
+    }
+}

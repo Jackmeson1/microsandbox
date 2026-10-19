@@ -961,6 +961,30 @@ mod tests {
 
     use super::*;
 
+    /// Parallel subprocess tests can inherit a lookup descriptor until exec. Busy is
+    /// a valid pre-publication result then; never retry a committed or unrelated error.
+    async fn after_reader_release<T, F, Fut>(mut operation: F) -> MicrosandboxResult<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = MicrosandboxResult<T>>,
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match operation().await {
+                Err(MicrosandboxError::Custom(message))
+                    if message.contains("snapshot is in use by an active operation") =>
+                {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "reader protection never released: {message}"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+                result => return result,
+            }
+        }
+    }
+
     fn manifest(id: u128, parent: Option<&Manifest>) -> Manifest {
         Manifest {
             schema: SCHEMA.into(),
@@ -1113,6 +1137,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn whole_group_removal_refuses_external_dependents_and_readers() {
+        let home = tempfile::tempdir().unwrap();
+        let local = std::sync::Arc::new(
+            crate::test_support::local_backend_builder(home.path())
+                .build()
+                .await
+                .unwrap(),
+        );
+        let parent = manifest(940, None);
+        let child = manifest(941, Some(&parent));
+        let dependent = manifest(942, Some(&parent));
+        install(&local, "history", "parent", &parent).await;
+        let child_path = install(&local, "history", "child", &child).await;
+        install(&local, "external", "dependent", &dependent).await;
+        // Explicitly index fixtures as real capture/import does before returning.
+        reindex_dir(&local, &local.snapshots_dir()).await.unwrap();
+        let backend: std::sync::Arc<dyn crate::backend::Backend> = local.clone();
+        crate::with_backend(backend, async {
+            let group = crate::Snapshot::get("history").await.unwrap();
+            assert!(
+                group
+                    .remove()
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("surviving checkpoint")
+            );
+            let other = crate::Snapshot::get("external").await.unwrap();
+            other.head().await.unwrap().unwrap().remove().await.unwrap();
+            let reader = super::super::lease::reader(&child_path).unwrap();
+            assert!(
+                group
+                    .remove()
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("active reader")
+            );
+            drop(reader);
+            let gate = StorageLease::shared(&local.snapshots_dir().join("history")).unwrap();
+            assert!(
+                group
+                    .remove()
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("verification")
+            );
+            drop(gate);
+            let report = group.remove().await.unwrap();
+            assert_eq!(
+                report.removed,
+                vec![parent.snapshot_id.clone(), child.snapshot_id.clone()]
+            );
+            assert_eq!(
+                report.head_update.previous.as_deref(),
+                Some(child.snapshot_id.as_str())
+            );
+            assert!(report.head_update.head.is_none());
+            assert!(!local.snapshots_dir().join("history").exists());
+            assert!(list_indexed(&local).await.unwrap().is_empty());
+            assert!(other.remove().await.unwrap().removed.is_empty());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn whole_group_recovery_preserves_a_recreated_group() {
+        let home = tempfile::tempdir().unwrap();
+        let local = std::sync::Arc::new(
+            crate::test_support::local_backend_builder(home.path())
+                .build()
+                .await
+                .unwrap(),
+        );
+        let original = manifest(943, None);
+        install(&local, "history", "original", &original).await;
+        reindex_dir(&local, &local.snapshots_dir()).await.unwrap();
+        let backend: std::sync::Arc<dyn crate::backend::Backend> = local.clone();
+        crate::with_backend(backend, async {
+            let group = crate::Snapshot::get("history").await.unwrap();
+            let db = local.db().await.unwrap();
+            db.write().execute_raw(sea_orm::Statement::from_string(sea_orm::DatabaseBackend::Sqlite,
+                "CREATE TRIGGER reject_group_cleanup BEFORE DELETE ON snapshot_index BEGIN SELECT RAISE(FAIL, 'injected group cleanup failure'); END".to_string())).await.unwrap();
+            let error = group.remove().await.unwrap_err();
+            let MicrosandboxError::SnapshotGroupRemovalRecovery { result, .. } = error else { panic!("lost committed group result: {error}"); };
+            assert_eq!(result.removed, vec![original.snapshot_id]);
+            assert!(!local.snapshots_dir().join("history").exists());
+            db.write().execute_raw(sea_orm::Statement::from_string(sea_orm::DatabaseBackend::Sqlite, "DROP TRIGGER reject_group_cleanup".to_string())).await.unwrap();
+            let replacement = manifest(944, None);
+            let replacement_path = install(&local, "history", "replacement", &replacement).await;
+            open_snapshot(&local, replacement_path.to_str().unwrap()).await.unwrap();
+            let groups = crate::Snapshot::list().await.unwrap();
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].name(), "history");
+            let rows = list_indexed(&local).await.unwrap();
+            assert_eq!(rows.len(), 1);
+            assert!(replacement_path.join(DESCRIPTOR_FILENAME).exists());
+            assert_eq!(crate::Snapshot::get("history").await.unwrap().head().await.unwrap().unwrap().id(), &replacement.snapshot_id);
+        }).await;
+    }
+
+    #[tokio::test]
     async fn checkpoint_removal_returns_its_own_head_outcome() {
         let home = tempfile::tempdir().unwrap();
         let local = std::sync::Arc::new(
@@ -1134,13 +1261,15 @@ mod tests {
             let child_value = group.get_checkpoint("child").await.unwrap();
             let sibling_value = group.get_checkpoint("sibling").await.unwrap();
             assert!(base.remove().await.is_err()); // Indexed dependents still protect the base.
-            let report = sibling_value.remove().await.unwrap();
+            let report = after_reader_release(|| sibling_value.remove())
+                .await
+                .unwrap();
             assert_eq!(report.id, sibling.snapshot_id);
             let change = report.head_update.unwrap();
             assert!(!change.changed);
             assert_eq!(change.head.as_deref(), Some(child.snapshot_id.as_str()));
             assert!(sibling_value.remove().await.is_err()); // No fabricated repeated removal.
-            let report = child_value.remove().await.unwrap();
+            let report = after_reader_release(|| child_value.remove()).await.unwrap();
             let change = report.head_update.as_ref().unwrap();
             assert_eq!(change.previous.as_deref(), Some(child.snapshot_id.as_str()));
             assert_eq!(change.head.as_deref(), Some(parent.snapshot_id.as_str()));
@@ -1151,7 +1280,7 @@ mod tests {
                 report.head_update.unwrap().head.as_deref(),
                 Some(parent.snapshot_id.as_str())
             );
-            let report = base.remove().await.unwrap();
+            let report = after_reader_release(|| base.remove()).await.unwrap();
             assert_eq!(report.id, parent.snapshot_id);
             assert!(!report.head_update.unwrap().changed);
         })
@@ -1175,7 +1304,7 @@ mod tests {
             let pools = local.db().await.unwrap();
             pools.write().execute_raw(Statement::from_string(DatabaseBackend::Sqlite,
                 "CREATE TRIGGER reject_removal_cleanup BEFORE DELETE ON snapshot_index BEGIN SELECT RAISE(FAIL, 'injected catalog cleanup failure'); END".to_owned())).await.unwrap();
-            let error = value.remove().await.unwrap_err();
+            let error = after_reader_release(|| value.remove()).await.unwrap_err();
             let MicrosandboxError::SnapshotRemovalRecovery { result, source } = error else { panic!("unexpected error: {error}") };
             assert!(!path.exists());
             assert_eq!(result.id, checkpoint.snapshot_id);
@@ -1757,7 +1886,9 @@ mod tests {
         assert!(!second.exists());
         assert!(first.join(DESCRIPTOR_FILENAME).exists());
         drop(reader);
-        remove_snapshot(&local, first.to_str().unwrap(), false)
+        // The live-reader refusal above stays strict; after release allow only the
+        // transient inheritance interval exercised by the parallel crash tests.
+        after_reader_release(|| remove_snapshot(&local, first.to_str().unwrap(), false))
             .await
             .unwrap();
         assert!(!first.exists());

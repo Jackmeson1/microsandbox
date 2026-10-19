@@ -369,6 +369,16 @@ pub enum MicrosandboxError {
         source: Box<MicrosandboxError>,
     },
 
+    /// Whole-group publication committed, but catalog or payload cleanup needs recovery.
+    #[error("snapshot group removal committed for {group}: {source}", group = .result.group)]
+    SnapshotGroupRemovalRecovery {
+        /// Confirmed publication outcome, retained even though cleanup failed.
+        result: Box<crate::snapshot::SnapshotRemoveResult>,
+        /// Catalog or cleanup failure after whole-group retirement.
+        #[source]
+        source: Box<MicrosandboxError>,
+    },
+
     /// Group verification failed. The report retains every member outcome, including partial evidence.
     #[error("snapshot group verification failed for '{}'", .0.group)]
     SnapshotVerification(Box<crate::snapshot::SnapshotGroupVerifyReport>),

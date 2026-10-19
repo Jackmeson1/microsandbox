@@ -1880,6 +1880,8 @@ export type JsSnapshotCopyBuilder = SnapshotCopyBuilder
 
 /** A named snapshot history, separate from an immutable checkpoint. */
 export declare class SnapshotGroup {
+  /** Return the committed member set and head outcome without a later catalog read. */
+  removeGroup(): Promise<string>
   /** Internal JSON transport preserves nested per-member results without flattening errors. */
   verifyJson(): Promise<string>
   static load(group: string, archives: string[], opts?: LoadOpts): Promise<SnapshotImportResult>

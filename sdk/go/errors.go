@@ -178,6 +178,8 @@ const (
 	ErrSnapshotVerification
 	// ErrSnapshotRemovalRecovery means removal committed but cleanup needs recovery.
 	ErrSnapshotRemovalRecovery
+	// ErrSnapshotGroupRemovalRecovery means whole-history removal committed but needs cleanup.
+	ErrSnapshotGroupRemovalRecovery
 )
 
 func (k ErrorKind) String() string {
@@ -228,6 +230,8 @@ func (k ErrorKind) String() string {
 		return "SnapshotMigration"
 	case ErrSnapshotImport:
 		return "SnapshotImport"
+	case ErrSnapshotGroupRemovalRecovery:
+		return "SnapshotGroupRemovalRecovery"
 	case ErrSnapshotRemovalRecovery:
 		return "SnapshotRemovalRecovery"
 	case ErrSnapshotVerification:
@@ -328,6 +332,16 @@ type SnapshotRemovalRecoveryError struct {
 func (e *SnapshotRemovalRecoveryError) Error() string { return e.err.Message }
 func (e *SnapshotRemovalRecoveryError) Unwrap() error { return e.err }
 
+// SnapshotGroupRemovalRecoveryError preserves a committed removal when catalog cleanup fails.
+type SnapshotGroupRemovalRecoveryError struct {
+	Result *SnapshotRemoveResult
+	Detail string
+	err    *Error
+}
+
+func (e *SnapshotGroupRemovalRecoveryError) Error() string { return e.err.Message }
+func (e *SnapshotGroupRemovalRecoveryError) Unwrap() error { return e.err }
+
 // SnapshotVerificationError preserves per-member results without treating corruption as success.
 type SnapshotVerificationError struct {
 	Report *SnapshotGroupVerifyReport
@@ -409,6 +423,12 @@ func wrapFFI(err error) error {
 			var result CheckpointRemoveResult
 			if json.Unmarshal(fe.Removal, &result) == nil {
 				return &SnapshotRemovalRecoveryError{Result: &result, Detail: fe.Detail, err: &Error{Kind: ErrSnapshotRemovalRecovery, Message: fe.Message, Cause: fe}}
+			}
+		}
+		if fe.Kind == ffi.KindSnapshotGroupRemovalRecovery && len(fe.Removal) != 0 {
+			var result SnapshotRemoveResult
+			if json.Unmarshal(fe.Removal, &result) == nil {
+				return &SnapshotGroupRemovalRecoveryError{Result: &result, Detail: fe.Detail, err: &Error{Kind: ErrSnapshotGroupRemovalRecovery, Message: fe.Message, Cause: fe}}
 			}
 		}
 		if fe.Kind == ffi.KindSnapshotVerification && len(fe.Report) != 0 {
@@ -493,6 +513,8 @@ func kindFromFFI(kind string) ErrorKind {
 		return ErrSnapshotMigration
 	case ffi.KindSnapshotImport:
 		return ErrSnapshotImport
+	case ffi.KindSnapshotGroupRemovalRecovery:
+		return ErrSnapshotGroupRemovalRecovery
 	case ffi.KindSnapshotRemovalRecovery:
 		return ErrSnapshotRemovalRecovery
 	case ffi.KindSnapshotVerification:

@@ -50,6 +50,23 @@ func (g *SnapshotGroup) Verify(ctx context.Context) (*SnapshotGroupVerifyReport,
 	return &report, nil
 }
 
+// SnapshotRemoveResult records all members removed by one committed history removal.
+type SnapshotRemoveResult struct {
+	Group      string              `json:"group"`
+	Removed    []string            `json:"removed"`
+	HeadUpdate *SnapshotHeadUpdate `json:"head_update"`
+	Warnings   []string            `json:"warnings"`
+}
+
+// Remove removes the entire history, refusing active readers and external dependents.
+func (g *SnapshotGroup) Remove(ctx context.Context) (*SnapshotRemoveResult, error) {
+	var result SnapshotRemoveResult
+	if err := snapshotObjectRequest(ctx, g.object, map[string]any{"op": "remove_group"}, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // SnapshotCreateResult owns the initial checkpoint, even if head changes later.
 type SnapshotCreateResult struct {
 	Snapshot   *SnapshotGroup

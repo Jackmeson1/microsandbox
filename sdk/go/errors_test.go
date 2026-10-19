@@ -250,3 +250,18 @@ func TestCommittedCheckpointRemovalPreservesOutcome(t *testing.T) {
 		t.Fatalf("lost error identity: %+v", recovery)
 	}
 }
+
+func TestCommittedGroupRemovalPreservesOutcome(t *testing.T) {
+	native := &ffi.Error{Kind: ffi.KindSnapshotGroupRemovalRecovery, Message: "group removed; cleanup failed", Detail: "catalog unavailable", Removal: json.RawMessage(`{"group":"history","removed":["parent","child"],"head_update":{"group":"history","previous":"child","head":null,"reason":"cleared","changed":true},"warnings":[]}`)}
+	err := wrapFFI(native)
+	var recovery *SnapshotGroupRemovalRecoveryError
+	if !errors.As(err, &recovery) {
+		t.Fatalf("lost typed recovery: %T %v", err, err)
+	}
+	if recovery.Result.Group != "history" || len(recovery.Result.Removed) != 2 || recovery.Result.HeadUpdate == nil || recovery.Result.HeadUpdate.Head != nil {
+		t.Fatalf("lost committed outcome: %+v", recovery.Result)
+	}
+	if recovery.Detail != "catalog unavailable" || !IsKind(err, ErrSnapshotGroupRemovalRecovery) || !errors.Is(err, native) {
+		t.Fatalf("lost error identity: %+v", recovery)
+	}
+}

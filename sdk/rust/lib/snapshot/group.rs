@@ -80,6 +80,11 @@ pub struct SnapshotCaptureOptions {
 //--------------------------------------------------------------------------------------------------
 
 impl Snapshot {
+    /// Remove this whole history, refusing surviving external dependents and active readers.
+    pub async fn remove(&self) -> MicrosandboxResult<super::SnapshotRemoveResult> {
+        self.backend.snapshots().remove_group(&self.reference).await
+    }
+
     /// Verify every member, including a headless history. Shared physical payloads are hashed
     /// once per algorithm. Corruption returns an error containing the complete group report.
     pub async fn verify(&self) -> MicrosandboxResult<super::SnapshotGroupVerifyReport> {

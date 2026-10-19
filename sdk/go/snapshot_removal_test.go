@@ -66,4 +66,29 @@ func TestCheckpointRemovalNative(t *testing.T) {
 	if _, err := checkpoint.Remove(ctx, CheckpointRemoveOptions{Force: true}); err == nil {
 		t.Fatal("manufactured repeated removal")
 	}
+	// Recreate a populated group to exercise the group receiver across the real FFI.
+	if err := os.MkdirAll(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "snapshot.json"), []byte(manifest), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(groupPath, "group.json"), head, 0600); err != nil {
+		t.Fatal(err)
+	}
+	group, err := Snapshot.Get(ctx, "history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	removedGroup, err := group.Remove(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removedGroup.Group != "history" || len(removedGroup.Removed) != 1 || removedGroup.Removed[0] != id || removedGroup.HeadUpdate == nil || removedGroup.HeadUpdate.Head != nil {
+		t.Fatalf("lost group removal outcome: %+v", removedGroup)
+	}
+	if _, err := os.Stat(groupPath); !os.IsNotExist(err) {
+		t.Fatalf("group remains: %v", err)
+	}
+
 }

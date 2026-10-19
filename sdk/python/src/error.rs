@@ -60,6 +60,21 @@ pub fn to_py_err(err: microsandbox::MicrosandboxError) -> PyErr {
             };
         }
 
+        if let SnapshotGroupRemovalRecovery { result, source } = &err {
+            let instance = (|| -> PyResult<Bound<'_, PyAny>> {
+                let result = crate::snapshot_group::PySnapshotRemoveResult {
+                    inner: (**result).clone(),
+                };
+                errors_mod
+                    .getattr("SnapshotGroupRemovalRecoveryError")?
+                    .call1((err.to_string(), result, source.to_string()))
+            })();
+            return match instance {
+                Ok(instance) => PyErr::from_value(instance),
+                Err(_) => pyo3::exceptions::PyRuntimeError::new_err(err.to_string()),
+            };
+        }
+
         if let SnapshotVerification(report) = &err {
             let instance = (|| -> PyResult<Bound<'_, PyAny>> {
                 let value = serde_json::to_value(report).map_err(|error| {

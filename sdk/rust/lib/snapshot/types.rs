@@ -7,6 +7,19 @@ use std::path::PathBuf;
 // Types
 //--------------------------------------------------------------------------------------------------
 
+/// Outcome of explicitly removing a whole history and its members.
+#[derive(Debug, Clone, Serialize)]
+pub struct SnapshotRemoveResult {
+    /// Removed group's name.
+    pub group: String,
+    /// Exact member identities removed, in stable order.
+    pub removed: Vec<super::SnapshotId>,
+    /// This operation's head removal, including an already-headless group.
+    pub head_update: HeadUpdate,
+    /// Recoverable cleanup remaining after confirmed publication.
+    pub warnings: Vec<String>,
+}
+
 /// Result owned by one exact checkpoint removal, never reconstructed from a later head read.
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckpointRemoveResult {

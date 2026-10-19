@@ -37,3 +37,35 @@ describe("exact checkpoint removal", () => {
     await expect(checkpoint.remove()).rejects.toThrow("Invalid checkpoint removal head outcome");
   });
 });
+
+describe("whole-group removal", () => {
+  const result = { group: "history", removed: ["parent", "child"], head_update: { group: "history", previous: "child", head: null, reason: "cleared", changed: true }, warnings: [] };
+  it("returns every removed identity and this operation's head outcome", async () => {
+    const { Snapshot } = await import("../../dist/snapshot-group.js");
+    const removeGroup = vi.fn().mockResolvedValue(JSON.stringify(result));
+    const group = new Snapshot({ removeGroup } as never);
+    expect(await group.remove()).toEqual({ group: "history", removed: ["parent", "child"], headUpdate: result.head_update, warnings: [] });
+    expect(removeGroup).toHaveBeenCalledExactlyOnceWith();
+  });
+  it("preserves committed whole-group failures and the original cause", async () => {
+    const { Snapshot } = await import("../../dist/snapshot-group.js");
+    const { SnapshotGroupRemovalRecoveryError } = await import("../../dist/errors.js");
+    const raw = new Error(`[SnapshotGroupRemovalRecovery] ${JSON.stringify({ message: "group removed; cleanup failed", result, detail: "catalog unavailable" })}`);
+    const group = new Snapshot({ removeGroup: vi.fn().mockRejectedValue(raw) } as never);
+    const error = await group.remove().catch(error => error);
+    expect(error).toBeInstanceOf(SnapshotGroupRemovalRecoveryError);
+    expect(error.result.removed).toEqual(["parent", "child"]);
+    expect(error.result.headUpdate.head).toBeNull();
+    expect(error.detail).toBe("catalog unavailable");
+    expect(error.cause).toBe(raw);
+  });
+  it("refuses old native libraries before attempting mutation", async () => {
+    const { Snapshot } = await import("../../dist/snapshot-group.js");
+    await expect(new Snapshot({} as never).remove()).rejects.toBeInstanceOf(UnsupportedError);
+  });
+  it("does not manufacture success from a missing head outcome", async () => {
+    const { Snapshot } = await import("../../dist/snapshot-group.js");
+    const group = new Snapshot({ removeGroup: vi.fn().mockResolvedValue(JSON.stringify({ ...result, head_update: null })) } as never);
+    await expect(group.remove()).rejects.toThrow("Invalid group removal result");
+  });
+});

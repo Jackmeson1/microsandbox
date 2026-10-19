@@ -18,6 +18,16 @@ The result contains every unique supplied checkpoint, including bundled dependen
 
 A successful return confirms publication and catalog completion. Warnings describe deferred cleanup after commit. A structured import error distinguishes no publication, confirmed publication with a later failure, and an unknown outcome needing recovery. Import never binds a group to a source sandbox. See [atomic import requirements](/cli/snapshot-commands#msb-snap-import) for filesystem capabilities and maintenance requirements.
 
+## Whole-group removal
+
+```ruby
+group.remove # => Microsandbox::SnapshotRemoveResult
+```
+
+Removes the selected history and returns `SnapshotRemoveResult` with `group`, `removed`, `head_update`, and `warnings`. The member IDs and cleared-head outcome belong to this operation. Empty groups can be removed. Active readers and surviving external dependents refuse removal; there is no force bypass for an entire group.
+
+If publication commits but catalog cleanup fails, the call raises or returns `SnapshotGroupRemovalRecoveryError` with `result` and `detail`. The attached result means removal already happened. Cleanup warnings after successful catalog reconciliation are returned in the result. An uncertain durability outcome is an error requiring recovery rather than a claimed successful removal. Later listing recovers pending cleanup without deleting a replacement group.
+
 ## Exact checkpoint removal
 
 ```ruby

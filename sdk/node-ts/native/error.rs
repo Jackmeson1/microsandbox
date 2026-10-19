@@ -12,10 +12,18 @@ pub fn to_napi_error(err: MicrosandboxError) -> napi::Error {
         .or_else(|| import_payload(&err))
         .or_else(|| verification_payload(&err))
         .or_else(|| removal_payload(&err))
+        .or_else(|| group_removal_payload(&err))
     {
         return napi::Error::new(Status::GenericFailure, format!("[{code}] {payload}"));
     }
     napi::Error::new(Status::GenericFailure, format!("[{code}] {err}"))
+}
+
+fn group_removal_payload(err: &MicrosandboxError) -> Option<String> {
+    let MicrosandboxError::SnapshotGroupRemovalRecovery { result, source } = err else {
+        return None;
+    };
+    Some(serde_json::json!({ "message": err.to_string(), "result": result, "detail": source.to_string() }).to_string())
 }
 
 fn removal_payload(err: &MicrosandboxError) -> Option<String> {
@@ -105,6 +113,7 @@ fn error_type_str(err: &MicrosandboxError) -> &'static str {
         MicrosandboxError::SnapshotImport(_) => "SnapshotImport",
         MicrosandboxError::SnapshotVerification(_) => "SnapshotVerification",
         MicrosandboxError::SnapshotRemovalRecovery { .. } => "SnapshotRemovalRecovery",
+        MicrosandboxError::SnapshotGroupRemovalRecovery { .. } => "SnapshotGroupRemovalRecovery",
         MicrosandboxError::SnapshotMigration { .. } => "SnapshotMigration",
         MicrosandboxError::MetricsDisabled(_) => "MetricsDisabled",
         MicrosandboxError::MetricsUnavailable(_) => "MetricsUnavailable",

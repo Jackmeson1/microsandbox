@@ -34,12 +34,48 @@ pub struct PySnapshotImportResult {
     inner: microsandbox::SnapshotImportResult,
 }
 
+/// Complete history and head outcome belonging to one committed removal.
+#[pyclass(name = "SnapshotRemoveResult")]
+pub struct PySnapshotRemoveResult {
+    pub(crate) inner: microsandbox::SnapshotRemoveResult,
+}
+
 //--------------------------------------------------------------------------------------------------
 // Methods
 //--------------------------------------------------------------------------------------------------
 
 #[pymethods]
+impl PySnapshotRemoveResult {
+    #[getter]
+    fn group(&self) -> String {
+        self.inner.group.clone()
+    }
+    #[getter]
+    fn removed(&self) -> Vec<String> {
+        self.inner.removed.iter().map(ToString::to_string).collect()
+    }
+    #[getter]
+    fn head_update(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        head_update_to_py(py, &self.inner.head_update)
+    }
+    #[getter]
+    fn warnings(&self) -> Vec<String> {
+        self.inner.warnings.clone()
+    }
+}
+
+#[pymethods]
 impl PySnapshotGroup {
+    /// Remove the entire history without bypassing readers or external dependents.
+    fn remove<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let group = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            Ok(PySnapshotRemoveResult {
+                inner: group.remove().await.map_err(to_py_err)?,
+            })
+        })
+    }
+
     /// Verify every selected member, preserving a complete report on verification errors.
     fn verify<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let group = self.inner.clone();

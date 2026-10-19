@@ -16,6 +16,18 @@ use crate::snapshot::{
 
 /// Backend implementation for snapshot lifecycle operations.
 pub trait SnapshotBackend: Send + Sync {
+    /// Explicitly retire the entire history; surviving external dependents always prevent it.
+    fn remove_group<'a>(
+        &'a self,
+        _reference: &'a SnapshotReference,
+    ) -> BoxFuture<'a, MicrosandboxResult<crate::snapshot::SnapshotRemoveResult>> {
+        Box::pin(async {
+            Err(crate::MicrosandboxError::local_only(
+                crate::Operation::SnapshotOps,
+            ))
+        })
+    }
+
     /// Remove an exact retained checkpoint and return this operation's head outcome.
     fn remove_checkpoint<'a>(
         &'a self,

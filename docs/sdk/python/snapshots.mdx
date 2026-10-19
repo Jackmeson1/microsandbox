@@ -29,6 +29,16 @@ A successful return confirms publication and catalog completion. Warnings descri
 
 Unrecorded checksums remain incomplete. Corruption, missing files, unsupported requirements, and operational failures raise `SnapshotVerificationError` with the full dictionary in `error.report`; failures before a meaningful report exists retain their ordinary exception. Shared physical payloads are hashed once per algorithm, independent copies are checked separately, and cancellation retains reader protection until hashing finishes.
 
+## Whole-group removal
+
+```python
+async def remove(self) -> SnapshotRemoveResult
+```
+
+Removes the selected history and returns `SnapshotRemoveResult` with `group`, `removed`, `head_update`, and `warnings`. The member IDs and cleared-head outcome belong to this operation. Empty groups can be removed. Active readers and surviving external dependents refuse removal; there is no force bypass for an entire group.
+
+If publication commits but catalog cleanup fails, the call raises or returns `SnapshotGroupRemovalRecoveryError` with `result` and `detail`. The attached result means removal already happened. Cleanup warnings after successful catalog reconciliation are returned in the result. An uncertain durability outcome is an error requiring recovery rather than a claimed successful removal. Later listing recovers pending cleanup without deleting a replacement group.
+
 ## Exact checkpoint removal
 
 Migration: static Python `Snapshot.remove(reference, force=...)` becomes `Checkpoint.remove_by_reference(reference, force=...)`. The canonical `Checkpoint.remove()` is now an instance method. Legacy `SnapshotHandle.remove(force=...)` still returns `None`.

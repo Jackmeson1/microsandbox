@@ -20,6 +20,13 @@ use crate::{MicrosandboxError, MicrosandboxResult, Operation};
 //--------------------------------------------------------------------------------------------------
 
 impl SnapshotBackend for LocalBackend {
+    fn remove_group<'a>(
+        &'a self,
+        reference: &'a SnapshotReference,
+    ) -> BoxFuture<'a, MicrosandboxResult<crate::snapshot::SnapshotRemoveResult>> {
+        Box::pin(async move { group::remove_history(self, self.path(reference)?).await })
+    }
+
     fn remove_checkpoint<'a>(
         &'a self,
         checkpoint: &'a Snapshot,
@@ -79,6 +86,11 @@ impl SnapshotBackend for LocalBackend {
         backend: Arc<dyn Backend>,
     ) -> BoxFuture<'a, MicrosandboxResult<Vec<crate::Snapshot>>> {
         Box::pin(async move {
+            // The last group can disappear before catalog cleanup. Discover its journal
+            // through stable parent pointers, rather than requiring a surviving member.
+            for parent in super::deletion::recovery_parents(self)? {
+                group::recover_histories(self, &parent).await?;
+            }
             let mut groups = Vec::new();
             let mut entries = match tokio::fs::read_dir(self.snapshots_dir()).await {
                 Ok(entries) => entries,

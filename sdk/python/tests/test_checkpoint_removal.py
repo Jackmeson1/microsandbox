@@ -121,3 +121,68 @@ asyncio.run(main())
         timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_native_group_removal(tmp_path: Path) -> None:
+    ids = checkpoint_fixture(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            r"""
+import asyncio, os, sqlite3, sys
+from pathlib import Path
+from microsandbox import Snapshot, SnapshotRemoveResult, SnapshotGroupRemovalRecoveryError
+
+async def main():
+    home = Path(os.environ["MSB_HOME"])
+    group = await Snapshot.get("history")
+    # Index both members so a forced post-publication catalog error is observable.
+    for member in sys.argv[1:]:
+        await group.get_checkpoint(member)
+    db = sqlite3.connect(home / "db/msb.db")
+    db.execute(
+        "CREATE TRIGGER reject_group_cleanup BEFORE DELETE ON snapshot_index "
+        "BEGIN SELECT RAISE(FAIL, 'injected group cleanup failure'); END"
+    )
+    db.commit()
+    try:
+        await group.remove()
+    except SnapshotGroupRemovalRecoveryError as error:
+        assert isinstance(error.result, SnapshotRemoveResult)
+        assert error.result.group == "history"
+        assert error.result.removed == sys.argv[1:]
+        assert error.result.head_update["previous"] == sys.argv[2]
+        assert error.result.head_update["head"] is None
+        assert "injected group cleanup failure" in error.detail
+        assert not (home / "snapshots/history").exists()
+    else:
+        raise AssertionError("lost committed group removal result")
+    db.execute("DROP TRIGGER reject_group_cleanup")
+    db.commit()
+    assert not await Snapshot.list()  # Recovery is discovered despite no surviving group.
+    assert db.execute("SELECT count(*) FROM snapshot_index").fetchone()[0] == 0
+    db.close()
+    empty = home / "snapshots/empty"
+    empty.mkdir()
+    (empty / "group.json").write_text('{"schema":"microsandbox.snapshot-group/1","head":null}')
+    report = await (await Snapshot.get("empty")).remove()
+    assert isinstance(report, SnapshotRemoveResult)
+    assert report.group == "empty" and report.removed == []
+    assert report.head_update["head"] is None and not report.head_update["changed"]
+    assert not empty.exists()
+
+asyncio.run(main())
+""",
+            *ids,
+        ],
+        env={
+            **os.environ,
+            "MSB_HOME": str(tmp_path),
+            "MSB_CONFIG_PATH": str(tmp_path / "missing.json"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

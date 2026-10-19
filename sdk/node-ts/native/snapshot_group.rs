@@ -66,6 +66,13 @@ pub struct JsSnapshotImportResult {
 
 #[napi]
 impl JsSnapshotGroup {
+    /// Return the committed member set and head outcome without a later catalog read.
+    #[napi]
+    pub async fn remove_group(&self) -> Result<String> {
+        let result = self.inner.remove().await.map_err(to_napi_error)?;
+        serde_json::to_string(&result).map_err(|error| to_napi_error(error.into()))
+    }
+
     /// Internal JSON transport preserves nested per-member results without flattening errors.
     #[napi]
     pub async fn verify_json(&self) -> Result<String> {

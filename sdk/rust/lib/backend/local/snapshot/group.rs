@@ -6,6 +6,8 @@
 
 mod capture;
 mod removal;
+mod remove_history;
+mod retirement;
 mod transaction;
 
 #[cfg(windows)]
@@ -1606,3 +1608,9 @@ mod tests;
 //--------------------------------------------------------------------------------------------------
 
 pub(super) use capture::CaptureReservation;
+
+//--------------------------------------------------------------------------------------------------
+// Re-Exports
+//--------------------------------------------------------------------------------------------------
+
+pub(super) use remove_history::{recover as recover_histories, remove as remove_history};

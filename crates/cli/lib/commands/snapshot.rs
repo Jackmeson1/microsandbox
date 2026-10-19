@@ -215,11 +215,19 @@ pub struct SnapshotVerifyArgs {
 /// Arguments for `msb snapshot remove`.
 #[derive(Debug, Args)]
 pub struct SnapshotRemoveArgs {
-    /// Snapshot(s) to remove (path, name, or digest).
-    #[arg(required = true)]
-    pub snapshots: Vec<String>,
+    /// Group containing the checkpoint or history to remove.
+    #[arg(value_name = "GROUP")]
+    pub group: String,
 
-    /// Remove even if the snapshot has indexed children.
+    /// Exact group-local member name or ID; bare group removal is never implied.
+    #[arg(long, required_unless_present = "all", conflicts_with = "all")]
+    pub checkpoint: Option<String>,
+
+    /// Remove the entire group, refusing surviving external dependents and active readers.
+    #[arg(long, conflicts_with = "force")]
+    pub all: bool,
+
+    /// Allow indexed children when removing one checkpoint; never bypass reader protection.
     #[arg(short = 'f', long)]
     pub force: bool,
 
@@ -809,28 +817,53 @@ fn require_complete_verification(
 }
 
 async fn remove(args: SnapshotRemoveArgs) -> anyhow::Result<()> {
-    let mut failed = false;
-    for s in &args.snapshots {
-        let spinner = if args.quiet {
-            ui::Spinner::quiet()
+    let spinner = if args.quiet {
+        ui::Spinner::quiet()
+    } else {
+        ui::Spinner::start("Removing", &args.group)
+    };
+    let result = async {
+        let group = SnapshotGroup::get(&args.group).await?;
+        if args.all {
+            let report = group.remove().await?;
+            Ok((Some(report.head_update), report.warnings))
         } else {
-            ui::Spinner::start("Removing", s)
-        };
-        match Snapshot::remove_by_reference(s, args.force).await {
-            Ok(()) => spinner.finish_success("Removed"),
-            Err(e) => {
-                spinner.finish_clear();
-                if !args.quiet {
-                    ui::error(&format!("{e}"));
-                }
-                failed = true;
-            }
+            // Resolve the member once; later head edits cannot retarget this removal.
+            let checkpoint = group
+                .get_checkpoint(
+                    args.checkpoint
+                        .as_deref()
+                        .expect("clap requires checkpoint or all"),
+                )
+                .await?;
+            let report = checkpoint
+                .remove_with(|options| if args.force { options.force() } else { options })
+                .await?;
+            Ok::<_, microsandbox::MicrosandboxError>((report.head_update, report.warnings))
         }
     }
-    if failed {
-        std::process::exit(1);
+    .await;
+    match result {
+        Ok((head, warnings)) => {
+            spinner.finish_success("Removed");
+            if !args.quiet {
+                if let Some(head) = head {
+                    report_head_update(&head);
+                }
+                for warning in warnings {
+                    ui::warn(&warning);
+                }
+            }
+            Ok(())
+        }
+        Err(error) => {
+            spinner.finish_clear();
+            if args.quiet {
+                std::process::exit(1);
+            }
+            Err(error.into())
+        }
     }
-    Ok(())
 }
 
 async fn reindex(args: SnapshotReindexArgs) -> anyhow::Result<()> {
@@ -1503,5 +1536,42 @@ mod tests {
             "copy:snap_1"
         );
         assert_eq!(format_member_selector(None, None, "snap_1"), "snap_1");
+    }
+    #[test]
+    fn removal_requires_explicit_member_or_entire_history() {
+        for command in ["remove", "rm"] {
+            assert!(TestCli::try_parse_from(["msb", command, "history"]).is_err());
+            assert!(
+                TestCli::try_parse_from([
+                    "msb",
+                    command,
+                    "history",
+                    "--checkpoint",
+                    "one",
+                    "--all"
+                ])
+                .is_err()
+            );
+            assert!(
+                TestCli::try_parse_from(["msb", command, "history", "--all", "--force"]).is_err()
+            );
+            assert!(
+                TestCli::try_parse_from([
+                    "msb",
+                    command,
+                    "history",
+                    "--checkpoint",
+                    "one",
+                    "--force"
+                ])
+                .is_ok()
+            );
+            assert!(
+                TestCli::try_parse_from(["msb", command, "history", "--all", "--quiet"]).is_ok()
+            );
+            assert!(
+                TestCli::try_parse_from(["msb", command, "history", "other", "--all"]).is_err()
+            );
+        }
     }
 }

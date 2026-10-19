@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from microsandbox._microsandbox import CheckpointRemoveResult
+    from microsandbox._microsandbox import CheckpointRemoveResult, SnapshotRemoveResult
 
 
 class MicrosandboxError(Exception):
@@ -179,6 +179,17 @@ class SnapshotRemovalRecoveryError(MicrosandboxError):
     code = "snapshot-removal-recovery"
 
     def __init__(self, message: str, result: CheckpointRemoveResult, detail: str) -> None:
+        super().__init__(message)
+        self.result = result
+        self.detail = detail
+
+
+class SnapshotGroupRemovalRecoveryError(MicrosandboxError):
+    """Removal committed; result is authoritative even though cleanup needs recovery."""
+
+    code = "snapshot-group-removal-recovery"
+
+    def __init__(self, message: str, result: SnapshotRemoveResult, detail: str) -> None:
         super().__init__(message)
         self.result = result
         self.detail = detail

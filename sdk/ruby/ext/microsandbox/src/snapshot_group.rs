@@ -47,6 +47,11 @@ pub(super) struct RubyCheckpointRemoveResult {
     pub(super) inner: microsandbox_core::CheckpointRemoveResult,
 }
 
+#[magnus::wrap(class = "Microsandbox::SnapshotRemoveResult", free_immediately, size)]
+pub(super) struct RubySnapshotRemoveResult {
+    pub(super) inner: microsandbox_core::SnapshotRemoveResult,
+}
+
 //--------------------------------------------------------------------------------------------------
 // Methods
 //--------------------------------------------------------------------------------------------------
@@ -63,7 +68,19 @@ impl RubyCheckpointRemoveResult {
     }
 }
 
+impl RubySnapshotRemoveResult {
+    fn group(&self) -> String { self.inner.group.clone() }
+    fn removed(&self) -> Vec<String> { self.inner.removed.iter().map(ToString::to_string).collect() }
+    fn head_update(&self) -> Result<RHash, Error> { head_update(&self.inner.head_update) }
+    fn warnings(&self) -> Vec<String> { self.inner.warnings.clone() }
+}
+
 impl RubyGroup {
+    fn remove(ruby: &Ruby, this: typed_data::Obj<Self>) -> Result<RubySnapshotRemoveResult, Error> {
+        let group = this.inner.clone();
+        Ok(RubySnapshotRemoveResult { inner: run(ruby, async move { group.remove().await })? })
+    }
+
     fn verify(ruby: &Ruby, this: typed_data::Obj<Self>) -> Result<RHash, Error> {
         let group = this.inner.clone();
         let report = run(ruby, async move { group.verify().await })?;
@@ -388,7 +405,13 @@ pub(super) fn register(ruby: &Ruby, module: RModule) -> Result<(), Error> {
         method!(RubyCheckpointRemoveResult::head_update, 0),
     )?;
     removed.define_method("warnings", method!(RubyCheckpointRemoveResult::warnings, 0))?;
+    let removed_group = module.define_class("SnapshotRemoveResult", ruby.class_object())?;
+    removed_group.define_method("group", method!(RubySnapshotRemoveResult::group, 0))?;
+    removed_group.define_method("removed", method!(RubySnapshotRemoveResult::removed, 0))?;
+    removed_group.define_method("head_update", method!(RubySnapshotRemoveResult::head_update, 0))?;
+    removed_group.define_method("warnings", method!(RubySnapshotRemoveResult::warnings, 0))?;
     let group = module.define_class("Snapshot", ruby.class_object())?;
+    group.define_method("remove", method!(RubyGroup::remove, 0))?;
     group.define_singleton_method("load", function!(RubyGroup::load, -1))?;
     group.define_singleton_method("get", function!(RubyGroup::get, 1))?;
     group.define_singleton_method("list", function!(RubyGroup::list, 0))?;

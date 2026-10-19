@@ -276,6 +276,7 @@ fn core_error_class_name(error: &MicrosandboxError) -> &'static str {
         MicrosandboxError::SnapshotImport(_) => "SnapshotImportError",
         MicrosandboxError::SnapshotVerification(_) => "SnapshotVerificationError",
         MicrosandboxError::SnapshotRemovalRecovery { .. } => "SnapshotRemovalRecoveryError",
+        MicrosandboxError::SnapshotGroupRemovalRecovery { .. } => "SnapshotGroupRemovalRecoveryError",
         MicrosandboxError::SnapshotMigration { .. } => "SnapshotMigrationError",
         // Always present: the extension enables the core's `net` feature.
         MicrosandboxError::NetworkBuilder(_) => "NetworkPolicyError",
@@ -315,6 +316,26 @@ fn core_error(ruby: &Ruby, error: MicrosandboxError) -> Error {
         };
         if let Some(object) = RObject::from_value(exception.as_value()) {
             let result = snapshot_group::RubyCheckpointRemoveResult {
+                inner: (**result).clone(),
+            };
+            if let Err(error) = object
+                .ivar_set("@result", result)
+                .and_then(|()| object.ivar_set("@detail", source.to_string()))
+            {
+                return error;
+            }
+        }
+        return Error::from(exception);
+    }
+    if let MicrosandboxError::SnapshotGroupRemovalRecovery { result, source } = &error {
+        let class = exception_class(ruby, "SnapshotGroupRemovalRecoveryError");
+        let message = error.to_string();
+        let exception = match class.new_instance((message.as_str(),)) {
+            Ok(exception) => exception,
+            Err(_) => return Error::new(class, message),
+        };
+        if let Some(object) = RObject::from_value(exception.as_value()) {
+            let result = snapshot_group::RubySnapshotRemoveResult {
                 inner: (**result).clone(),
             };
             if let Err(error) = object

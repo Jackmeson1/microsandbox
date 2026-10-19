@@ -89,6 +89,8 @@ pub(super) fn prepare_retirement(
 /// Recovery never removes a new artifact at the original name. Only an absent source permits
 /// deletion of its stale catalog row. The exact entry lease spans that check and row deletion.
 pub(super) async fn recover_parent(local: &LocalBackend, parent: &Path) -> MicrosandboxResult<()> {
+    super::group::recover_histories(local, parent).await?;
+
     // Recovery creates namespace leases and retires journal paths too. It must
     // enter before those operations, otherwise a group exchange could move its
     // journal while the worker is still using the old pathname. Busy recovery is

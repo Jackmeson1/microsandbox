@@ -107,6 +107,7 @@ fn _microsandbox(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<snapshot_group::PyCheckpointCaptureResult>()?;
     m.add_class::<snapshot::PySnapshotArchive>()?;
     m.add_class::<snapshot::PyCheckpointRemoveResult>()?;
+    m.add_class::<snapshot_group::PySnapshotRemoveResult>()?;
     m.add_class::<snapshot::PySnapshotCopyBuilder>()?;
     m.add_class::<snapshot::PySnapshotHandle>()?;
     m.add_class::<metrics::PyMetricsStream>()?;

@@ -1,3 +1,5 @@
+import { UnsupportedError } from "./errors.js";
+import { parseGroupRemoval, type SnapshotRemoveResult } from "./snapshot-removal.js";
 import type { NapiRestoreBuilder, NapiLoadOpts } from "./internal/napi.js";
 import { withMappedErrors } from "./internal/error-mapping.js";
 import { napi, type NapiSnapshotGroup, type NapiSnapshotCreateResult, type NapiSnapshotCaptureOptions, type NapiHeadUpdate } from "./internal/napi.js";
@@ -63,6 +65,13 @@ export interface SnapshotImportResult {
 export class Snapshot {
   /** @internal */
   constructor(readonly inner: NapiSnapshotGroup) {}
+
+  /** Remove the entire history, refusing active readers and surviving external dependents. */
+  async remove(): Promise<SnapshotRemoveResult> {
+    if (!this.inner.removeGroup) throw new UnsupportedError("Group removal requires an updated native library");
+    const result = await withMappedErrors(() => this.inner.removeGroup!());
+    return parseGroupRemoval(JSON.parse(result));
+  }
 
   /** Verify every selected member. Failures reject with a SnapshotVerificationError and report. */
   async verify(): Promise<SnapshotGroupVerifyReport> {
