@@ -4,12 +4,17 @@ require "test/unit"
 require "securerandom"
 require "tmpdir"
 require "fileutils"
+require "open3"
+require "rbconfig"
 require_relative "../lib/microsandbox"
 
 # Run against a disposable MSB_HOME; these tests create real guests and assert guest contents.
 class SnapshotSpawnTest < Test::Unit::TestCase
   def setup
     omit("set MSB_RUBY_INTEGRATION=1 on a virtualization host") unless ENV["MSB_RUBY_INTEGRATION"] == "1"
+    # The path case owns its fixtures and native workers in a separate interpreter.
+    return if method_name == "test_local_paths_are_captured_before_progress_and_gc" && ENV["MSB_RUBY_PATH_WORKER"] != "1"
+
     @names = []
     @group = nil
     @temporary = Dir.mktmpdir("msb-ruby-spawn-")
@@ -112,6 +117,17 @@ class SnapshotSpawnTest < Test::Unit::TestCase
   end
 
   def test_local_paths_are_captured_before_progress_and_gc
+    unless ENV["MSB_RUBY_PATH_WORKER"] == "1"
+      # Re-exec rather than fork a running native runtime, and retain the selected addon path.
+      stdout, stderr, status = Open3.capture3(
+        { "MSB_RUBY_PATH_WORKER" => "1" },
+        RbConfig.ruby, *$LOAD_PATH.flat_map { |path| ["-I", path] },
+        File.expand_path(__FILE__), "--name", method_name
+      )
+      assert_predicate status, :success?, "#{stdout}\n#{stderr}"
+      return
+    end
+
     File.write(File.join(@temporary, "bound-marker"), "correct-binding")
     original = Dir.pwd
     session = nil

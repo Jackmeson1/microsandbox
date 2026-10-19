@@ -122,10 +122,13 @@ if err != nil {
     return err
 }
 
-snapshot, err := baseline.Checkpoint(ctx, "ready")
+created, err := baseline.Snapshot(ctx, "baseline", m.WithSnapshotCaptureConfig(
+    m.SnapshotCaptureConfig{Name: "ready"},
+))
 if err != nil {
     return err
 }
+snapshot := created.Checkpoint
 ```
 
 ```ruby Ruby
@@ -964,7 +967,7 @@ let snapshots = Checkpoint::list().await?;
 let saved = Checkpoint::open("baseline:ready").await?;
 println!("{}", saved.digest());
 
-Checkpoint::remove("baseline:ready", false).await?;
+Checkpoint::remove_by_reference("baseline:ready", false).await?;
 ```
 
 ```python Python

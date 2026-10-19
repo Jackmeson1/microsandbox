@@ -808,9 +808,10 @@ async fn verify(&self) -> MicrosandboxResult<SnapshotVerifyReport>
 <Accordion title="Example">
 
 ```rust
+use microsandbox::Snapshot;
 use microsandbox::snapshot::SnapshotVerifyCoverage;
 
-let group = Checkpoint::get("api").await?;
+let group = Snapshot::get("api").await?;
 let checkpoint = group.get_checkpoint("baseline").await?;
 match checkpoint.verify().await?.coverage {
     SnapshotVerifyCoverage::Complete => println!("all required payload integrity verified"),

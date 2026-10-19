@@ -1,5 +1,7 @@
 //! Source-bound group histories and operation-owned capture results for Ruby.
 
+use std::sync::Arc;
+
 use magnus::{
     Error, RArray, RHash, RModule, Ruby, Value, function, method, prelude::*, scan_args::scan_args,
     typed_data,
@@ -10,8 +12,8 @@ use microsandbox_core::{
 };
 
 use super::{
-    RubySandbox, RubySnapshot, RubySnapshotHandle, argument_error, current_ruby, keyword,
-    reject_unknown_keywords, run, string_map, symbol,
+    RubySandbox, RubySandboxHandle, RubySnapshot, RubySnapshotHandle, argument_error, current_ruby,
+    keyword, reject_unknown_keywords, run, string_map, symbol,
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -55,6 +57,24 @@ pub(super) struct RubySnapshotRemoveResult {
 //--------------------------------------------------------------------------------------------------
 // Methods
 //--------------------------------------------------------------------------------------------------
+
+impl RubySandboxHandle {
+    pub(super) fn snapshot(
+        ruby: &Ruby,
+        this: typed_data::Obj<Self>,
+        args: &[Value],
+    ) -> Result<RubySnapshotCreateResult, Error> {
+        let parsed = scan_args::<(String,), (), (), (), RHash, ()>(args)?;
+        let name = parsed.required.0;
+        let options = capture_options(ruby, parsed.keywords, true)?;
+        let handle = Arc::clone(&this.inner);
+        Ok(RubySnapshotCreateResult {
+            inner: run(ruby, async move {
+                handle.snapshot_with(&name, |_| options).await
+            })?,
+        })
+    }
+}
 
 impl RubyCheckpointRemoveResult {
     fn id(&self) -> String {

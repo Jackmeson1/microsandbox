@@ -5,9 +5,10 @@ use std::sync::{
     atomic::{AtomicU8, Ordering},
 };
 
+use microsandbox_image::snapshot::{Manifest, SnapshotId};
+
 use super::*;
 use crate::{SnapshotImportError, SnapshotImportOutcome};
-use microsandbox_image::snapshot::{Manifest, SnapshotId};
 
 //--------------------------------------------------------------------------------------------------
 // Types
