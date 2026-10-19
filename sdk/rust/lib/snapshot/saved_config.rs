@@ -5,6 +5,9 @@
 mod execution;
 #[cfg(test)]
 mod execution_tests;
+mod network_policy;
+#[cfg(test)]
+mod network_policy_tests;
 #[cfg(test)]
 mod resource_tests;
 mod resources;
@@ -23,6 +26,10 @@ mod types;
 pub use execution::{
     DestinationGuestSecurity, ExecutionDefaultClear, ExecutionDefaultSelection,
     ExecutionRestoreMode, LifetimeDefaultSelection, select_execution_defaults,
+};
+pub use network_policy::{
+    DestinationNetworkBaseline, NetworkPolicyApproval, NetworkPolicyClear, NetworkPolicySelection,
+    select_network_policy_defaults,
 };
 pub use resources::{
     ResourceDefaultClear, ResourceDefaultSelection, ResourceRestoreMode, select_resource_defaults,
