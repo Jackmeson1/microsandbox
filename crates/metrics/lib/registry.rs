@@ -17,13 +17,14 @@ use chrono::{DateTime, TimeZone, Utc};
 use crate::layout::{
     DEFAULT_CAPACITY, HEADER_SIZE, HEADER_STATE_INITIALIZING, HEADER_STATE_READY,
     HEADER_STATE_UNINIT, Header, NAME_BYTES, REGISTRY_MAGIC, REGISTRY_VERSION, SAMPLE_FLAG_CPU,
+    SAMPLE_FLAG_GUEST_MEMORY_OBSERVATION, SAMPLE_FLAG_GUEST_MEMORY_VALID,
     SAMPLE_FLAG_MEMORY_AVAILABLE, SAMPLE_FLAG_MEMORY_HOST_RESIDENT, SAMPLE_FLAG_MEMORY_LIMIT_LIVE,
     SAMPLE_FLAG_MEMORY_USED, SAMPLE_FLAG_UPPER_FREE, SAMPLE_FLAG_UPPER_HOST_ALLOCATED,
     SAMPLE_FLAG_UPPER_USED, SLOT_ACTIVE, SLOT_FREE, SLOT_RESERVED, SLOT_SIZE, SLOT_STALE, Slot,
     registry_size,
 };
 use crate::snapshot::{LiveMetric, LiveMetricState};
-use crate::{MetricsError, MetricsResult};
+use crate::{GuestMemoryObservation, MetricsError, MetricsResult, guest_memory_clock};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, GetLastError,
@@ -117,6 +118,14 @@ pub struct SampleWrite {
     pub upper_free_bytes: Option<u64>,
     /// Host-allocated bytes for the writable upper image when available.
     pub upper_host_allocated_bytes: Option<u64>,
+}
+
+/// Distinguish a producer without observation support from a capable producer
+/// explicitly invalidating its current report.
+#[derive(Clone, Copy)]
+enum GuestMemoryInput {
+    Legacy,
+    Observed(Option<GuestMemoryObservation>),
 }
 
 /// Shared-memory registry.
@@ -734,6 +743,20 @@ impl MetricsRegistry {
             let cpu_bits = slot.cpu_percent_bits.load(Ordering::Relaxed);
             let memory = slot.memory_bytes.load(Ordering::Relaxed);
             let memory_available = slot.memory_available_bytes.load(Ordering::Relaxed);
+            // Old writers can leave dirty tail bytes on slot reuse. Flags, not
+            // apparent values, establish whether these bytes have meaning.
+            let guest_memory = flag_set(sample_flags, SAMPLE_FLAG_GUEST_MEMORY_VALID).then(|| {
+                GuestMemoryObservation {
+                    total_bytes: slot.memory_guest_total_bytes.load(Ordering::Relaxed),
+                    available_bytes: memory_available,
+                    received_at: Duration::from_nanos(
+                        slot.memory_received_ns.load(Ordering::Relaxed),
+                    ),
+                    reporting_interval: Duration::from_nanos(
+                        slot.memory_interval_ns.load(Ordering::Relaxed),
+                    ),
+                }
+            });
             let memory_host_resident = slot.memory_host_resident_bytes.load(Ordering::Relaxed);
             let disk_r = slot.disk_read_bytes.load(Ordering::Relaxed);
             let disk_w = slot.disk_write_bytes.load(Ordering::Relaxed);
@@ -776,6 +799,13 @@ impl MetricsRegistry {
                 LiveMetricState::Active
             };
 
+            let capable = flag_set(sample_flags, SAMPLE_FLAG_GUEST_MEMORY_OBSERVATION);
+            let fresh = capable
+                && state == LiveMetricState::Active
+                && guest_memory
+                    .zip(guest_memory_clock())
+                    .is_some_and(|(observation, now)| observation.is_fresh_at(now));
+            let memory_valid = !capable || fresh;
             let metric = LiveMetric {
                 state,
                 sandbox_id,
@@ -786,13 +816,18 @@ impl MetricsRegistry {
                 uptime,
                 cpu_percent: f32::from_bits(cpu_bits),
                 vcpu_time_ns,
-                memory_bytes: memory,
-                memory_bytes_reported: flag_set(sample_flags, SAMPLE_FLAG_MEMORY_USED),
+                memory_bytes: if memory_valid { memory } else { 0 },
+                memory_total_bytes: guest_memory
+                    .filter(|_| fresh)
+                    .map(|report| report.total_bytes),
+                memory_bytes_reported: memory_valid
+                    && flag_set(sample_flags, SAMPLE_FLAG_MEMORY_USED),
                 memory_available_bytes: flag_value(
                     sample_flags,
                     SAMPLE_FLAG_MEMORY_AVAILABLE,
                     memory_available,
-                ),
+                )
+                .filter(|_| memory_valid),
                 memory_host_resident_bytes: flag_value(
                     sample_flags,
                     SAMPLE_FLAG_MEMORY_HOST_RESIDENT,
@@ -825,6 +860,29 @@ impl MetricsSlotWriter {
     /// out from under this writer. Callers (the sampler) should stop on
     /// mismatch instead of forcing the write.
     pub fn write_sample(&self, sample: SampleWrite) -> MetricsResult<()> {
+        self.write_sample_inner(sample, GuestMemoryInput::Legacy)
+    }
+
+    /// Publish a sample from a runtime supporting coherent guest memory reports.
+    ///
+    /// `None` invalidates guest memory (for example on pause). Reports must be
+    /// captured in this run; resume/restore must wait for a new report. Repeated
+    /// publications preserve the receipt time, so they cannot prolong freshness.
+    /// Usage retains the configured-limit-minus-available formula, not total
+    /// minus available. Host residency and CPU/disk samples remain independent.
+    pub fn write_sample_with_guest_memory(
+        &self,
+        sample: SampleWrite,
+        observation: Option<GuestMemoryObservation>,
+    ) -> MetricsResult<()> {
+        self.write_sample_inner(sample, GuestMemoryInput::Observed(observation))
+    }
+
+    fn write_sample_inner(
+        &self,
+        mut sample: SampleWrite,
+        guest_memory: GuestMemoryInput,
+    ) -> MetricsResult<()> {
         let slot = self.registry.try_slot(self.slot)?;
         let observed = slot.generation.load(Ordering::Acquire);
         if observed != self.generation {
@@ -850,9 +908,43 @@ impl MetricsSlotWriter {
             });
         }
 
+        let mut sample_flags = 0;
+        let observation = match guest_memory {
+            GuestMemoryInput::Legacy => None,
+            GuestMemoryInput::Observed(report) => report,
+        };
+        let observation = observation.filter(|report| {
+            guest_memory_clock().is_some_and(|now| report.is_fresh_at(now))
+                && u64::try_from(report.received_at.as_nanos()).is_ok()
+                && u64::try_from(report.reporting_interval.as_nanos()).is_ok()
+        });
+        if matches!(guest_memory, GuestMemoryInput::Observed(_)) {
+            sample_flags |= SAMPLE_FLAG_GUEST_MEMORY_OBSERVATION;
+            sample.memory_available_bytes = observation.map(|report| report.available_bytes);
+            let limit = sample
+                .memory_limit_bytes
+                .unwrap_or_else(|| slot.memory_limit_bytes.load(Ordering::Relaxed));
+            sample.memory_bytes = sample
+                .memory_available_bytes
+                .and_then(|available| limit.checked_sub(available));
+        }
+        if let Some(report) = observation {
+            sample_flags |= SAMPLE_FLAG_GUEST_MEMORY_VALID;
+            slot.memory_guest_total_bytes
+                .store(report.total_bytes, Ordering::Relaxed);
+            slot.memory_received_ns
+                .store(report.received_at.as_nanos() as u64, Ordering::Relaxed);
+            slot.memory_interval_ns.store(
+                report.reporting_interval.as_nanos() as u64,
+                Ordering::Relaxed,
+            );
+        } else {
+            slot.memory_guest_total_bytes.store(0, Ordering::Relaxed);
+            slot.memory_received_ns.store(0, Ordering::Relaxed);
+            slot.memory_interval_ns.store(0, Ordering::Relaxed);
+        }
         slot.sampled_at_unix_ms
             .store(sample.sampled_at.timestamp_millis(), Ordering::Relaxed);
-        let mut sample_flags = 0;
         if sample.cpu_percent.is_some() && sample.vcpu_time_ns.is_some() {
             sample_flags |= SAMPLE_FLAG_CPU;
         }
@@ -1356,6 +1448,9 @@ fn write_reservation_fields(slot: &Slot, spec: &ReserveSlot<'_>, generation: u64
     slot.cpu_percent_bits.store(0, Ordering::Relaxed);
     slot.memory_bytes.store(0, Ordering::Relaxed);
     slot.memory_available_bytes.store(0, Ordering::Relaxed);
+    slot.memory_guest_total_bytes.store(0, Ordering::Relaxed);
+    slot.memory_received_ns.store(0, Ordering::Relaxed);
+    slot.memory_interval_ns.store(0, Ordering::Relaxed);
     slot.memory_host_resident_bytes.store(0, Ordering::Relaxed);
     slot.disk_read_bytes.store(0, Ordering::Relaxed);
     slot.disk_write_bytes.store(0, Ordering::Relaxed);
@@ -1554,6 +1649,214 @@ mod tests {
     /// readers don't demote the slot as dead-owner.
     fn alive_pid() -> i32 {
         std::process::id() as i32
+    }
+
+    fn guest_memory_fixture(
+        tag: &str,
+    ) -> (String, MetricsRegistry, MetricsSlotWriter, SampleWrite) {
+        let name = unique_name(tag);
+        let registry = MetricsRegistry::open_or_create(&name, 1).unwrap();
+        let reservation = registry
+            .reserve(ReserveSlot {
+                sandbox_id: 1,
+                name: "guest",
+                memory_limit_bytes: 4096,
+            })
+            .unwrap();
+        let writer = registry
+            .activate_writer(ActivateSlot {
+                slot: reservation.slot,
+                generation: reservation.generation,
+                run_id: 1,
+                pid: alive_pid(),
+                started_at: Utc::now(),
+            })
+            .unwrap();
+        let sample = SampleWrite {
+            sampled_at: Utc::now(),
+            cpu_percent: Some(12.0),
+            vcpu_time_ns: Some(100),
+            memory_bytes: Some(999),
+            memory_available_bytes: Some(999),
+            memory_host_resident_bytes: Some(123),
+            memory_limit_bytes: None,
+            disk_read_bytes: 17,
+            disk_write_bytes: 0,
+            net_rx_bytes: 0,
+            net_tx_bytes: 0,
+            upper_used_bytes: None,
+            upper_free_bytes: None,
+            upper_host_allocated_bytes: None,
+        };
+        (name, registry, writer, sample)
+    }
+
+    fn guest_report() -> GuestMemoryObservation {
+        GuestMemoryObservation {
+            total_bytes: 3000,
+            available_bytes: 1000,
+            received_at: guest_memory_clock().unwrap(),
+            reporting_interval: Duration::from_secs(1),
+        }
+    }
+
+    #[test]
+    fn coherent_guest_memory_preserves_usage_formula_and_independent_sources() {
+        let (name, registry, writer, sample) = guest_memory_fixture("gm");
+        writer
+            .write_sample_with_guest_memory(sample, Some(guest_report()))
+            .unwrap();
+        let item = registry.snapshot().unwrap().remove(0);
+        assert_eq!(item.memory_total_bytes, Some(3000));
+        assert_eq!(item.memory_available_bytes, Some(1000));
+        // Legacy accounting is configured capacity minus available, NOT guest total minus available.
+        assert_eq!(item.memory_bytes, 3096);
+        assert!(item.memory_bytes_reported);
+        assert_eq!(item.memory_limit_bytes, 4096);
+        writer.write_sample_with_guest_memory(sample, None).unwrap();
+        let item = registry.snapshot().unwrap().remove(0);
+        assert_eq!(item.memory_total_bytes, None);
+        assert_eq!(item.memory_available_bytes, None);
+        assert!(!item.memory_bytes_reported);
+        assert_eq!(item.memory_host_resident_bytes, Some(123));
+        assert_eq!(item.cpu_percent, 12.0);
+        assert_eq!(item.disk_read_bytes, 17);
+        assert_eq!(item.memory_limit_bytes, 4096);
+        cleanup(&name);
+    }
+
+    #[test]
+    fn guest_memory_pair_remains_coherent_under_concurrent_publication() {
+        let (name, registry, writer, sample) = guest_memory_fixture("pair");
+        let report = guest_report();
+        writer
+            .write_sample_with_guest_memory(sample, Some(report))
+            .unwrap();
+        let publisher = thread::spawn(move || {
+            for available in 1..=10_000 {
+                let report = GuestMemoryObservation {
+                    total_bytes: available + 2000,
+                    available_bytes: available,
+                    received_at: guest_memory_clock().unwrap(),
+                    ..report
+                };
+                writer
+                    .write_sample_with_guest_memory(sample, Some(report))
+                    .unwrap();
+            }
+        });
+        let mut reads = 0;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !publisher.is_finished() || reads < 100 {
+            assert!(
+                Instant::now() < deadline,
+                "guest observations did not remain readable"
+            );
+            for item in registry.snapshot().unwrap() {
+                if let Some(total) = item.memory_total_bytes {
+                    assert_eq!(total, item.memory_available_bytes.unwrap() + 2000);
+                    assert_eq!(
+                        item.memory_bytes_reported,
+                        item.memory_available_bytes.unwrap() <= 4096
+                    );
+                    if item.memory_bytes_reported {
+                        assert_eq!(
+                            item.memory_bytes + item.memory_available_bytes.unwrap(),
+                            4096
+                        );
+                    }
+                    reads += 1;
+                }
+            }
+        }
+        publisher.join().unwrap();
+        cleanup(&name);
+    }
+
+    #[test]
+    fn old_writer_dirty_tail_is_ignored_and_new_reservation_clears_it() {
+        let (name, registry, writer, sample) = guest_memory_fixture("old");
+        writer.write_sample(sample).unwrap();
+        let slot = registry.try_slot(writer.slot()).unwrap();
+        // Simulate an actual old writer: it clears unknown flags but knows nothing about the tail.
+        let report = guest_report();
+        slot.memory_guest_total_bytes
+            .store(report.total_bytes, Ordering::Relaxed);
+        slot.memory_received_ns
+            .store(report.received_at.as_nanos() as u64, Ordering::Relaxed);
+        slot.memory_interval_ns
+            .store(1_000_000_000, Ordering::Relaxed);
+        let item = registry.snapshot().unwrap().remove(0);
+        assert_eq!(item.memory_total_bytes, None);
+        assert_eq!(item.memory_bytes, 999);
+        assert_eq!(item.memory_available_bytes, Some(999));
+        writer.release(ReleaseMode::Free).unwrap();
+        let reservation = registry
+            .reserve(ReserveSlot {
+                sandbox_id: 2,
+                name: "replacement",
+                memory_limit_bytes: 1024,
+            })
+            .unwrap();
+        let slot = registry.try_slot(reservation.slot).unwrap();
+        assert_eq!(slot.memory_guest_total_bytes.load(Ordering::Relaxed), 0);
+        assert_eq!(slot.memory_received_ns.load(Ordering::Relaxed), 0);
+        assert_eq!(slot.memory_interval_ns.load(Ordering::Relaxed), 0);
+        cleanup(&name);
+    }
+
+    #[test]
+    fn guest_memory_expires_at_read_time_without_another_write() {
+        let (name, registry, writer, sample) = guest_memory_fixture("age");
+        let report = guest_report();
+        writer
+            .write_sample_with_guest_memory(sample, Some(report))
+            .unwrap();
+        let slot = registry.try_slot(writer.slot()).unwrap();
+        // Age the original receipt, while leaving the host publication time fresh.
+        // This avoids a timing-sensitive multi-second sleep in the regression test.
+        let old = report
+            .received_at
+            .checked_sub(Duration::from_secs(4))
+            .unwrap();
+        slot.memory_received_ns
+            .store(old.as_nanos() as u64, Ordering::Relaxed);
+        let item = registry.snapshot().unwrap().remove(0);
+        assert_eq!(item.memory_total_bytes, None);
+        assert_eq!(item.memory_available_bytes, None);
+        assert!(!item.memory_bytes_reported);
+        assert_eq!(item.memory_limit_bytes, 4096);
+        assert_eq!(item.memory_host_resident_bytes, Some(123));
+        let stale = GuestMemoryObservation {
+            received_at: old,
+            ..report
+        };
+        writer
+            .write_sample_with_guest_memory(sample, Some(stale))
+            .unwrap();
+        assert_eq!(registry.snapshot().unwrap()[0].memory_total_bytes, None);
+        cleanup(&name);
+    }
+
+    #[test]
+    fn invalid_guest_report_drops_the_whole_pair_and_stale_lifecycle_invalidates() {
+        let (name, registry, writer, sample) = guest_memory_fixture("bad");
+        let mut report = guest_report();
+        report.available_bytes = report.total_bytes + 1;
+        writer
+            .write_sample_with_guest_memory(sample, Some(report))
+            .unwrap();
+        let item = registry.snapshot().unwrap().remove(0);
+        assert_eq!(item.memory_total_bytes, None);
+        assert_eq!(item.memory_available_bytes, None);
+        writer
+            .write_sample_with_guest_memory(sample, Some(guest_report()))
+            .unwrap();
+        writer.release(ReleaseMode::Stale).unwrap();
+        let item = registry.snapshot_slots(true).unwrap().remove(0);
+        assert_eq!(item.memory_total_bytes, None);
+        assert_eq!(item.memory_available_bytes, None);
+        cleanup(&name);
     }
 
     #[test]

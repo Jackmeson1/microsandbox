@@ -87,6 +87,7 @@ pub(crate) fn collection(seq: i32) -> MetricsCollection {
                 vcpu_time_ns: seq as u64,
                 memory_bytes: 1,
                 memory_bytes_reported: true,
+                memory_total_bytes: None,
                 memory_available_bytes: Some(2),
                 memory_host_resident_bytes: Some(3),
                 memory_limit_bytes: 2,

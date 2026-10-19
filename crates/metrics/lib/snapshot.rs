@@ -46,6 +46,8 @@ pub struct LiveMetric {
     pub memory_bytes: u64,
     /// Whether `memory_bytes` holds a reported value for this sample.
     pub memory_bytes_reported: bool,
+    /// Fresh guest-reported usable total; unavailable from older writers.
+    pub memory_total_bytes: Option<u64>,
     /// Guest-available memory in bytes when reported by the guest.
     pub memory_available_bytes: Option<u64>,
     /// Host-resident guest memory in bytes for capacity diagnostics.
@@ -82,6 +84,8 @@ pub struct SandboxMetrics {
     pub memory_bytes: u64,
     /// Whether `memory_bytes` holds a reported value for this sample.
     pub memory_bytes_reported: bool,
+    /// Fresh guest-reported usable total; unavailable from older writers.
+    pub memory_total_bytes: Option<u64>,
     /// Guest-available memory in bytes when reported by the guest.
     pub memory_available_bytes: Option<u64>,
     /// Host-resident guest memory in bytes for capacity diagnostics.
@@ -140,6 +144,7 @@ impl From<LiveMetric> for SandboxMetricSnapshot {
                 vcpu_time_ns: live.vcpu_time_ns,
                 memory_bytes: live.memory_bytes,
                 memory_bytes_reported: live.memory_bytes_reported,
+                memory_total_bytes: live.memory_total_bytes,
                 memory_available_bytes: live.memory_available_bytes,
                 memory_host_resident_bytes: live.memory_host_resident_bytes,
                 memory_limit_bytes: live.memory_limit_bytes,
