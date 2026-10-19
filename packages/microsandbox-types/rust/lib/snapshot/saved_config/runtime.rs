@@ -6,31 +6,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::GuestClockPolicy;
-use crate::error::{SnapshotManifestError, SnapshotManifestResult};
-use crate::snapshot::manifest::reject_duplicate_json_keys;
+use crate::error::SnapshotManifestResult;
 use crate::validation::validate_hostname;
 
+use super::validation::{
+    MAX_GUEST_PATH_BYTES, MAX_NAME_BYTES, MAX_SAVED_SCRIPT_BYTES, MAX_SAVED_SCRIPTS_BYTES,
+    MAX_TEXT_BYTES, binding, count, decode, encoded_size, error, invalid,
+};
 use super::value::deserialize_present;
 use super::{SavedText, SavedValue};
-
-//--------------------------------------------------------------------------------------------------
-// Constants
-//--------------------------------------------------------------------------------------------------
-
-/// Maximum encoded portable configuration, within the existing 1 MiB descriptor limit.
-pub const MAX_SAVED_CONFIG_BYTES: usize = 512 * 1024;
-/// Maximum entries in each saved map or argument list.
-pub const MAX_SAVED_CONFIG_ENTRIES: usize = 256;
-/// Maximum UTF-8 bytes in one normalized inline script.
-pub const MAX_SAVED_SCRIPT_BYTES: usize = 64 * 1024;
-/// Maximum combined inline script bytes in one configuration.
-pub const MAX_SAVED_SCRIPTS_BYTES: usize = 256 * 1024;
-
-const MAX_TEXT_BYTES: usize = 64 * 1024;
-const MAX_NAME_BYTES: usize = 256;
-const MAX_GUEST_PATH_BYTES: usize = 4096;
-const MAX_BINDING_ID_BYTES: usize = 128;
-const MAX_CONFIG_DEPTH: usize = 24;
 
 //--------------------------------------------------------------------------------------------------
 // Types
@@ -191,52 +175,14 @@ impl SavedRuntimeConfig {
     /// This is not admission of the complete config extension: binding inventory,
     /// source generation, other policy families and descriptor projections also need validation.
     pub fn from_bytes(bytes: &[u8]) -> SnapshotManifestResult<Self> {
-        if bytes.len() > MAX_SAVED_CONFIG_BYTES {
-            return invalid(
-                "SCFG_LIMIT",
-                "active.runtime",
-                "encoded configuration is too large",
-            );
-        }
-        // The shared duplicate visitor's error can include attacker-controlled keys.
-        // Do not forward its text into logs or SDK errors for this sensitive document.
-        reject_duplicate_json_keys(bytes).map_err(|_| {
-            error(
-                "SCFG_JSON",
-                "active.runtime",
-                "invalid JSON or duplicate object key",
-            )
-        })?;
-        let value: serde_json::Value = serde_json::from_slice(bytes)
-            .map_err(|_| error("SCFG_JSON", "active.runtime", "invalid JSON"))?;
-        validate_tree(&value, 0)?;
-        let config: Self = serde_json::from_value(value).map_err(|_| {
-            error(
-                "SCFG_SCHEMA",
-                "active.runtime",
-                "unknown field, invalid type or invalid value state",
-            )
-        })?;
+        let config: Self = decode(bytes, "active.runtime")?;
         config.validate()?;
         Ok(config)
     }
 
     /// Validate typed construction as strictly as decoding, before capture can serialize it.
     pub fn validate(&self) -> SnapshotManifestResult<()> {
-        let encoded = serde_json::to_vec(self).map_err(|_| {
-            error(
-                "SCFG_SCHEMA",
-                "active.runtime",
-                "cannot encode runtime configuration",
-            )
-        })?;
-        if encoded.len() > MAX_SAVED_CONFIG_BYTES {
-            return invalid(
-                "SCFG_LIMIT",
-                "active.runtime",
-                "encoded configuration is too large",
-            );
-        }
+        encoded_size(self, "active.runtime")?;
         for (field, saved) in [
             ("active.runtime.workdir", &self.workdir),
             ("active.runtime.shell", &self.shell),
@@ -364,33 +310,6 @@ impl SavedRuntimeConfig {
 // Functions
 //--------------------------------------------------------------------------------------------------
 
-fn error(code: &str, field: &str, detail: &str) -> SnapshotManifestError {
-    SnapshotManifestError::ManifestParse(format!("{code}: {field}: {detail}"))
-}
-
-fn invalid<T>(code: &str, field: &str, detail: &str) -> SnapshotManifestResult<T> {
-    Err(error(code, field, detail))
-}
-
-fn count(length: usize, field: &str) -> SnapshotManifestResult<()> {
-    if length > MAX_SAVED_CONFIG_ENTRIES {
-        return invalid("SCFG_LIMIT", field, "too many entries");
-    }
-    Ok(())
-}
-
-fn binding(id: &str, field: &str) -> SnapshotManifestResult<()> {
-    if id.is_empty()
-        || id.len() > MAX_BINDING_ID_BYTES
-        || !id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
-    {
-        return invalid("SCFG_BINDING", field, "invalid logical binding identifier");
-    }
-    Ok(())
-}
-
 fn text(value: &SavedText, field: &str) -> SnapshotManifestResult<()> {
     match value {
         SavedText::Literal { value } if value.len() > MAX_TEXT_BYTES || value.contains('\0') => {
@@ -431,32 +350,6 @@ fn guest_path(value: &str, field: &str) -> SnapshotManifestResult<()> {
             field,
             "expected a bounded absolute guest path",
         );
-    }
-    Ok(())
-}
-
-fn validate_tree(value: &serde_json::Value, depth: usize) -> SnapshotManifestResult<()> {
-    if depth > MAX_CONFIG_DEPTH {
-        return invalid(
-            "SCFG_LIMIT",
-            "active.runtime",
-            "configuration nesting is too deep",
-        );
-    }
-    match value {
-        serde_json::Value::Array(values) => {
-            count(values.len(), "active.runtime")?;
-            for value in values {
-                validate_tree(value, depth + 1)?;
-            }
-        }
-        serde_json::Value::Object(values) => {
-            count(values.len(), "active.runtime")?;
-            for value in values.values() {
-                validate_tree(value, depth + 1)?;
-            }
-        }
-        _ => {}
     }
     Ok(())
 }

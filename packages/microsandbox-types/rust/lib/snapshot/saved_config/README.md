@@ -4,7 +4,7 @@ This is an internal PR3 implementation stage, not an enabled capture or restore 
 
 ## Runtime representation
 
-The runtime section has a closed field inventory: workdir, shell, entrypoint, cmd, env, scripts, init, hostname, user and guest clock. Invocation, logging, metrics configuration, host paths, credentials and arbitrary operational fields are not runtime fallback fields. Resources, labels, security, lifetime, networking, external bindings, provenance and pending configuration belong to separate sections of the complete schema; they are not implemented here yet.
+The runtime section has a closed field inventory: workdir, shell, entrypoint, cmd, env, scripts, init, hostname, user and guest clock. Invocation, logging, metrics configuration, host paths, credentials and arbitrary operational fields are not runtime fallback fields. Resources, labels, guest security, lifetime, the complete binding inventory, provenance and pending configuration belong to separate sections of the complete schema; they are not implemented here yet. Portable network records are described below.
 
 Each field distinguishes absence from `{ "state": "default" }`, `{ "state": "unknown", "reason": "not_recorded" }`, and `{ "state": "value", "value": ..., "origin": "configured" }`. Unknown reasons are closed (`not_recorded`, `not_observed`, `converging`), and origins are closed (`configured`, `image`, `platform`, `observed`). Origins describe evidence; they are never authorization or archive-selected reuse policy. Present null is invalid. Explicit empty argv/maps and false/zero in applicable typed fields remain values.
 
@@ -14,11 +14,31 @@ Init distinguishes a known builtin choice from unknown history. A handoff record
 
 `binding_requirements()` derives potential consumers from actual typed references. Init uses imply `BootInit`; entrypoint/CMD/env uses imply `NewCommand`; script references imply `ScriptBacking`. Shared IDs retain every consumer. This is not a resolver or a readiness decision: resolution must first apply mode, clears and overrides, validate the inventory, combine gateway/captured-execution requirements and enforce the resulting immediate/deferred demands. An artifact-supplied consumer claim cannot downgrade an actual init use to a future command.
 
+## Network representation and secret projection
+
+The network section records ordered policy, DNS/TLS/secret policy, connection and queue caps, rate-limit parameters, NAT64 prefixes, guest services, logical trust requirements, denial-response settings and proxy protocol intent. It has no endpoint, host-port, CA path, private-key, proxy-password or host secret-source fields. These resources use logical destination references. Recorded interface allocation identity belongs to separate capture provenance and authoritative full-state metadata, not a reusable destination allocation default. Cache capacity/validity are destination tuning/provenance; generated certificates and private cache state are not exported as launch defaults.
+
+| Current source fields | Portable treatment |
+| --- | --- |
+| `enabled`, `policy`, `strict`, `nat64_prefixes` | Explicit policy data; ordered rules are preserved. |
+| `dns` | Protection and timeout settings plus destination resolver references. Empty references use destination discovery. |
+| `tls` | Policy and logical trust bindings; no cert/key paths or generated cache. |
+| `secrets` | Placeholder identity, allowed hosts, substitution and violation policy with a destination binding per secret. |
+| Connection caps, accept queue, rate limiter, `http` | Typed tuning, preserving zero-as-unlimited and empty-message semantics. |
+| `ports` | Guest service plus logical listener binding. Identity is binding plus protocol: different host listeners may forward to the same guest port. |
+| `trust_host_cas` | Guest trust requirements with destination bindings; no automatic source-host CA lookup. |
+| `outbound_proxy` | Protocol plus separate endpoint/credential references; missing requirements must not become direct routing. |
+| `interface` | Separate captured identity/provenance; never source allocation authority in this reusable section. |
+
+`SavedSecretsConfig::from_source()` is the first explicit capture projection. It exhaustively destructures existing secret types, copies only the policy fields and requires a caller-selected destination binding for every secret. It neither reads nor clones the resolved value or host-side source. Missing/misspelled mappings and duplicate identities fail without echoing source values; diagnostics can identify the affected entry by index. This helper does not yet implement full sandbox capture exclusions, literal-env provenance or binding activation. Synthetic sentinel tests cover both a resolved credential and a distinct host source-variable name.
+
+Saved disabled safeguards remain recorded rather than silently rewritten. Parsing a false rebind/verification setting or a bypass rule is not consent to apply it: the resolver must still demand relevant explicit destination approval, enforce mandatory policy and establish gateway/captured-connection compatibility before execution. That resolver and the complete binding inventory are not enabled by these types.
+
 ## Draft bounds and diagnostics
 
 These internal limits are explicit, tested and subject to the complete schema's milestone-1 review before exposure. Encoded saved config is bounded to 512 KiB within the descriptor's existing 1 MiB limit; maps/argument lists to 256 entries; nesting to 24 levels; each inline script to 64 KiB and all inline scripts to 256 KiB. Logical binding IDs use at most 128 ASCII alphanumeric, dot, underscore or hyphen bytes. Names are bounded to 256 UTF-8 bytes. Text arguments/env values are bounded to 64 KiB and exclude NUL; guest command settings/user/init paths are bounded to 4096 bytes. Script names must be a single component; destination-specific filename restrictions still need enforcement before host materialization. Permission bits exclude setuid, setgid, sticky and object-type bits.
 
-Decode rejects duplicate keys before typed conversion and unknown fields at every operational record, including empty variants. Serde internally tagged unit variants do not reject additional fields, so the empty default/builtin variants deliberately use strict empty struct variants. Existing `SnapshotManifestError::ManifestParse` carries `SCFG_JSON`, `SCFG_SCHEMA`, `SCFG_LIMIT`, `SCFG_VALUE`, `SCFG_BINDING` or `SCFG_INTEGRITY` plus a fixed field path and safe explanation. Rejected values and unknown keys are not echoed. Debug output for saved values hides literal content and binding IDs. The complete descriptor boundary must preserve this redaction behavior too.
+Decode rejects duplicate keys before typed conversion and unknown fields at every operational record, including empty variants. All numbers must remain exact JSON-safe integers, matching descriptor canonicalization; typed construction is checked too. Serde internally tagged unit variants do not reject additional fields, so the empty default/builtin variants deliberately use strict empty struct variants. Existing `SnapshotManifestError::ManifestParse` carries `SCFG_JSON`, `SCFG_SCHEMA`, `SCFG_LIMIT`, `SCFG_VALUE`, `SCFG_BINDING`, `SCFG_IDENTITY` or `SCFG_INTEGRITY` plus a field path and safe explanation. Rejected values and unknown keys are not echoed. Debug output for saved values hides literal content and binding IDs. The complete descriptor boundary must preserve this redaction behavior too.
 
 ## Remaining integration gates
 
