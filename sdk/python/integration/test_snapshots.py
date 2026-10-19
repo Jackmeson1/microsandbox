@@ -34,7 +34,9 @@ async def test_snapshot_create_open_list_and_boot(sandbox_name, tmp_path, source
     snapshot_selector = f"{snapshot_name}:ready"
     await remove_snapshot(snapshot_selector)
 
-    base = await Sandbox.create(base_name, image=Image.oci(IMAGE, root_disk=256), cpus=1, memory=512, replace=True)
+    base = await Sandbox.create(
+        base_name, image=Image.oci(IMAGE, root_disk=256), cpus=1, memory=512, replace=True
+    )
     fork = None
     copied_group = None
     group = None
@@ -43,7 +45,9 @@ async def test_snapshot_create_open_list_and_boot(sandbox_name, tmp_path, source
         await base.stop()
 
         base_handle = await Sandbox.get(base_name)
-        created = await base_handle.snapshot(snapshot_name, initial_checkpoint="ready", record_integrity=True)
+        created = await base_handle.snapshot(
+            snapshot_name, initial_checkpoint="ready", record_integrity=True
+        )
         group = created.snapshot
         snapshot = created.checkpoint
         assert snapshot.digest

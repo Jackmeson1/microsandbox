@@ -9,7 +9,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from microsandbox import Sandbox, Checkpoint, Volume
+from microsandbox import Checkpoint, Sandbox, Volume
 
 IMAGE = os.environ.get("MICROSANDBOX_PYTHON_INTEGRATION_IMAGE", "mirror.gcr.io/library/alpine")
 
