@@ -1860,6 +1860,27 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn read_only_external_snapshot_needs_no_sidecar_directory() {
+        const CHILD: &str = "MSB_TEST_READONLY_SNAPSHOT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // The final assertion requires all reader descriptors to be closed.
+            // Parallel subprocess tests may inherit the flock until their exec,
+            // so run this ownership check without unrelated fork producers.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg("backend::local::snapshot::store::tests::read_only_external_snapshot_needs_no_sidecar_directory")
+                .arg("--nocapture")
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
         use std::os::unix::fs::PermissionsExt;
         let home = tempfile::tempdir().unwrap();
         let external = tempfile::tempdir().unwrap();
