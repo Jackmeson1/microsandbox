@@ -1566,6 +1566,27 @@ mod tests {
 
     #[tokio::test]
     async fn pending_batch_recovery_defers_live_publishers_and_commits_all_rows_together() {
+        const CHILD: &str = "MSB_TEST_BATCH_RECOVERY_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // Parallel fork-based tests can inherit the publisher's flock until exec.
+            // A busy namespace correctly defers recovery, so isolate the injected SQL
+            // failure test instead of weakening production admission or retrying errors.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg("backend::local::snapshot::store::tests::pending_batch_recovery_defers_live_publishers_and_commits_all_rows_together")
+                .arg("--nocapture")
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
         let home = tempfile::tempdir().unwrap();
         let local = crate::test_support::local_backend_builder(home.path())
             .build()
