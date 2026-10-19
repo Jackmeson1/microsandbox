@@ -2900,6 +2900,9 @@ export interface SnapshotVerifyReport {
   upperDigest?: string
   /** Verified composite-checkpoint root, when the artifact is full. */
   checkpointRoot?: string
+  /** Coverage of every required payload, independent of the head-only upper projection. */
+  coverageKind: string
+  unrecorded: Array<string>
 }
 
 /** Options accepted by `SshClient.attach()`. */

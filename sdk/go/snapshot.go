@@ -111,9 +111,18 @@ type SnapshotVerifyReport struct {
 	Path       string
 	Upper      SnapshotUpperVerifyStatus
 	Checkpoint *SnapshotCheckpointVerifyStatus
+	Coverage   SnapshotVerifyCoverage
 }
 
-// SnapshotCheckpointVerifyStatus identifies a fully verified checkpoint closure.
+// SnapshotVerifyCoverage describes all required payloads, including ancestors and owned disks.
+type SnapshotVerifyCoverage struct {
+	// Kind is complete, incomplete, or unknown for older native libraries without coverage reports.
+	Kind       string
+	Unrecorded []string
+}
+
+// SnapshotCheckpointVerifyStatus identifies verified closure metadata and recorded integrity.
+// Consult Coverage before treating every required payload as authenticated.
 type SnapshotCheckpointVerifyStatus struct {
 	Kind string
 	Root string
@@ -625,13 +634,20 @@ func normalizeSnapshotScope(scope string) string {
 
 func snapshotVerifyReportFromInfo(info *ffi.SnapshotVerifyReport) *SnapshotVerifyReport {
 	report := &SnapshotVerifyReport{
-		Digest: info.Digest,
-		Path:   info.Path,
+		Digest:   info.Digest,
+		Path:     info.Path,
+		Coverage: SnapshotVerifyCoverage{Kind: "unknown"},
 		Upper: SnapshotUpperVerifyStatus{
 			Kind:      info.Upper.Kind,
 			Algorithm: info.Upper.Algorithm,
 			Digest:    info.Upper.Digest,
 		},
+	}
+	if info.Coverage != nil {
+		report.Coverage = SnapshotVerifyCoverage{
+			Kind:       info.Coverage.Kind,
+			Unrecorded: append([]string(nil), info.Coverage.Unrecorded...),
+		}
 	}
 	if info.Checkpoint != nil {
 		report.Checkpoint = &SnapshotCheckpointVerifyStatus{

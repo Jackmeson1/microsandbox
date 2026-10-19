@@ -563,6 +563,8 @@ await (
 
 #### <span className="msb-recv">snap.</span><span className="msb-hn">verify()</span>
 
+Check `report["coverage"]["kind"]` for `complete` or `incomplete` before treating all payloads as authenticated. Incomplete coverage lists required payload paths without recorded checksums, including ancestors and owned disks. The existing upper/head and checkpoint-root fields do not establish whole-artifact coverage. Corruption still raises an error.
+
 ```python
 async def verify(self) -> dict[str, Any]
 ```

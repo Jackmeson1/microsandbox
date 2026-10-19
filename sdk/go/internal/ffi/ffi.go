@@ -5579,9 +5579,13 @@ type SnapshotHandleInfo struct {
 }
 
 type SnapshotVerifyReport struct {
-	Digest string `json:"digest"`
-	Path   string `json:"path"`
-	Upper  struct {
+	Digest   string `json:"digest"`
+	Path     string `json:"path"`
+	Coverage *struct {
+		Kind       string   `json:"kind"`
+		Unrecorded []string `json:"unrecorded,omitempty"`
+	} `json:"coverage,omitempty"`
+	Upper struct {
 		Kind      string `json:"kind"`
 		Algorithm string `json:"algorithm,omitempty"`
 		Digest    string `json:"digest,omitempty"`

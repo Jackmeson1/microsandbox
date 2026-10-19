@@ -130,6 +130,8 @@ msb snap verify worker:ready
 
 Without disk hashes, size and structure checks cannot detect same-size corruption. Full snapshots also validate their memory and execution objects. See [integrity](/sandboxes/snapshots#verify-integrity).
 
+Verification exits unsuccessfully for corrupt content or incomplete integrity coverage. Incomplete output lists every required disk payload without a recorded checksum, including ancestor layers and owned disks. A verified head or full-checkpoint root alone does not mean every disk payload was authenticated. `inspect --verify` applies the same coverage requirement.
+
 <span id="msb-snapshot-remove" />
 
 ## msb snap rm

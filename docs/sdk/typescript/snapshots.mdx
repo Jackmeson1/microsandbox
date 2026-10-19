@@ -589,6 +589,8 @@ await snap
 
 #### <span className="msb-recv">snap.</span><span className="msb-hn">verify()</span>
 
+Check `report.coverage.kind` for `complete` or `incomplete` before treating all payloads as authenticated. Incomplete coverage lists required payload paths without recorded checksums, including ancestors and owned disks. The existing upper/head and checkpoint-root fields do not establish whole-artifact coverage. Corruption still raises an error. An older native library without coverage support reports `unknown`; a verified head is not promoted to complete coverage.
+
 ```typescript
 verify(): Promise<SnapshotVerifyReport>
 ```
@@ -1016,7 +1018,13 @@ Result of [`snap.verify()`](#snap-verify). Checkpoint snapshots add `checkpoint:
 <p className="msb-backref">Returned by <a href="#snap-verify">snap.verify()</a></p>
 
 ```typescript
-type SnapshotVerifyReport =
+type SnapshotVerifyCoverage =
+  | { readonly kind: "complete" }
+  | { readonly kind: "incomplete"; readonly unrecorded: readonly string[] }
+  | { readonly kind: "unknown" };
+
+/** Result of an explicit `Checkpoint.verify()` call. Corruption rejects the call. */
+type SnapshotVerifyReport = { readonly coverage: SnapshotVerifyCoverage } & (
   | {
       readonly digest: string;
       readonly path: string;
@@ -1032,13 +1040,15 @@ type SnapshotVerifyReport =
         readonly digest: string;
       };
       readonly checkpoint?: { readonly kind: "verified"; readonly root: string };
-    };
+    }
+);
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `digest` | `string` | Snapshot's manifest digest. |
 | `path` | `string` | Artifact directory path. |
+| `coverage` | `SnapshotVerifyCoverage` | `complete`, `incomplete` with `unrecorded` paths, or `unknown` on older native libraries. |
 | `upper.kind` | `"notRecorded" \| "verified"` | Whether an integrity hash was recorded and checked. |
 | `upper.algorithm` | `string` | Hash algorithm (`"verified"` only). |
 | `checkpoint` | `{ kind: "verified"; root: string }` | Verified checkpoint closure identity when state is full. |

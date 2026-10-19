@@ -6608,6 +6608,7 @@ fn verify_report_json(report: microsandbox::snapshot::SnapshotVerifyReport) -> s
         "path": report.path.display().to_string(),
         "upper": upper,
         "checkpoint": checkpoint,
+        "coverage": report.coverage,
     })
 }
 

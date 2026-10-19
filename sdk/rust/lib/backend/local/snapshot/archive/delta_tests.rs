@@ -539,6 +539,134 @@ async fn as_owned_file_snapshot(local: &LocalBackend, snapshot: Snapshot) -> Sna
 }
 
 #[tokio::test]
+async fn full_verification_reports_hashless_disk_without_claiming_complete_coverage() {
+    use crate::snapshot::SnapshotVerifyCoverage;
+
+    let temp = tempfile::tempdir().unwrap();
+    let local = LocalBackend::builder()
+        .home(temp.path().join("home"))
+        .build()
+        .await
+        .unwrap();
+    let snapshot = fixture(&local, &temp.path().join("full"), 1, None, true).await;
+    let report = super::super::super::verify::verify_snapshot(&snapshot, DEFAULT_FS_STATE_LIMIT)
+        .await
+        .unwrap();
+    assert_eq!(report.coverage, SnapshotVerifyCoverage::Complete);
+    assert!(report.checkpoint.is_some());
+
+    let root = snapshot.path().join(CHECKPOINT_DIRECTORY);
+    let closure = CheckpointClosure::open_portable(&root, None, DEFAULT_FS_STATE_LIMIT).unwrap();
+    let objects = LocalObjectStore::open(&root).unwrap();
+    let mut disk = closure.disks()[0].clone();
+    disk.layers[0].integrity_root = None;
+    let expected_path = closure.disk_layer_path(&disk.layers[0]);
+    let mut checkpoint = closure.checkpoint().clone();
+    checkpoint.disks = vec![
+        objects
+            .put_bytes(&disk.to_canonical_bytes().unwrap())
+            .unwrap(),
+    ];
+    let bytes = checkpoint.to_canonical_bytes().unwrap();
+    let mut manifest = snapshot.manifest().clone();
+    let SnapshotState::Checkpoint(state) = &mut manifest.state else {
+        unreachable!()
+    };
+    state.checkpoint_root = ObjectId::from_bytes(&bytes).unwrap().to_string();
+    std::fs::write(root.join("checkpoint.json"), bytes).unwrap();
+    std::fs::write(
+        snapshot.path().join(DESCRIPTOR_FILENAME),
+        manifest.to_canonical_bytes().unwrap(),
+    )
+    .unwrap();
+    let snapshot = store::open_snapshot(&local, snapshot.path().to_str().unwrap())
+        .await
+        .unwrap();
+
+    let report = super::super::super::verify::verify_snapshot(&snapshot, DEFAULT_FS_STATE_LIMIT)
+        .await
+        .unwrap();
+    assert!(report.checkpoint.is_some());
+    assert_eq!(
+        report.coverage,
+        SnapshotVerifyCoverage::Incomplete {
+            unrecorded: vec![expected_path]
+        }
+    );
+    let MemoryExtentContent::Object(content) = &closure.memory().extents[0].content else {
+        unreachable!()
+    };
+    std::fs::write(objects.object_path(&content.object), vec![0; 8192]).unwrap();
+    assert!(
+        super::super::super::verify::verify_snapshot(&snapshot, DEFAULT_FS_STATE_LIMIT)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn disk_verification_reports_hashless_owned_disks_even_with_verified_root() {
+    use crate::snapshot::{SnapshotVerifyCoverage, UpperVerifyStatus};
+    use microsandbox_image::snapshot::{OwnedVolumeData, UpperIntegrity};
+    use sha2::{Digest, Sha256};
+
+    let temp = tempfile::tempdir().unwrap();
+    let local = LocalBackend::builder()
+        .home(temp.path().join("home"))
+        .build()
+        .await
+        .unwrap();
+    let snapshot = fixture(&local, &temp.path().join("owned"), 2, None, false).await;
+    let snapshot = with_owned_volumes(&local, snapshot, 2).await;
+    let snapshot = as_owned_file_snapshot(&local, snapshot).await;
+    let mut manifest = snapshot.manifest().clone();
+    let SnapshotState::File(state) = &mut manifest.state else {
+        unreachable!()
+    };
+    let root_path = snapshot.path().join(state.layer_path(&state.layers[0]));
+    state.layers[0].payload.integrity = Some(UpperIntegrity::Sha256 {
+        digest: format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(std::fs::read(root_path).unwrap()))
+        ),
+    });
+    let mut volumes = manifest.owned_volumes().unwrap();
+    let mut unrecorded = Vec::new();
+    for volume in &mut volumes {
+        if let OwnedVolumeData::Disk { generation } = &mut volume.data {
+            for layer in &mut generation.layers {
+                layer.integrity_root = None;
+                unrecorded.push(
+                    snapshot
+                        .path()
+                        .join("layers")
+                        .join(format!("{}.{}", layer.layer_id, layer.format)),
+                );
+            }
+        }
+    }
+    assert!(!unrecorded.is_empty());
+    unrecorded.sort();
+    manifest.set_owned_volumes(volumes).unwrap();
+    std::fs::write(
+        snapshot.path().join(DESCRIPTOR_FILENAME),
+        manifest.to_canonical_bytes().unwrap(),
+    )
+    .unwrap();
+    let snapshot = store::open_snapshot(&local, snapshot.path().to_str().unwrap())
+        .await
+        .unwrap();
+    let report = super::super::super::verify::verify_snapshot(&snapshot, DEFAULT_FS_STATE_LIMIT)
+        .await
+        .unwrap();
+    assert!(matches!(report.upper, UpperVerifyStatus::Verified { .. }));
+    assert_eq!(
+        report.coverage,
+        SnapshotVerifyCoverage::Incomplete { unrecorded }
+    );
+}
+
+#[tokio::test]
 async fn owned_qcow2_file_delta_and_direct_archive_preserve_physical_identity() {
     let temp = tempfile::tempdir().unwrap();
     let local = LocalBackend::builder()

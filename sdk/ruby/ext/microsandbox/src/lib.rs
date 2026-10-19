@@ -3015,6 +3015,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     snapshot.define_method("reference_kind", method!(RubySnapshot::reference_kind, 0))?;
     snapshot.define_method("save_to", method!(RubySnapshot::save_to, -1))?;
     snapshot.define_method("save", method!(RubySnapshot::save_to, -1))?;
+    snapshot.define_method("verify", method!(RubySnapshot::verify, 0))?;
 
     let snap_handle = module.define_class("SnapshotHandle", ruby.class_object())?;
     snap_handle.define_method("id", method!(RubySnapshotHandle::id, 0))?;

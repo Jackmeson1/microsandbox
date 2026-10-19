@@ -562,6 +562,8 @@ Stable opaque `snap_...` identity.
 
 #### <span className="msb-recv">s.</span><span className="msb-hn">Verify()</span>
 
+Check `Coverage.Kind` for `complete` or `incomplete` before treating all payloads as authenticated. Incomplete coverage lists required payload paths without recorded checksums, including ancestors and owned disks. The existing upper/head and checkpoint-root fields do not establish whole-artifact coverage. Corruption still raises an error. An older native library without coverage support reports `unknown`; a verified head is not promoted to complete coverage.
+
 ```go
 func (s *SnapshotArtifact) Verify(ctx context.Context) (*SnapshotVerifyReport, error)
 ```
@@ -1130,6 +1132,7 @@ Result of [`Verify`](#s-verify).
 | Path | `string` | Artifact directory that was verified |
 | Upper | [`SnapshotUpperVerifyStatus`](#snapshotupperverifystatusstruct) | Upper-layer integrity status |
 | Checkpoint | `*SnapshotCheckpointVerifyStatus` | Verified checkpoint root for full state; otherwise `nil` |
+| Coverage | `SnapshotVerifyCoverage` | `Kind` is `complete`, `incomplete`, or `unknown`; `Unrecorded` lists unchecked payloads without checksums |
 
 ### SnapshotUpperVerifyStatus<span className="msb-tag is-type" style={{marginLeft: "8px"}}>struct</span>
 

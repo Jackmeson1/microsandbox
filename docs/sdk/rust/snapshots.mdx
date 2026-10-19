@@ -674,16 +674,21 @@ async fn verify(&self) -> MicrosandboxResult<SnapshotVerifyReport>
 <Accordion title="Example">
 
 ```rust
-use microsandbox::snapshot::UpperVerifyStatus;
+use microsandbox::snapshot::SnapshotVerifyCoverage;
 
-let snap = Snapshot::open("api:baseline").await?;
-match snap.verify().await?.upper {
-    UpperVerifyStatus::Verified { algorithm, .. } => println!("ok via {algorithm}"),
-    UpperVerifyStatus::NotRecorded => println!("no integrity hash recorded"),
+let group = Snapshot::get("api").await?;
+let checkpoint = group.get_checkpoint("baseline").await?;
+match checkpoint.verify().await?.coverage {
+    SnapshotVerifyCoverage::Complete => println!("all required payload integrity verified"),
+    SnapshotVerifyCoverage::Incomplete { unrecorded } => {
+        println!("incomplete: {} payload(s) have no checksum", unrecorded.len());
+    }
 }
 ```
 
 </Accordion>
+
+Check `coverage` for complete versus incomplete integrity coverage, including ancestor layers and owned disks. `upper` remains the head-only projection; `checkpoint` identifies verified composite metadata and recorded integrity. Missing checksums produce `SnapshotVerifyCoverage::Incomplete { unrecorded }`; corruption still returns an error.
 
 Verify the snapshot's complete state closure. File state recomputes recorded upper-layer integrity and returns `NotRecorded` without reading the payload when integrity is absent. Checkpoint state validates the root, manifests, disk layers, device/execution objects, and every referenced memory object, then returns the verified checkpoint root.
 
@@ -1279,6 +1284,7 @@ Result of explicit snapshot verification.
 | path | `PathBuf` | Artifact directory |
 | upper | [`UpperVerifyStatus`](#upperverifystatus) | Upper-layer result; retained as `NotRecorded` for checkpoint state |
 | checkpoint | `Option<CheckpointVerifyStatus>` | Verified checkpoint root for full state |
+| coverage | `SnapshotVerifyCoverage` | `Complete` or `Incomplete { unrecorded: Vec<PathBuf> }`; includes every required disk payload |
 
 ### UpperVerifyStatus
 

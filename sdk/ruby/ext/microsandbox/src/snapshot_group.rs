@@ -4,6 +4,7 @@ use magnus::{
     Error, RArray, RHash, RModule, Ruby, Value, function, method, prelude::*, scan_args::scan_args,
     typed_data,
 };
+use microsandbox_core::snapshot::{SnapshotVerifyCoverage, UpperVerifyStatus};
 use microsandbox_core::{
     CheckpointCaptureResult, Snapshot, SnapshotCaptureOptions, SnapshotCreateResult,
 };
@@ -143,6 +144,46 @@ impl RubyGroup {
 impl RubySnapshot {
     pub(super) fn id(&self) -> String {
         self.inner.id().to_string()
+    }
+
+    pub(super) fn verify(ruby: &Ruby, this: typed_data::Obj<Self>) -> Result<RHash, Error> {
+        let checkpoint = this.inner.clone();
+        let report = run(ruby, async move { checkpoint.verify().await })?;
+        let result = ruby.hash_new();
+        result.aset("digest", report.digest)?;
+        result.aset("path", report.path.display().to_string())?;
+        let upper = ruby.hash_new();
+        match report.upper {
+            UpperVerifyStatus::NotRecorded => upper.aset("kind", "not_recorded")?,
+            UpperVerifyStatus::Verified { algorithm, digest } => {
+                upper.aset("kind", "verified")?;
+                upper.aset("algorithm", algorithm)?;
+                upper.aset("digest", digest)?;
+            }
+        }
+        result.aset("upper", upper)?;
+        if let Some(checkpoint) = report.checkpoint {
+            let state = ruby.hash_new();
+            state.aset("kind", "verified")?;
+            state.aset("root", checkpoint.root)?;
+            result.aset("checkpoint", state)?;
+        } else {
+            result.aset("checkpoint", ruby.qnil())?;
+        }
+        let coverage = ruby.hash_new();
+        match report.coverage {
+            SnapshotVerifyCoverage::Complete => coverage.aset("kind", "complete")?,
+            SnapshotVerifyCoverage::Incomplete { unrecorded } => {
+                coverage.aset("kind", "incomplete")?;
+                let paths = ruby.ary_new();
+                for path in unrecorded {
+                    paths.push(path.display().to_string())?;
+                }
+                coverage.aset("unrecorded", paths)?;
+            }
+        }
+        result.aset("coverage", coverage)?;
+        Ok(result)
     }
 }
 

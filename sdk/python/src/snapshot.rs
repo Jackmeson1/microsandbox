@@ -688,6 +688,23 @@ impl PySnapshot {
                 out.set_item("digest", report.digest)?;
                 out.set_item("path", report.path.display().to_string())?;
                 out.set_item("upper", upper)?;
+                let coverage = PyDict::new(py);
+                match report.coverage {
+                    microsandbox::snapshot::SnapshotVerifyCoverage::Complete => {
+                        coverage.set_item("kind", "complete")?;
+                    }
+                    microsandbox::snapshot::SnapshotVerifyCoverage::Incomplete { unrecorded } => {
+                        coverage.set_item("kind", "incomplete")?;
+                        coverage.set_item(
+                            "unrecorded",
+                            unrecorded
+                                .into_iter()
+                                .map(|path| path.display().to_string())
+                                .collect::<Vec<_>>(),
+                        )?;
+                    }
+                }
+                out.set_item("coverage", coverage)?;
                 if let Some(checkpoint) = report.checkpoint {
                     let checkpoint_out = PyDict::new(py);
                     checkpoint_out.set_item("kind", "verified")?;

@@ -27,8 +27,8 @@ pub use microsandbox_types::snapshot::{
 };
 pub use microsandbox_types::{GuestFlush, SnapshotSpec, SnapshotSpec as SnapshotConfig};
 pub use types::{
-    CheckpointVerifyStatus, HeadUpdate, HeadUpdateReason, LoadOpts, SaveOpts, SnapshotVerifyReport,
-    UpperVerifyStatus,
+    CheckpointVerifyStatus, HeadUpdate, HeadUpdateReason, LoadOpts, SaveOpts,
+    SnapshotVerifyCoverage, SnapshotVerifyReport, UpperVerifyStatus,
 };
 
 #[cfg(feature = "local")]

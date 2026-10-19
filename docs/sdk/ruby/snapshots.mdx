@@ -497,3 +497,13 @@ Export through the backend retained by this handle. Archive export is local-only
     <div className="msb-param-desc">No return value.</div>
   </div>
 </div>
+
+## Checkpoint verification
+
+```ruby
+checkpoint = Microsandbox::Snapshot.get("templates").get_checkpoint("ready")
+report = checkpoint.verify
+puts report["coverage"]["kind"]
+```
+
+`verify` returns a hash with `digest`, `path`, `upper`, `checkpoint`, and `coverage`. Coverage is `complete` or `incomplete`; incomplete coverage includes an `unrecorded` array of required payload paths without checksums, including ancestor layers and owned disks. The upper/head checksum or checkpoint-root result alone does not establish complete coverage. Corruption raises an error.

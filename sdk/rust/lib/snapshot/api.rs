@@ -278,6 +278,9 @@ impl Checkpoint {
 impl Checkpoint {
     /// Verify this snapshot's recorded integrity.
     ///
+    /// Corruption is an error. A successful report may still have incomplete `coverage` when
+    /// required payload checksums were not recorded; `upper` describes only the head layer.
+    ///
     /// This artifact-file operation is currently local-only. Other backends
     /// return [`crate::MicrosandboxError::Unsupported`].
     pub async fn verify(&self) -> MicrosandboxResult<SnapshotVerifyReport> {

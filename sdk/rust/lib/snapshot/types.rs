@@ -3,6 +3,10 @@
 use serde::Serialize;
 use std::path::PathBuf;
 
+//--------------------------------------------------------------------------------------------------
+// Types
+//--------------------------------------------------------------------------------------------------
+
 /// Result of explicit snapshot verification.
 #[derive(Debug, Clone)]
 pub struct SnapshotVerifyReport {
@@ -14,6 +18,22 @@ pub struct SnapshotVerifyReport {
     pub upper: UpperVerifyStatus,
     /// Composite-checkpoint closure verification result, when this is a full snapshot.
     pub checkpoint: Option<CheckpointVerifyStatus>,
+    /// Whether every required payload had recorded integrity, including ancestors and owned disks.
+    /// The legacy `upper` field describes only the head and cannot establish this coverage.
+    pub coverage: SnapshotVerifyCoverage,
+}
+
+/// Integrity coverage of a successful verification operation. Corruption still returns an error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SnapshotVerifyCoverage {
+    /// All required payload integrity was recorded and checked.
+    Complete,
+    /// These payloads have no recorded checksum; their contents cannot be authenticated.
+    Incomplete {
+        /// Artifact payload paths with unrecorded integrity, in deterministic order.
+        unrecorded: Vec<PathBuf>,
+    },
 }
 
 /// Verified identity of a composite-checkpoint closure.

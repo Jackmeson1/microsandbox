@@ -92,6 +92,9 @@ pub struct JsSnapshotVerifyReport {
     pub upper_digest: Option<String>,
     /// Verified composite-checkpoint root, when the artifact is full.
     pub checkpoint_root: Option<String>,
+    /// Coverage of every required payload, independent of the head-only upper projection.
+    pub coverage_kind: String,
+    pub unrecorded: Vec<String>,
 }
 
 /// Options for `Snapshot.remove()` (instance and static).
@@ -804,6 +807,16 @@ pub(crate) fn head_update_to_js(update: &microsandbox::snapshot::HeadUpdate) -> 
 fn verify_report_to_js(
     report: microsandbox::snapshot::SnapshotVerifyReport,
 ) -> JsSnapshotVerifyReport {
+    let (coverage_kind, unrecorded) = match report.coverage {
+        microsandbox::snapshot::SnapshotVerifyCoverage::Complete => ("complete", Vec::new()),
+        microsandbox::snapshot::SnapshotVerifyCoverage::Incomplete { unrecorded } => (
+            "incomplete",
+            unrecorded
+                .into_iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+        ),
+    };
     let checkpoint_root = report.checkpoint.map(|checkpoint| checkpoint.root);
     let (kind, algorithm, digest) = match report.upper {
         RustUpperVerifyStatus::NotRecorded => ("notRecorded".to_string(), None, None),
@@ -818,6 +831,8 @@ fn verify_report_to_js(
         upper_algorithm: algorithm,
         upper_digest: digest,
         checkpoint_root,
+        coverage_kind: coverage_kind.into(),
+        unrecorded,
     }
 }
 

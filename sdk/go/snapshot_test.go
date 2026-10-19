@@ -23,6 +23,32 @@ var (
 	_ snapshotCopier = (*SnapshotArtifact)(nil)
 )
 
+func TestSnapshotVerificationCoveragePreservesUncertainty(t *testing.T) {
+	for _, test := range []struct{ body, want string }{
+		{`{"upper":{"kind":"verified"}}`, "unknown"},
+		{`{"coverage":{"kind":"complete"}}`, "complete"},
+		{`{"upper":{"kind":"verified"},"coverage":{"kind":"incomplete","unrecorded":["base.raw"]}}`, "incomplete"},
+	} {
+		var native ffi.SnapshotVerifyReport
+		if err := json.Unmarshal([]byte(test.body), &native); err != nil {
+			t.Fatal(err)
+		}
+		report := snapshotVerifyReportFromInfo(&native)
+		if report.Coverage.Kind != test.want {
+			t.Fatalf("coverage = %q, want %q", report.Coverage.Kind, test.want)
+		}
+		if test.want == "incomplete" {
+			if report.Upper.Kind != "verified" || len(report.Coverage.Unrecorded) != 1 || report.Coverage.Unrecorded[0] != "base.raw" {
+				t.Fatalf("lost coverage or head: %+v", report)
+			}
+			native.Coverage.Unrecorded[0] = "changed"
+			if report.Coverage.Unrecorded[0] != "base.raw" {
+				t.Fatal("report aliases native path slice")
+			}
+		}
+	}
+}
+
 func TestSnapshotCopyBuilderCopiesMutableInput(t *testing.T) {
 	snapshot := &SnapshotArtifact{reference: "/snapshots/example", referenceKind: "path"}
 	labels := map[string]string{"environment": "test"}

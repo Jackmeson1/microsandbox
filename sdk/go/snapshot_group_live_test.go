@@ -174,3 +174,41 @@ func TestSnapshotGroupsLive(t *testing.T) {
 	}
 
 }
+
+// The isolated fixture harness installs complete, incomplete, corrupt and future groups.
+// This exercises the real native report/error boundary, not a mocked JSON projection.
+func TestSnapshotVerificationCoverageLive(t *testing.T) {
+	if os.Getenv("MSB_TEST_VERIFY_GROUPS") != "1" {
+		t.Skip("requires isolated verification fixture groups")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	for _, name := range []string{"complete", "incomplete", "corrupt", "future"} {
+		t.Run(name, func(t *testing.T) {
+			group, err := Snapshot.Get(ctx, name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkpoint, err := group.Head(ctx)
+			if err != nil || checkpoint == nil {
+				t.Fatalf("head: %v", err)
+			}
+			report, err := checkpoint.Verify(ctx)
+			if name == "corrupt" || name == "future" {
+				if err == nil {
+					t.Fatalf("verification accepted %s: %+v", name, report)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Coverage.Kind != name {
+				t.Fatalf("coverage: %+v", report.Coverage)
+			}
+			if name == "incomplete" && len(report.Coverage.Unrecorded) == 0 {
+				t.Fatal("missing unchecked payload paths")
+			}
+		})
+	}
+}

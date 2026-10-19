@@ -685,6 +685,7 @@ async fn inspect(args: SnapshotInspectArgs) -> anyhow::Result<()> {
     if args.verify {
         let report = snap.verify().await?;
         ui::detail_kv("Verification", &format_verify_status(&report.upper));
+        require_complete_verification(&report.coverage)?;
     }
     if let Some(ref src) = m.capture.source_lineage {
         ui::detail_kv("Source Sandbox", src);
@@ -724,7 +725,28 @@ async fn verify(args: SnapshotVerifyArgs) -> anyhow::Result<()> {
     } else {
         ui::detail_kv("Verification", &format_verify_status(&report.upper));
     }
-    Ok(())
+    require_complete_verification(&report.coverage)
+}
+
+fn require_complete_verification(
+    coverage: &microsandbox::snapshot::SnapshotVerifyCoverage,
+) -> anyhow::Result<()> {
+    match coverage {
+        microsandbox::snapshot::SnapshotVerifyCoverage::Complete => {
+            ui::detail_kv("Coverage", "complete");
+            Ok(())
+        }
+        microsandbox::snapshot::SnapshotVerifyCoverage::Incomplete { unrecorded } => {
+            ui::detail_kv("Coverage", "incomplete");
+            for path in unrecorded {
+                ui::detail_kv("Not recorded", &path.display().to_string());
+            }
+            anyhow::bail!(
+                "verification incomplete: {} required payload(s) have no recorded integrity",
+                unrecorded.len()
+            );
+        }
+    }
 }
 
 async fn remove(args: SnapshotRemoveArgs) -> anyhow::Result<()> {
@@ -949,6 +971,17 @@ mod tests {
 
     fn parse_snapshot_args(args: &[&str]) -> SnapshotArgs {
         TestCli::parse_from(std::iter::once("msb").chain(args.iter().copied())).args
+    }
+
+    #[test]
+    fn incomplete_verification_cannot_exit_successfully() {
+        use microsandbox::snapshot::SnapshotVerifyCoverage;
+        assert!(require_complete_verification(&SnapshotVerifyCoverage::Complete).is_ok());
+        let error = require_complete_verification(&SnapshotVerifyCoverage::Incomplete {
+            unrecorded: vec![PathBuf::from("base.raw")],
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("verification incomplete"));
     }
 
     #[test]

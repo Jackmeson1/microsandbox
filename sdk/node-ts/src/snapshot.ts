@@ -106,8 +106,14 @@ export interface HeadUpdate {
   readonly changed: boolean;
 }
 
-/** Result of an explicit `Snapshot.verify()` call. */
-export type SnapshotVerifyReport =
+/** Whole-artifact coverage; older native libraries cannot attest to this field. */
+export type SnapshotVerifyCoverage =
+  | { readonly kind: "complete" }
+  | { readonly kind: "incomplete"; readonly unrecorded: readonly string[] }
+  | { readonly kind: "unknown" };
+
+/** Result of an explicit `Checkpoint.verify()` call. Corruption rejects the call. */
+export type SnapshotVerifyReport = { readonly coverage: SnapshotVerifyCoverage } & (
   | {
       readonly digest: string;
       readonly path: string;
@@ -123,7 +129,8 @@ export type SnapshotVerifyReport =
         readonly digest: string;
       };
       readonly checkpoint?: { readonly kind: "verified"; readonly root: string };
-    };
+    }
+);
 
 /**
  * Fluent builder for a snapshot. Returned by `Snapshot.builder(name)`.
@@ -551,6 +558,17 @@ function wrapCopyBuilder(builder: NapiSnapshotCopyBuilder): SnapshotCopyBuilder 
 
 /** @internal */
 function verifyReportToTs(r: NapiSnapshotVerifyReport): SnapshotVerifyReport {
+  let coverage: SnapshotVerifyCoverage;
+  if (r.coverageKind == null) {
+    // A head checksum from an older native library cannot prove ancestor/owned-disk coverage.
+    coverage = { kind: "unknown" };
+  } else if (r.coverageKind === "complete") {
+    coverage = { kind: "complete" };
+  } else if (r.coverageKind === "incomplete" && r.unrecorded?.length) {
+    coverage = { kind: "incomplete", unrecorded: [...r.unrecorded] };
+  } else {
+    throw invalidProjection(`invalid verification coverage ${r.coverageKind}`);
+  }
   const checkpoint =
     typeof r.checkpointRoot === "string"
       ? { kind: "verified" as const, root: r.checkpointRoot }
@@ -560,6 +578,7 @@ function verifyReportToTs(r: NapiSnapshotVerifyReport): SnapshotVerifyReport {
       digest: r.digest,
       path: r.path,
       upper: { kind: "notRecorded" },
+      coverage,
       ...(checkpoint === undefined ? {} : { checkpoint }),
     };
   }
@@ -567,6 +586,7 @@ function verifyReportToTs(r: NapiSnapshotVerifyReport): SnapshotVerifyReport {
     return {
       digest: r.digest,
       path: r.path,
+      coverage,
       upper: {
         kind: "verified",
         algorithm: requiredProjectionString(

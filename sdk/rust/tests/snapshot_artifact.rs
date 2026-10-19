@@ -997,6 +997,122 @@ async fn verify_reports_not_recorded_without_reading_payload_contents() {
         report.upper,
         microsandbox::snapshot::UpperVerifyStatus::NotRecorded
     ));
+    assert_eq!(
+        report.coverage,
+        microsandbox::snapshot::SnapshotVerifyCoverage::Incomplete {
+            unrecorded: vec![snapshot.path().unwrap().join(DEFAULT_UPPER_FILE)],
+        }
+    );
+}
+
+#[tokio::test]
+async fn verified_head_does_not_hide_unrecorded_ancestor_integrity() {
+    use microsandbox::snapshot::{SnapshotVerifyCoverage, UpperVerifyStatus};
+
+    let tmp = TempDir::new().unwrap();
+    let (dir, _) = make_artifact(tmp.path(), "mixed-coverage", &[42; 512]);
+    let descriptor = dir.join(DESCRIPTOR_FILENAME);
+    let mut manifest = Manifest::from_bytes(&std::fs::read(&descriptor).unwrap()).unwrap();
+    let SnapshotState::File(file) = &mut manifest.state else {
+        unreachable!()
+    };
+    let base = file.layers[0].clone();
+    std::fs::create_dir_all(dir.join("layers")).unwrap();
+    let base_path = dir.join(file.layer_path(&base));
+    std::fs::rename(dir.join(DEFAULT_UPPER_FILE), &base_path).unwrap();
+    let head = DiskLayerId::new(format!("layer_{:032x}", 98)).unwrap();
+    file.disk_format = SnapshotFormat::Qcow2;
+    file.head = head.clone();
+    file.layers.push(DiskLayer {
+        layer_id: head,
+        format: SnapshotFormat::Qcow2,
+        virtual_size: file.virtual_size,
+        backing: Some(base.layer_id),
+        payload: LayerPayload {
+            file_kind: LayerFileKind::Regular,
+            integrity: None,
+        },
+    });
+    let head_path = dir.join(file.layer_path(&file.layers[1]));
+    microsandbox_image::checkpoint::create_qcow2_overlay(
+        &head_path,
+        file.virtual_size,
+        &base_path,
+        "raw",
+    )
+    .await
+    .unwrap();
+    file.layers[1].payload.integrity = Some(UpperIntegrity::Sha256 {
+        digest: format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(std::fs::read(&head_path).unwrap()))
+        ),
+    });
+    std::fs::write(&descriptor, manifest.to_canonical_bytes().unwrap()).unwrap();
+
+    let snapshot = Snapshot::open(dir.to_str().unwrap()).await.unwrap();
+    let report = snapshot.verify().await.unwrap();
+    assert!(matches!(report.upper, UpperVerifyStatus::Verified { .. }));
+    assert_eq!(
+        report.coverage,
+        SnapshotVerifyCoverage::Incomplete {
+            unrecorded: vec![
+                snapshot
+                    .path()
+                    .unwrap()
+                    .join("layers")
+                    .join(base_path.file_name().unwrap())
+            ],
+        }
+    );
+
+    // Recording the ancestor changes coverage; subsequently corrupting it is still an error,
+    // never a successful report carrying only the independently valid head checksum.
+    let SnapshotState::File(file) = &mut manifest.state else {
+        unreachable!()
+    };
+    file.layers[0].payload.integrity = Some(UpperIntegrity::Sha256 {
+        digest: format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(std::fs::read(&base_path).unwrap()))
+        ),
+    });
+    std::fs::write(&descriptor, manifest.to_canonical_bytes().unwrap()).unwrap();
+    let snapshot = Snapshot::open(dir.to_str().unwrap()).await.unwrap();
+    assert_eq!(
+        snapshot.verify().await.unwrap().coverage,
+        SnapshotVerifyCoverage::Complete
+    );
+    std::fs::write(&base_path, [43; 512]).unwrap();
+    assert!(
+        snapshot
+            .verify()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("integrity mismatch")
+    );
+}
+
+#[tokio::test]
+async fn verification_cannot_attest_to_unknown_required_extension_coverage() {
+    let tmp = TempDir::new().unwrap();
+    let (dir, _) = make_artifact_with_integrity(tmp.path(), "unknown-required", b"payload", true);
+    let descriptor = dir.join(DESCRIPTOR_FILENAME);
+    let mut manifest = Manifest::from_bytes(&std::fs::read(&descriptor).unwrap()).unwrap();
+    manifest.requires.push("example.future-payload".into());
+    manifest.extensions.insert(
+        "example.future-payload".into(),
+        serde_json::json!({"version": 1}),
+    );
+    std::fs::write(&descriptor, manifest.to_canonical_bytes().unwrap()).unwrap();
+    let snapshot = Snapshot::open(dir.to_str().unwrap()).await.unwrap();
+    let error = snapshot.verify().await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("unknown required extensions: example.future-payload")
+    );
 }
 
 #[tokio::test]

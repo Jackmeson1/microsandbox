@@ -832,6 +832,8 @@ export interface NapiSnapshotVerifyReport {
   readonly upperAlgorithm: string | null | undefined;
   readonly upperDigest: string | null | undefined;
   readonly checkpointRoot: string | null | undefined;
+  readonly coverageKind?: string;
+  readonly unrecorded?: readonly string[];
 }
 
 export interface NapiImageHandle {

@@ -139,6 +139,7 @@ export type {
   GuestFlush,
   SnapshotState,
   SnapshotVerifyReport,
+  SnapshotVerifyCoverage,
 } from "./snapshot.js";
 
 // Local storage observations and runtime cache cleanup
