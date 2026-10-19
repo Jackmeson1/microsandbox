@@ -4,13 +4,19 @@
 //! once capture, restore, and deferred command binding enforcement are implemented.
 
 mod bindings;
+mod document;
+mod execution;
+mod inventory;
 mod network;
 mod network_capture;
 mod network_validation;
+mod resources;
 mod runtime;
 mod validation;
 mod value;
 
+#[cfg(test)]
+mod document_tests;
 #[cfg(test)]
 mod network_tests;
 #[cfg(test)]
@@ -21,7 +27,16 @@ mod tests;
 //--------------------------------------------------------------------------------------------------
 
 pub use bindings::{RuntimeBindingConsumer, RuntimeBindingRequirements};
+pub use document::{
+    SAVED_CONFIG_SCHEMA_VERSION, SavedActiveConfig, SavedCaptureProvenance, SavedSandboxConfig,
+};
+pub use execution::{SavedExecutionConfig, SavedLifetimePolicy, SavedRlimit, SavedU64};
+pub use inventory::{
+    SavedBindingConsumer, SavedBindingKind, SavedBindingUse, SavedBindingUses,
+    collect_binding_uses, validate_binding_inventory,
+};
 pub use network::*;
+pub use resources::SavedResourcesConfig;
 pub use runtime::{SavedHostname, SavedInit, SavedInitSelection, SavedRuntimeConfig, SavedScript};
 pub use value::{SavedOrigin, SavedText, SavedUnknownReason, SavedValue};
 

@@ -4,7 +4,7 @@ This is an internal PR3 implementation stage, not an enabled capture or restore 
 
 ## Runtime representation
 
-The runtime section has a closed field inventory: workdir, shell, entrypoint, cmd, env, scripts, init, hostname, user and guest clock. Invocation, logging, metrics configuration, host paths, credentials and arbitrary operational fields are not runtime fallback fields. Resources, labels, guest security, lifetime, the complete binding inventory, provenance and pending configuration belong to separate sections of the complete schema; they are not implemented here yet. Portable network records are described below.
+The runtime section has a closed field inventory: workdir, shell, entrypoint, cmd, env, scripts, init, hostname, user and guest clock. Invocation, logging, metrics configuration, host paths, credentials and arbitrary operational fields are not runtime fallback fields. Resources, labels, guest security, lifetime, binding inventory, provenance and pending configuration now have separate typed sections described below. Storage/IPC identity and the remaining provenance families are still incomplete. Portable network records are described below.
 
 Each field distinguishes absence from `{ "state": "default" }`, `{ "state": "unknown", "reason": "not_recorded" }`, and `{ "state": "value", "value": ..., "origin": "configured" }`. Unknown reasons are closed (`not_recorded`, `not_observed`, `converging`), and origins are closed (`configured`, `image`, `platform`, `observed`). Origins describe evidence; they are never authorization or archive-selected reuse policy. Present null is invalid. Explicit empty argv/maps and false/zero in applicable typed fields remain values.
 
@@ -32,7 +32,21 @@ The network section records ordered policy, DNS/TLS/secret policy, connection an
 
 `SavedSecretsConfig::from_source()` is the first explicit capture projection. It exhaustively destructures existing secret types, copies only the policy fields and requires a caller-selected destination binding for every secret. It neither reads nor clones the resolved value or host-side source. Missing/misspelled mappings and duplicate identities fail without echoing source values; diagnostics can identify the affected entry by index. This helper does not yet implement full sandbox capture exclusions, literal-env provenance or binding activation. Synthetic sentinel tests cover both a resolved credential and a distinct host source-variable name.
 
-Saved disabled safeguards remain recorded rather than silently rewritten. Parsing a false rebind/verification setting or a bypass rule is not consent to apply it: the resolver must still demand relevant explicit destination approval, enforce mandatory policy and establish gateway/captured-connection compatibility before execution. That resolver and the complete binding inventory are not enabled by these types.
+Saved disabled safeguards remain recorded rather than silently rewritten. Parsing a false rebind/verification setting or a bypass rule is not consent to apply it: the resolver must still demand relevant explicit destination approval, enforce mandatory policy and establish gateway/captured-connection compatibility before execution. The document now validates the binding inventory, but these types still do not enable the resolver or activation.
+
+## Document, resources and execution policy
+
+`SavedSandboxConfig` carries `schema_version: 1`, `active`, `bindings`, `provenance`, and optional `pending`. Each active/pending record currently contains resources, runtime, network and execution sections. This is still an internal incomplete schema: storage/IPC and expanded placement/network identity provenance must be completed before writing artifacts. Unknown versions, extra operational fields, duplicate keys and present null values fail. The whole document, including pending/provenance, shares the byte/depth/map bounds; the script budget is combined across active and pending.
+
+Resource records separate CPU/memory allocation, maxima and THP. Zero allocation/maxima and concrete allocation greater than its maximum fail. Active concrete CPU/memory values require observed origin; requested values can appear in pending intent, never promoted into confirmed active capacity. Missing/default/unknown observations retain their distinction. A recorded generation must be observed or explicitly unknown, but the capture path must still prove coherence; an origin tag is not evidence by itself. Full resume must also validate the existing authoritative checkpoint geometry and backing.
+
+Execution defaults carry user labels, the guest security profile, sandbox-wide rlimits and duration policy. They exclude one-command invocation limits, elapsed counters, ephemeral ownership and destination deployment/placement choices. `SavedLifetimePolicy::from_source()` explicitly projects only durations and never copies ephemeral consent. Saved security settings still require destination constraints and approval checks in the resolver. Capture must distinguish user labels from regenerated system/artifact labels and apply exclusion controls.
+
+Rlimits and lifetime durations use `SavedU64`, encoded as canonical unsigned decimal strings. This preserves the existing entire `u64` range, including the unlimited rlimit sentinel, without violating the descriptor's JSON-safe numeric bound. Numeric JSON, signs, exponents, leading zeros and overflow reject. Duplicate rlimit resources and soft greater than hard reject. The tests round-trip every existing resource kind and boundary quantities through the actual descriptor canonical JSON writer. This encoding affects only the new internal extension types; existing SDK/wire encodings are unchanged.
+
+The binding inventory declares destination value shapes, not credential values, source lookup instructions or activation timing. Consumers are derived from runtime and network fields. Shared IDs retain all consumers, so a future-command use cannot weaken a gateway or init requirement. Compatible certificate uses can share a binding; incompatible destination shapes cannot. Missing, wrong-kind and unreferenced entries reject. Pending references are checked against the inventory but `active_binding_uses()` deliberately excludes their consumers. The resolver must recompute demand after saved/fresh selection, clears and explicit overrides; this method alone cannot authorize launch or deferred exec.
+
+`validate_legacy_projections()` checks duplicated user/clock records against the released extensions, without changing their serialization or registering a manifest reader. Conflicting concrete values or unknown/default claims that disagree with an existing legacy projection fail with redacted field diagnostics. Existing owned-storage and checkpoint geometry remain authoritative and need their own integration checks.
 
 ## Draft bounds and diagnostics
 
@@ -42,7 +56,7 @@ Decode rejects duplicate keys before typed conversion and unknown fields at ever
 
 ## Remaining integration gates
 
-- Complete the current-head field/API inventory and the rest of the typed schema, including binding inventories and cross-projection checks.
+- Complete the current-head field/API inventory and the rest of the typed schema, including storage/IPC, remaining provenance and authoritative owned-storage/checkpoint checks.
 - Implement saved/fresh, field/key clears, explicit input precedence and destination constraints in the shared resolver.
 - Capture coherent active configuration, separate pending intent, and trustworthy resolved init/script/resource evidence. The current catalog has `active_config`, but terminal maintenance clears it; desired `config` is not evidence of the last active state.
 - Preserve exclusions and secret provenance through all fields, pending data and errors; implement every deferred exec consumer before enabling deferred bindings.

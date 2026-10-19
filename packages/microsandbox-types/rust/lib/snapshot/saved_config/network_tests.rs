@@ -288,7 +288,7 @@ fn network_duplicate_keys_and_secret_values_are_redacted_on_errors() {
     assert!(!format!("{:?}", parse(&network())).contains("api.example.com"));
 }
 
-fn network() -> Value {
+pub(super) fn network() -> Value {
     json!({
         "enabled":recorded(json!(true)),
         "dns":recorded(json!({"rebind_protection":true,"query_timeout_ms":5000,"resolvers":[{"id":"dns.primary"}]})),
