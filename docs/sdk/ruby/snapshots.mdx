@@ -18,6 +18,17 @@ The result contains every unique supplied checkpoint, including bundled dependen
 
 A successful return confirms publication and catalog completion. Warnings describe deferred cleanup after commit. A structured import error distinguishes no publication, confirmed publication with a later failure, and an unknown outcome needing recovery. Import never binds a group to a source sandbox. See [atomic import requirements](/cli/snapshot-commands#msb-snap-import) for filesystem capabilities and maintenance requirements.
 
+## Exact checkpoint removal
+
+```ruby
+removed = checkpoint.remove
+# To allow indexed dependents, use checkpoint.remove(force: true) instead.
+```
+
+Returns `CheckpointRemoveResult` with `id`, optional `head_update`, and `warnings`. It identifies this exact retained checkpoint and this operation's head decision. Removing head selects its surviving same-group parent or clears selection; other removals leave head unchanged. Later head edits do not change the result, and force never bypasses active readers.
+
+If removal commits but catalog cleanup fails, `SnapshotRemovalRecoveryError` retains the committed `result` and cleanup `detail`. Do not interpret this as an unchanged artifact or blindly repeat deletion. A repeated removal reports a missing checkpoint, and a replacement at the original address is refused. Unsupported backends refuse exact-removal reporting instead of deleting by name.
+
 ## SandboxHandle
 
 #### <span className="msb-recv">handle.</span><span className="msb-hn">snapshot()</span>

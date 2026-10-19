@@ -16,6 +16,19 @@ use crate::snapshot::{
 
 /// Backend implementation for snapshot lifecycle operations.
 pub trait SnapshotBackend: Send + Sync {
+    /// Remove an exact retained checkpoint and return this operation's head outcome.
+    fn remove_checkpoint<'a>(
+        &'a self,
+        _checkpoint: &'a Snapshot,
+        _options: crate::snapshot::CheckpointRemoveOptions,
+    ) -> BoxFuture<'a, MicrosandboxResult<crate::snapshot::CheckpointRemoveResult>> {
+        Box::pin(async {
+            Err(crate::MicrosandboxError::local_only(
+                crate::Operation::SnapshotOps,
+            ))
+        })
+    }
+
     /// Verify a pinned whole-group membership, preserving per-member failures in the error report.
     fn verify_group<'a>(
         &'a self,

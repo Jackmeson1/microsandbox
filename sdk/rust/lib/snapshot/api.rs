@@ -256,7 +256,7 @@ impl Checkpoint {
     }
 
     /// Remove a snapshot by a backend-relative string reference.
-    pub async fn remove(path_or_name: &str, force: bool) -> MicrosandboxResult<()> {
+    pub async fn remove_by_reference(path_or_name: &str, force: bool) -> MicrosandboxResult<()> {
         let reference = SnapshotReference::Auto(path_or_name.to_string());
         Self::remove_ref(reference, force).await
     }
@@ -276,6 +276,23 @@ impl Checkpoint {
 }
 
 impl Checkpoint {
+    /// Remove this exact checkpoint, retaining its operation-owned head decision.
+    pub async fn remove(&self) -> MicrosandboxResult<super::CheckpointRemoveResult> {
+        self.remove_with(|options| options).await
+    }
+
+    /// Configure removal. Force never bypasses reader leases or identity validation.
+    /// Already missing/replaced checkpoints fail rather than claim a new removal.
+    pub async fn remove_with(
+        &self,
+        configure: impl FnOnce(super::CheckpointRemoveOptions) -> super::CheckpointRemoveOptions,
+    ) -> MicrosandboxResult<super::CheckpointRemoveResult> {
+        self.backend
+            .snapshots()
+            .remove_checkpoint(self, configure(Default::default()))
+            .await
+    }
+
     /// Verify this snapshot's recorded integrity.
     ///
     /// Corruption is an error. A successful report may still have incomplete `coverage` when
@@ -538,7 +555,7 @@ impl SnapshotHandle {
             .await
     }
 
-    /// Remove this snapshot. See [`Checkpoint::remove`].
+    /// Legacy unit-returning removal. See [`Checkpoint::remove_by_reference`].
     pub async fn remove(&self, force: bool) -> MicrosandboxResult<()> {
         #[cfg(feature = "local")]
         if let Some(local) = self.backend.as_local() {

@@ -275,6 +275,7 @@ fn core_error_class_name(error: &MicrosandboxError) -> &'static str {
         MicrosandboxError::SnapshotSourceRecovery(_) => "SnapshotSourceRecoveryError",
         MicrosandboxError::SnapshotImport(_) => "SnapshotImportError",
         MicrosandboxError::SnapshotVerification(_) => "SnapshotVerificationError",
+        MicrosandboxError::SnapshotRemovalRecovery { .. } => "SnapshotRemovalRecoveryError",
         MicrosandboxError::SnapshotMigration { .. } => "SnapshotMigrationError",
         // Always present: the extension enables the core's `net` feature.
         MicrosandboxError::NetworkBuilder(_) => "NetworkPolicyError",
@@ -305,6 +306,26 @@ fn exception_class(ruby: &Ruby, name: &str) -> ExceptionClass {
 /// always the core error's `Display` rendering, except for `Unsupported`,
 /// which names the Ruby API instead of the Rust path.
 fn core_error(ruby: &Ruby, error: MicrosandboxError) -> Error {
+    if let MicrosandboxError::SnapshotRemovalRecovery { result, source } = &error {
+        let class = exception_class(ruby, "SnapshotRemovalRecoveryError");
+        let message = error.to_string();
+        let exception = match class.new_instance((message.as_str(),)) {
+            Ok(exception) => exception,
+            Err(_) => return Error::new(class, message),
+        };
+        if let Some(object) = RObject::from_value(exception.as_value()) {
+            let result = snapshot_group::RubyCheckpointRemoveResult {
+                inner: (**result).clone(),
+            };
+            if let Err(error) = object
+                .ivar_set("@result", result)
+                .and_then(|()| object.ivar_set("@detail", source.to_string()))
+            {
+                return error;
+            }
+        }
+        return Error::from(exception);
+    }
     if let MicrosandboxError::SnapshotVerification(report) = &error {
         let class = exception_class(ruby, "SnapshotVerificationError");
         let message = error.to_string();
@@ -2063,6 +2084,23 @@ impl RubyVolumeHandle {
 // -------------------------------------------------------------------------------------------------
 
 impl RubySnapshot {
+    fn remove(
+        ruby: &Ruby,
+        this: typed_data::Obj<Self>,
+        args: &[Value],
+    ) -> Result<snapshot_group::RubyCheckpointRemoveResult, Error> {
+        let parsed = scan_args::<(), (), (), (), RHash, ()>(args)?;
+        reject_unknown_keywords(ruby, parsed.keywords, &["force"])?;
+        let force = keyword::<bool>(parsed.keywords, "force")?.unwrap_or(false);
+        let checkpoint = this.inner.clone();
+        let inner = run(ruby, async move {
+            checkpoint
+                .remove_with(|options| if force { options.force() } else { options })
+                .await
+        })?;
+        Ok(snapshot_group::RubyCheckpointRemoveResult { inner })
+    }
+
     fn digest(&self) -> String {
         self.inner.digest().to_owned()
     }
@@ -2458,7 +2496,9 @@ fn snapshot_remove(ruby: &Ruby, args: &[Value]) -> Result<(), Error> {
     }
     let name = parsed.required.0;
     let force = parsed.optional.0.unwrap_or(false);
-    run(ruby, async move { Snapshot::remove(&name, force).await })
+    run(ruby, async move {
+        Snapshot::remove_by_reference(&name, force).await
+    })
 }
 
 fn snapshot_save(ruby: &Ruby, args: &[Value]) -> Result<(), Error> {
@@ -3027,6 +3067,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     snapshot.define_singleton_method("remove", function!(snapshot_remove, -1))?;
     snapshot.define_singleton_method("save", function!(snapshot_save, -1))?;
     snapshot.define_method("id", method!(RubySnapshot::id, 0))?;
+    snapshot.define_method("remove", method!(RubySnapshot::remove, -1))?;
     snapshot.define_method("digest", method!(RubySnapshot::digest, 0))?;
     snapshot.define_method("size_bytes", method!(RubySnapshot::size_bytes, 0))?;
     snapshot.define_method("reference", method!(RubySnapshot::reference, 0))?;

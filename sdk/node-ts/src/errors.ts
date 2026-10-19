@@ -1,3 +1,4 @@
+import type { CheckpointRemoveResult } from "./snapshot-removal.js";
 import type { SnapshotGroupVerifyReport } from "./snapshot-verification.js";
 
 export type MicrosandboxErrorCode =
@@ -33,6 +34,7 @@ export type MicrosandboxErrorCode =
   | "snapshotSourceRecovery"
   | "snapshotImport"
   | "snapshotVerification"
+  | "snapshotRemovalRecovery"
   | "metricsDisabled"
   | "metricsUnavailable"
   | "unsupportedOperation"
@@ -278,6 +280,13 @@ export interface SnapshotImportDetails {
 export class SnapshotImportError extends MicrosandboxError {
   constructor(message: string, readonly details: SnapshotImportDetails, options?: ErrorOptions) {
     super("snapshotImport", message, options);
+  }
+}
+
+/** Removal committed, but catalog/cleanup recovery is still required. */
+export class SnapshotRemovalRecoveryError extends MicrosandboxError {
+  constructor(message: string, readonly result: CheckpointRemoveResult, readonly detail: string, options?: ErrorOptions) {
+    super("snapshotRemovalRecovery", message, options);
   }
 }
 

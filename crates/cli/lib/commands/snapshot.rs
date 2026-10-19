@@ -816,7 +816,7 @@ async fn remove(args: SnapshotRemoveArgs) -> anyhow::Result<()> {
         } else {
             ui::Spinner::start("Removing", s)
         };
-        match Snapshot::remove(s, args.force).await {
+        match Snapshot::remove_by_reference(s, args.force).await {
             Ok(()) => spinner.finish_success("Removed"),
             Err(e) => {
                 spinner.finish_clear();

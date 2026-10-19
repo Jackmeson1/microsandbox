@@ -176,6 +176,8 @@ const (
 	ErrSnapshotImport
 	// ErrSnapshotVerification retains the whole-group verification report.
 	ErrSnapshotVerification
+	// ErrSnapshotRemovalRecovery means removal committed but cleanup needs recovery.
+	ErrSnapshotRemovalRecovery
 )
 
 func (k ErrorKind) String() string {
@@ -226,6 +228,8 @@ func (k ErrorKind) String() string {
 		return "SnapshotMigration"
 	case ErrSnapshotImport:
 		return "SnapshotImport"
+	case ErrSnapshotRemovalRecovery:
+		return "SnapshotRemovalRecovery"
 	case ErrSnapshotVerification:
 		return "SnapshotVerification"
 	case ErrSnapshotSourceRecovery:
@@ -314,6 +318,16 @@ type SnapshotImportError struct {
 func (e *SnapshotImportError) Error() string { return e.err.Message }
 func (e *SnapshotImportError) Unwrap() error { return e.err }
 
+// SnapshotRemovalRecoveryError preserves a committed removal when catalog cleanup fails.
+type SnapshotRemovalRecoveryError struct {
+	Result *CheckpointRemoveResult
+	Detail string
+	err    *Error
+}
+
+func (e *SnapshotRemovalRecoveryError) Error() string { return e.err.Message }
+func (e *SnapshotRemovalRecoveryError) Unwrap() error { return e.err }
+
 // SnapshotVerificationError preserves per-member results without treating corruption as success.
 type SnapshotVerificationError struct {
 	Report *SnapshotGroupVerifyReport
@@ -391,6 +405,12 @@ func wrapFFI(err error) error {
 	}
 	var fe *ffi.Error
 	if errors.As(err, &fe) {
+		if fe.Kind == ffi.KindSnapshotRemovalRecovery && len(fe.Removal) != 0 {
+			var result CheckpointRemoveResult
+			if json.Unmarshal(fe.Removal, &result) == nil {
+				return &SnapshotRemovalRecoveryError{Result: &result, Detail: fe.Detail, err: &Error{Kind: ErrSnapshotRemovalRecovery, Message: fe.Message, Cause: fe}}
+			}
+		}
 		if fe.Kind == ffi.KindSnapshotVerification && len(fe.Report) != 0 {
 			var report SnapshotGroupVerifyReport
 			if json.Unmarshal(fe.Report, &report) == nil {
@@ -473,6 +493,8 @@ func kindFromFFI(kind string) ErrorKind {
 		return ErrSnapshotMigration
 	case ffi.KindSnapshotImport:
 		return ErrSnapshotImport
+	case ffi.KindSnapshotRemovalRecovery:
+		return ErrSnapshotRemovalRecovery
 	case ffi.KindSnapshotVerification:
 		return ErrSnapshotVerification
 	case ffi.KindSnapshotSourceRecovery:

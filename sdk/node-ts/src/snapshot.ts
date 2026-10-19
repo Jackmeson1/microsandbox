@@ -1,3 +1,4 @@
+import { parseCheckpointRemoval, type CheckpointRemoveResult } from "./snapshot-removal.js";
 import { Sandbox, CreationProgressCreate, type RestoreBuilder } from "./sandbox.js";
 import type { NapiRestoreBuilder } from "./internal/napi.js";
 import { UnsupportedError } from "./errors.js";
@@ -168,6 +169,14 @@ export interface SnapshotCopyBuilder extends NapiSnapshotCopyBuilderSetters {
   save(): Promise<void>;
 }
 
+/** Exact-member removal options; force never bypasses active readers. */
+export class CheckpointRemoveOptions {
+  private forced = false;
+  force(): this { this.forced = true; return this; }
+  /** @internal */
+  toNative(): boolean { return this.forced; }
+}
+
 /**
  * A backend-neutral snapshot artifact.
  *
@@ -184,6 +193,18 @@ export class Snapshot {
   /** @internal */
   constructor(inner: NapiSnapshot) {
     this.inner = inner;
+  }
+
+  /** Remove this exact checkpoint and return this operation's head decision. */
+  async remove(): Promise<CheckpointRemoveResult> {
+    return this.removeWith((options) => options);
+  }
+
+  async removeWith(configure: (options: CheckpointRemoveOptions) => CheckpointRemoveOptions): Promise<CheckpointRemoveResult> {
+    if (!this.inner.removeCheckpoint) throw new UnsupportedError("Checkpoint removal reports require an updated native library");
+    const options = configure(new CheckpointRemoveOptions());
+    const result = await withMappedErrors(() => this.inner.removeCheckpoint!(options.toNative()));
+    return parseCheckpointRemoval(JSON.parse(result));
   }
 
   /**

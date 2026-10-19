@@ -24,6 +24,12 @@ pub struct PySnapshot {
     inner: RustSnapshot,
 }
 
+/// Facts captured by one exact checkpoint removal, including its head decision.
+#[pyclass(name = "CheckpointRemoveResult")]
+pub struct PyCheckpointRemoveResult {
+    pub(crate) inner: microsandbox::CheckpointRemoveResult,
+}
+
 /// Result of direct sandbox-to-archive capture.
 #[pyclass(name = "SnapshotArchive")]
 pub struct PySnapshotArchive {
@@ -50,7 +56,42 @@ pub struct PySnapshotHandle {
 //--------------------------------------------------------------------------------------------------
 
 #[pymethods]
+impl PyCheckpointRemoveResult {
+    #[getter]
+    fn id(&self) -> String {
+        self.inner.id.to_string()
+    }
+
+    #[getter]
+    fn head_update(&self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
+        self.inner
+            .head_update
+            .as_ref()
+            .map(|head| head_update_to_py(py, head))
+            .transpose()
+    }
+
+    #[getter]
+    fn warnings(&self) -> Vec<String> {
+        self.inner.warnings.clone()
+    }
+}
+
+#[pymethods]
 impl PySnapshot {
+    /// Remove this retained checkpoint; force never bypasses an active reader.
+    #[pyo3(signature = (*, force = false))]
+    fn remove<'py>(&self, py: Python<'py>, force: bool) -> PyResult<Bound<'py, PyAny>> {
+        let checkpoint = self.inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let inner = checkpoint
+                .remove_with(|options| if force { options.force() } else { options })
+                .await
+                .map_err(to_py_err)?;
+            Ok(PyCheckpointRemoveResult { inner })
+        })
+    }
+
     /// Observe artifact storage through this snapshot's captured backend.
     fn storage_usage<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let snapshot = self.inner.clone();
@@ -221,13 +262,13 @@ impl PySnapshot {
     /// `force=True`.
     #[staticmethod]
     #[pyo3(signature = (path_or_name, *, force = false))]
-    fn remove<'py>(
+    fn remove_by_reference<'py>(
         py: Python<'py>,
         path_or_name: String,
         force: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            RustSnapshot::remove(&path_or_name, force)
+            RustSnapshot::remove_by_reference(&path_or_name, force)
                 .await
                 .map_err(to_py_err)?;
             Ok(())

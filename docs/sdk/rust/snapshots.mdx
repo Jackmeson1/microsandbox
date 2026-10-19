@@ -30,6 +30,21 @@ A successful return confirms publication and catalog completion. Warnings descri
 
 Missing checksums return explicit incomplete coverage. Corruption, missing files, unsupported required features, and operational failures return `MicrosandboxError::SnapshotVerification(report)` when a meaningful group report exists; failures before selection return the ordinary SDK error. Inspect the attached report without treating the failed call as success. Selected payloads stay reader-pinned until verification finishes, including after caller cancellation.
 
+## Exact checkpoint removal
+
+Migration: static Rust `Snapshot::remove(reference, force)` becomes `Checkpoint::remove_by_reference(reference, force)`. Use the instance method below for exact identity and a removal result. Legacy `SnapshotHandle::remove(force)` retains its unit-returning contract.
+
+```rust
+let removed = checkpoint.remove().await?;
+let forced = checkpoint.remove_with(|options| options.force()).await?;
+```
+
+These are alternative calls, not successive removals of the same checkpoint. The instance method removes the retained checkpoint identity, refuses a replacement at the same address, and returns `CheckpointRemoveResult` with `id`, optional `head_update`, and `warnings`. The head outcome belongs to this operation; later head edits do not change it. Removing the head selects its surviving same-group parent or clears selection. Removing another member reports an unchanged head. Standalone artifacts have no head outcome.
+
+Force permits removal despite indexed children, but never bypasses reader protection. A repeated removal reports a missing checkpoint rather than fabricating another successful result. Backends or native libraries without exact-removal reporting return unsupported instead of falling back to deletion by name.
+
+If removal commits but catalog cleanup fails, the call returns `MicrosandboxError::SnapshotRemovalRecovery { result, source }`. Its result is authoritative: removal already happened. Recover the affected storage before retrying cleanup; do not assume an error means the checkpoint still exists.
+
 ## Guest writeback
 
 Use `.guest_flush(GuestFlush::Required)` on snapshot, fork, or fork-many builders, or `source.pause_with_guest_flush(GuestFlush::Required)`. Import `GuestFlush` from `microsandbox::snapshot`. The default `Auto` flushes live disk-only captures, but adds no optional flush to full captures, forks, or pause. `Skip` retains mandatory storage barriers. A paused disk capture needs a matching prior flush; cloud rejects non-Auto policies. See [guest flush policy reference](/sandboxes/snapshots#guest-flushing).
@@ -286,16 +301,16 @@ Walk a directory and parse each subdirectory's manifest. Does not touch the inde
   </div>
 </div>
 
-#### <span className="msb-recv">Snapshot::</span><span className="msb-hn">remove()</span>
+#### <span className="msb-recv">Checkpoint::</span><span className="msb-hn">remove_by_reference()</span>
 
 ```rust
-async fn remove(path_or_name: &str, force: bool) -> MicrosandboxResult<()>
+async fn remove_by_reference(path_or_name: &str, force: bool) -> MicrosandboxResult<()>
 ```
 
 <Accordion title="Example">
 
 ```rust
-Snapshot::remove("api:baseline", false).await?;
+Checkpoint::remove_by_reference("api:baseline", false).await?;
 ```
 
 </Accordion>
@@ -325,7 +340,7 @@ async fn remove_ref(
 ```
 
 Remove a snapshot using an explicit backend-neutral reference. Prefer this
-over [`remove()`](#snapshotremove) when the value came from
+over `Checkpoint::remove_by_reference()` when the value came from
 `Snapshot::reference()` or `SnapshotHandle::reference()`.
 
 #### <span className="msb-recv">Snapshot::</span><span className="msb-hn">reindex()</span>

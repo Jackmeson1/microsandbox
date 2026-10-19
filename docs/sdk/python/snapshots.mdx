@@ -29,6 +29,21 @@ A successful return confirms publication and catalog completion. Warnings descri
 
 Unrecorded checksums remain incomplete. Corruption, missing files, unsupported requirements, and operational failures raise `SnapshotVerificationError` with the full dictionary in `error.report`; failures before a meaningful report exists retain their ordinary exception. Shared physical payloads are hashed once per algorithm, independent copies are checked separately, and cancellation retains reader protection until hashing finishes.
 
+## Exact checkpoint removal
+
+Migration: static Python `Snapshot.remove(reference, force=...)` becomes `Checkpoint.remove_by_reference(reference, force=...)`. The canonical `Checkpoint.remove()` is now an instance method. Legacy `SnapshotHandle.remove(force=...)` still returns `None`.
+
+```python
+removed = await checkpoint.remove()
+forced = await checkpoint.remove(force=True)
+```
+
+These are alternative calls, not successive removals of the same checkpoint. The instance method removes the retained checkpoint identity, refuses a replacement at the same address, and returns `CheckpointRemoveResult` with `id`, optional `head_update`, and `warnings` properties. The head outcome belongs to this operation; later head edits do not change it. Removing the head selects its surviving same-group parent or clears selection. Removing another member reports an unchanged head. Standalone artifacts have no head outcome.
+
+Force permits removal despite indexed children, but never bypasses reader protection. A repeated removal reports a missing checkpoint rather than fabricating another successful result. Backends or native libraries without exact-removal reporting return unsupported instead of falling back to deletion by name.
+
+If removal commits but catalog cleanup fails, the call returns `SnapshotRemovalRecoveryError`, with `result` and `detail`. Its result is authoritative: removal already happened. Recover the affected storage before retrying cleanup; do not assume an error means the checkpoint still exists.
+
 ## Guest writeback
 
 Pass `guest_flush=GuestFlush.REQUIRED` to `Snapshot.create`, `Snapshot.create_archive`, `source.fork`, `source.fork_many`, or `source.pause`. Import `GuestFlush` from `microsandbox`. The default `AUTO` flushes live disk-only captures, but adds no optional flush to full captures, forks, or pause. `SKIP` retains mandatory storage barriers. A paused disk capture needs a matching prior flush; cloud rejects non-Auto policies. See [guest flush policy reference](/sandboxes/snapshots#guest-flushing).
@@ -283,17 +298,17 @@ entries that don't look like snapshot artifacts. Cloud raises
   </div>
 </div>
 
-#### <span className="msb-recv">Snapshot.</span><span className="msb-hn">remove()</span>
+#### <span className="msb-recv">Checkpoint.</span><span className="msb-hn">remove_by_reference()</span>
 
 ```python
 @staticmethod
-async def remove(path_or_name: str, *, force: bool = False) -> None
+async def remove_by_reference(path_or_name: str, *, force: bool = False) -> None
 ```
 
 <Accordion title="Example">
 
 ```python
-await Snapshot.remove("baseline:deps", force=True)
+await Checkpoint.remove_by_reference("baseline:deps", force=True)
 ```
 
 </Accordion>

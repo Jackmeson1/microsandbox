@@ -1,3 +1,4 @@
+import { parseCheckpointRemoval } from "../snapshot-removal.js";
 import {
   CustomError,
   CloudHttpError,
@@ -32,6 +33,7 @@ import {
   SnapshotSourceRecoveryError,
   SnapshotImportError,
   SnapshotVerificationError,
+  SnapshotRemovalRecoveryError,
   TerminalError,
   UnsupportedOperationError,
   UnsupportedError,
@@ -99,6 +101,13 @@ export function mapNapiError(err: unknown): unknown {
   const m = PATTERN.exec(err.message);
   if (!m) return err;
   if (m[1] === "SnapshotImport") return mapImportError(m[2]!, err);
+  if (m[1] === "SnapshotRemovalRecovery") {
+    try {
+      const envelope = JSON.parse(m[2]!);
+      if (typeof envelope.message !== "string" || typeof envelope.detail !== "string") return err;
+      return new SnapshotRemovalRecoveryError(envelope.message, parseCheckpointRemoval(envelope.result), envelope.detail, { cause: err });
+    } catch { return err; }
+  }
   if (m[1] === "SnapshotVerification") {
     try {
       const envelope = JSON.parse(m[2]!);

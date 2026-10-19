@@ -30,6 +30,19 @@ A successful return confirms publication and catalog completion. Warnings descri
 
 Unrecorded checksums return incomplete coverage. Corruption, missing files, unsupported requirements, and operational failures return a `*SnapshotVerificationError`; use `errors.As` and inspect its `Report` for every selected member. Errors before meaningful selection retain the ordinary error type. Shared physical payloads are hashed once per algorithm; independent copies are checked separately. Cancellation retains reader protection until the hashing worker finishes.
 
+## Exact checkpoint removal
+
+```go
+removed, err := checkpoint.Remove(ctx)
+forced, err := checkpoint.Remove(ctx, m.CheckpointRemoveOptions{Force: true})
+```
+
+These are alternative calls, not successive removals of the same checkpoint. The instance method removes the retained checkpoint identity, refuses a replacement at the same address, and returns `CheckpointRemoveResult` with `ID`, optional `HeadUpdate`, and `Warnings`. The head outcome belongs to this operation; later head edits do not change it. Removing the head selects its surviving same-group parent or clears selection. Removing another member reports an unchanged head. Standalone artifacts have no head outcome.
+
+Force permits removal despite indexed children, but never bypasses reader protection. A repeated removal reports a missing checkpoint rather than fabricating another successful result. Backends or native libraries without exact-removal reporting return unsupported instead of falling back to deletion by name.
+
+If removal commits but catalog cleanup fails, the call returns `*SnapshotRemovalRecoveryError`, with `Result` and `Detail`. Its result is authoritative: removal already happened. Recover the affected storage before retrying cleanup; do not assume an error means the checkpoint still exists.
+
 ## Guest writeback
 
 Set `SnapshotCreateOptions.GuestFlush` to `msb.GuestFlushRequired`, pass `msb.WithForkGuestFlush(msb.GuestFlushRequired)` to `Fork`/`ForkMany`, or call `source.PauseWithGuestFlush(ctx, msb.GuestFlushRequired)`. The default `GuestFlushAuto` flushes live disk-only captures, but adds no optional flush to full captures, forks, or pause. `GuestFlushSkip` retains mandatory storage barriers. A paused disk capture needs a matching prior flush; cloud rejects non-Auto policies. See [guest flush policy reference](/sandboxes/snapshots#guest-flushing).

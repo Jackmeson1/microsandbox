@@ -212,7 +212,7 @@ impl JsSnapshot {
         opts: Option<JsSnapshotRemoveOpts>,
     ) -> Result<()> {
         let force = opts.and_then(|o| o.force).unwrap_or(false);
-        RustSnapshot::remove(&path_or_name, force)
+        RustSnapshot::remove_by_reference(&path_or_name, force)
             .await
             .map_err(to_napi_error)
     }
@@ -528,6 +528,17 @@ impl JsSnapshot {
     #[napi(js_name = "copyTo")]
     pub fn copy_to(&self, output_archive_path: String) -> JsSnapshotCopyBuilder {
         JsSnapshotCopyBuilder::from_rust(self.inner.copy_to(output_archive_path))
+    }
+
+    /// Remove this exact retained checkpoint and serialize its operation-owned result.
+    #[napi(js_name = "removeCheckpoint")]
+    pub async fn remove_checkpoint(&self, force: bool) -> Result<String> {
+        let checkpoint = self.inner.clone();
+        let result = checkpoint
+            .remove_with(|options| if force { options.force() } else { options })
+            .await
+            .map_err(to_napi_error)?;
+        serde_json::to_string(&result).map_err(|error| napi::Error::from_reason(error.to_string()))
     }
 
     /// Verify this snapshot's recorded payload integrity.

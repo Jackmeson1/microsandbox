@@ -563,6 +563,17 @@ pub(crate) async fn remove_snapshot_expected(
     force: bool,
     expected: Option<&str>,
 ) -> MicrosandboxResult<()> {
+    remove_snapshot_report(local, path_or_name, force, expected)
+        .await
+        .map(|_| ())
+}
+
+pub(super) async fn remove_snapshot_report(
+    local: &LocalBackend,
+    path_or_name: &str,
+    force: bool,
+    expected: Option<&str>,
+) -> MicrosandboxResult<Option<crate::snapshot::CheckpointRemoveResult>> {
     let path = canonical_path(&resolve_path(local, path_or_name).await?);
     super::group::recover_member(&path).await?;
     // Initialize/reconcile before taking the deletion lock: migration itself pins the
@@ -581,7 +592,7 @@ pub(crate) async fn remove_snapshot_expected(
         && matches!(tokio::fs::symlink_metadata(parent).await, Err(error) if error.kind() == std::io::ErrorKind::NotFound)
     {
         if remove_missing_snapshot(local, &path, force, expected).await? {
-            return Ok(());
+            return Ok(None);
         }
 
         return Err(MicrosandboxError::SnapshotNotFound(
@@ -608,7 +619,7 @@ pub(crate) async fn remove_snapshot_expected(
     if looks_like_path(path_or_name)
         && remove_missing_snapshot(local, &path, force, expected).await?
     {
-        return Ok(());
+        return Ok(None);
     }
 
     let snapshot = open_snapshot_impl(local, path.to_string_lossy().as_ref(), false, true).await?;
@@ -654,15 +665,32 @@ pub(crate) async fn remove_snapshot_expected(
         .await
         .map_err(|error| MicrosandboxError::Custom(format!("snapshot removal task: {error}")))??;
     }
-    snapshot_entity::Entity::delete_by_id(artifact_key)
-        .exec(write_db)
-        .await?;
-    recompute_children(write_db).await?;
-    drop(_deletion);
-    if let Some(parent) = artifact_path.parent() {
-        super::deletion::recover_parent(local, parent).await?;
+    let report = crate::snapshot::CheckpointRemoveResult {
+        id: snapshot.id().clone(),
+        head_update: removal.as_ref().map(|removal| removal.head_update.clone()),
+        warnings: removal.map(|removal| removal.warnings).unwrap_or_default(),
+    };
+    // Publication already committed. A later database/cleanup failure must retain
+    // the removal's identity and head outcome rather than imply nothing happened.
+    let cleanup: MicrosandboxResult<()> = async {
+        snapshot_entity::Entity::delete_by_id(artifact_key)
+            .exec(write_db)
+            .await?;
+        recompute_children(write_db).await?;
+        drop(_deletion);
+        if let Some(parent) = artifact_path.parent() {
+            super::deletion::recover_parent(local, parent).await?;
+        }
+        Ok(())
     }
-    Ok(())
+    .await;
+    if let Err(source) = cleanup {
+        return Err(MicrosandboxError::SnapshotRemovalRecovery {
+            result: Box::new(report),
+            source: Box::new(source),
+        });
+    }
+    Ok(Some(report))
 }
 
 /// Forget an absent artifact only if no surviving group needs its head/membership checks.
@@ -1085,6 +1113,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn checkpoint_removal_returns_its_own_head_outcome() {
+        let home = tempfile::tempdir().unwrap();
+        let local = std::sync::Arc::new(
+            crate::test_support::local_backend_builder(home.path())
+                .build()
+                .await
+                .unwrap(),
+        );
+        let parent = manifest(930, None);
+        let child = manifest(931, Some(&parent));
+        let sibling = manifest(932, Some(&parent));
+        install(&local, "history", "base", &parent).await;
+        install(&local, "history", "child", &child).await;
+        install(&local, "history", "sibling", &sibling).await;
+        let backend: std::sync::Arc<dyn crate::backend::Backend> = local.clone();
+        crate::with_backend(backend, async {
+            let group = crate::Snapshot::get("history").await.unwrap();
+            let base = group.get_checkpoint("base").await.unwrap();
+            let child_value = group.get_checkpoint("child").await.unwrap();
+            let sibling_value = group.get_checkpoint("sibling").await.unwrap();
+            assert!(base.remove().await.is_err()); // Indexed dependents still protect the base.
+            let report = sibling_value.remove().await.unwrap();
+            assert_eq!(report.id, sibling.snapshot_id);
+            let change = report.head_update.unwrap();
+            assert!(!change.changed);
+            assert_eq!(change.head.as_deref(), Some(child.snapshot_id.as_str()));
+            assert!(sibling_value.remove().await.is_err()); // No fabricated repeated removal.
+            let report = child_value.remove().await.unwrap();
+            let change = report.head_update.as_ref().unwrap();
+            assert_eq!(change.previous.as_deref(), Some(child.snapshot_id.as_str()));
+            assert_eq!(change.head.as_deref(), Some(parent.snapshot_id.as_str()));
+            assert!(change.changed);
+            group.clear_head().await.unwrap();
+            // A later head mutation cannot change the earlier operation's report.
+            assert_eq!(
+                report.head_update.unwrap().head.as_deref(),
+                Some(parent.snapshot_id.as_str())
+            );
+            let report = base.remove().await.unwrap();
+            assert_eq!(report.id, parent.snapshot_id);
+            assert!(!report.head_update.unwrap().changed);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn committed_checkpoint_removal_keeps_report_when_catalog_cleanup_fails() {
+        let home = tempfile::tempdir().unwrap();
+        let local = std::sync::Arc::new(
+            crate::test_support::local_backend_builder(home.path())
+                .build()
+                .await
+                .unwrap(),
+        );
+        let checkpoint = manifest(933, None);
+        let path = install(&local, "cleanup", "only", &checkpoint).await;
+        let backend: std::sync::Arc<dyn crate::backend::Backend> = local.clone();
+        crate::with_backend(backend, async {
+            let value = crate::Snapshot::get("cleanup").await.unwrap().get_checkpoint("only").await.unwrap();
+            let pools = local.db().await.unwrap();
+            pools.write().execute_raw(Statement::from_string(DatabaseBackend::Sqlite,
+                "CREATE TRIGGER reject_removal_cleanup BEFORE DELETE ON snapshot_index BEGIN SELECT RAISE(FAIL, 'injected catalog cleanup failure'); END".to_owned())).await.unwrap();
+            let error = value.remove().await.unwrap_err();
+            let MicrosandboxError::SnapshotRemovalRecovery { result, source } = error else { panic!("unexpected error: {error}") };
+            assert!(!path.exists());
+            assert_eq!(result.id, checkpoint.snapshot_id);
+            let change = result.head_update.unwrap();
+            assert_eq!(change.previous.as_deref(), Some(checkpoint.snapshot_id.as_str()));
+            assert_eq!(change.head, None);
+            assert!(source.to_string().contains("injected catalog cleanup failure"));
+            pools.write().execute_raw(Statement::from_string(DatabaseBackend::Sqlite,
+                "DROP TRIGGER reject_removal_cleanup".to_owned())).await.unwrap();
+            super::super::deletion::recover_parent(&local, path.parent().unwrap()).await.unwrap();
+            assert!(snapshot_entity::Entity::find_by_id(path.display().to_string()).one(pools.read()).await.unwrap().is_none());
+        }).await;
+    }
+
+    #[tokio::test]
     async fn retained_sdk_handles_reject_replacement_before_export_or_removal() {
         let home = tempfile::tempdir().unwrap();
         let local = std::sync::Arc::new(
@@ -1134,6 +1240,14 @@ mod tests {
                     Err(MicrosandboxError::SnapshotIntegrity(_))
                 ));
             }
+            assert!(matches!(
+                opened.remove().await,
+                Err(MicrosandboxError::SnapshotIntegrity(_))
+            ));
+            assert!(matches!(
+                opened.remove_with(|options| options.force()).await,
+                Err(MicrosandboxError::SnapshotIntegrity(_))
+            ));
             assert!(!out.exists());
             assert_eq!(
                 open_snapshot(&local, artifact.to_str().unwrap())

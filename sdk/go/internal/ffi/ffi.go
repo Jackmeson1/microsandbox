@@ -1289,6 +1289,8 @@ const logsBufSize = 48 << 20
 // serialises {kind, message} JSON with optional recovery metadata; this type unmarshals it. The public SDK
 // maps Kind back into microsandbox.ErrorKind.
 type Error struct {
+	Removal  json.RawMessage                `json:"removal,omitempty"`
+	Detail   string                         `json:"detail,omitempty"`
 	Report   json.RawMessage                `json:"report,omitempty"`
 	Import   *SnapshotImportDetails         `json:"import,omitempty"`
 	Kind     string                         `json:"kind"`
@@ -1330,39 +1332,40 @@ func (e *Error) Error() string { return e.Message }
 
 // Error kind strings. Keep in sync with sdk/go/native/src/lib.rs FfiError::kind.
 const (
-	KindSandboxNotFound        = "sandbox_not_found"
-	KindSandboxAlreadyExists   = "sandbox_already_exists"
-	KindSandboxReplaced        = "sandbox_replaced"
-	KindSandboxStopTimedOut    = "sandbox_stop_timed_out"
-	KindSandboxStillRunning    = "sandbox_still_running"
-	KindVolumeNotFound         = "volume_not_found"
-	KindVolumeAlreadyExists    = "volume_already_exists"
-	KindExecTimeout            = "exec_timeout"
-	KindStopTimeout            = "stop_timeout"
-	KindNoDefaultCommand       = "no_default_command"
-	KindInvalidConfig          = "invalid_config"
-	KindInvalidArgument        = "invalid_argument"
-	KindInvalidHandle          = "invalid_handle"
-	KindBufferTooSmall         = "buffer_too_small"
-	KindCancelled              = "cancelled"
-	KindInternal               = "internal"
-	KindFilesystem             = "filesystem"
-	KindImageNotFound          = "image_not_found"
-	KindImageInUse             = "image_in_use"
-	KindSnapshotNotFound       = "snapshot_not_found"
-	KindSnapshotAlreadyExists  = "snapshot_already_exists"
-	KindSnapshotSandboxRunning = "snapshot_sandbox_running"
-	KindSnapshotImageMissing   = "snapshot_image_missing"
-	KindSnapshotIntegrity      = "snapshot_integrity"
-	KindSnapshotMigration      = "snapshot_migration"
-	KindSnapshotSourceRecovery = "snapshot_source_recovery"
-	KindSnapshotImport         = "snapshot_import"
-	KindSnapshotVerification   = "snapshot_verification"
-	KindPatchFailed            = "patch_failed"
-	KindMetricsDisabled        = "metrics_disabled"
-	KindMetricsUnavailable     = "metrics_unavailable"
-	KindUnsupportedOperation   = "unsupported_operation"
-	KindIO                     = "io"
+	KindSandboxNotFound         = "sandbox_not_found"
+	KindSandboxAlreadyExists    = "sandbox_already_exists"
+	KindSandboxReplaced         = "sandbox_replaced"
+	KindSandboxStopTimedOut     = "sandbox_stop_timed_out"
+	KindSandboxStillRunning     = "sandbox_still_running"
+	KindVolumeNotFound          = "volume_not_found"
+	KindVolumeAlreadyExists     = "volume_already_exists"
+	KindExecTimeout             = "exec_timeout"
+	KindStopTimeout             = "stop_timeout"
+	KindNoDefaultCommand        = "no_default_command"
+	KindInvalidConfig           = "invalid_config"
+	KindInvalidArgument         = "invalid_argument"
+	KindInvalidHandle           = "invalid_handle"
+	KindBufferTooSmall          = "buffer_too_small"
+	KindCancelled               = "cancelled"
+	KindInternal                = "internal"
+	KindFilesystem              = "filesystem"
+	KindImageNotFound           = "image_not_found"
+	KindImageInUse              = "image_in_use"
+	KindSnapshotNotFound        = "snapshot_not_found"
+	KindSnapshotAlreadyExists   = "snapshot_already_exists"
+	KindSnapshotSandboxRunning  = "snapshot_sandbox_running"
+	KindSnapshotImageMissing    = "snapshot_image_missing"
+	KindSnapshotIntegrity       = "snapshot_integrity"
+	KindSnapshotMigration       = "snapshot_migration"
+	KindSnapshotSourceRecovery  = "snapshot_source_recovery"
+	KindSnapshotImport          = "snapshot_import"
+	KindSnapshotRemovalRecovery = "snapshot_removal_recovery"
+	KindSnapshotVerification    = "snapshot_verification"
+	KindPatchFailed             = "patch_failed"
+	KindMetricsDisabled         = "metrics_disabled"
+	KindMetricsUnavailable      = "metrics_unavailable"
+	KindUnsupportedOperation    = "unsupported_operation"
+	KindIO                      = "io"
 )
 
 // Sandbox is an opaque handle to a Rust-side sandbox. Call Close to release.

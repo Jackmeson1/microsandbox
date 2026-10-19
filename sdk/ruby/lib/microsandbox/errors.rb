@@ -94,6 +94,12 @@ module Microsandbox
   define_error(:SnapshotImportError, "snapshot-import")
   define_error(:SnapshotVerificationError, "snapshot-verification")
 
+  define_error(:SnapshotRemovalRecoveryError, "snapshot-removal-recovery")
+  class SnapshotRemovalRecoveryError
+    # Removal committed; these facts remain valid when catalog cleanup failed.
+    attr_reader :result, :detail
+  end
+
   class SnapshotVerificationError
     # All selected members remain available when corruption makes verification fail.
     attr_reader :report

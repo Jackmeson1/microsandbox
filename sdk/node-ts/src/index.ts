@@ -113,7 +113,8 @@ export {
 } from "./volume-fs.js";
 
 // Snapshots
-export { Snapshot as Checkpoint, SnapshotSaveOptions, SnapshotArchive } from "./snapshot.js";
+export type { CheckpointRemoveResult } from "./snapshot-removal.js";
+export { Snapshot as Checkpoint, CheckpointRemoveOptions, SnapshotSaveOptions, SnapshotArchive } from "./snapshot.js";
 export { Snapshot, SnapshotCaptureOptions, SnapshotLoadOptions } from "./snapshot-group.js";
 export type { SnapshotCreateResult, CheckpointCaptureResult, SnapshotImportResult } from "./snapshot-group.js";
 export type { SnapshotGroupVerifyReport, CheckpointVerification, SnapshotVerificationFinding, SnapshotVerificationFindingKind, SnapshotVerificationState } from "./snapshot-verification.js";
@@ -499,6 +500,7 @@ export {
   SnapshotSourceRecoveryError,
   SnapshotImportError,
   SnapshotVerificationError,
+  SnapshotRemovalRecoveryError,
   TerminalError,
   UnsupportedOperationError,
   UnsupportedError,

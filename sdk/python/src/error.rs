@@ -43,6 +43,23 @@ pub fn to_py_err(err: microsandbox::MicrosandboxError) -> PyErr {
             Err(_) => return pyo3::exceptions::PyRuntimeError::new_err(err.to_string()),
         };
 
+        if let SnapshotRemovalRecovery { result, source } = &err {
+            let instance = (|| -> PyResult<Bound<'_, PyAny>> {
+                let result = crate::snapshot::PyCheckpointRemoveResult {
+                    inner: (**result).clone(),
+                };
+                errors_mod.getattr("SnapshotRemovalRecoveryError")?.call1((
+                    err.to_string(),
+                    result,
+                    source.to_string(),
+                ))
+            })();
+            return match instance {
+                Ok(instance) => PyErr::from_value(instance),
+                Err(_) => pyo3::exceptions::PyRuntimeError::new_err(err.to_string()),
+            };
+        }
+
         if let SnapshotVerification(report) = &err {
             let instance = (|| -> PyResult<Bound<'_, PyAny>> {
                 let value = serde_json::to_value(report).map_err(|error| {

@@ -71,6 +71,9 @@ enum Request {
         options: crate::SnapshotSaveOptsJson,
     },
     Verify,
+    Remove {
+        force: bool,
+    },
     Spawn {
         name: String,
         options: Box<crate::restore::RestoreOptions>,
@@ -348,6 +351,12 @@ async fn dispatch(id: u64, request: Request, pending: &PendingObjects) -> Result
                 )
                 .await?;
             Ok(json!({"ok": true}))
+        }
+        Request::Remove { force } => {
+            let result = checkpoint(id)?
+                .remove_with(|options| if force { options.force() } else { options })
+                .await?;
+            serde_json::to_value(result).map_err(|error| FfiError::internal(error.to_string()))
         }
         Request::Verify => match object(id)? {
             Object::Group(group) => serde_json::to_value(group.verify().await?)

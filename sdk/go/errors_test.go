@@ -230,3 +230,23 @@ func TestSnapshotImportPublicationOutcome(t *testing.T) {
 		})
 	}
 }
+
+func TestCommittedCheckpointRemovalPreservesOutcome(t *testing.T) {
+	native := &ffi.Error{
+		Kind:    ffi.KindSnapshotRemovalRecovery,
+		Message: "removal committed; cleanup failed",
+		Detail:  "catalog unavailable",
+		Removal: json.RawMessage(`{"id":"removed","head_update":{"group":"history","previous":"removed","head":"parent","reason":"parent_fallback","changed":true},"warnings":[]}`),
+	}
+	err := wrapFFI(native)
+	var recovery *SnapshotRemovalRecoveryError
+	if !errors.As(err, &recovery) {
+		t.Fatalf("lost typed recovery: %T %v", err, err)
+	}
+	if recovery.Result.ID != "removed" || recovery.Result.HeadUpdate == nil || recovery.Result.HeadUpdate.Head == nil || *recovery.Result.HeadUpdate.Head != "parent" {
+		t.Fatalf("lost committed outcome: %+v", recovery.Result)
+	}
+	if recovery.Detail != "catalog unavailable" || !IsKind(err, ErrSnapshotRemovalRecovery) || !errors.Is(err, native) {
+		t.Fatalf("lost error identity: %+v", recovery)
+	}
+}

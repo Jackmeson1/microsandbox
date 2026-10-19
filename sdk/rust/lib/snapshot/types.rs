@@ -7,6 +7,23 @@ use std::path::PathBuf;
 // Types
 //--------------------------------------------------------------------------------------------------
 
+/// Result owned by one exact checkpoint removal, never reconstructed from a later head read.
+#[derive(Debug, Clone, Serialize)]
+pub struct CheckpointRemoveResult {
+    /// Immutable identity removed by this operation.
+    pub id: super::SnapshotId,
+    /// Group head decision; absent only for a standalone artifact.
+    pub head_update: Option<HeadUpdate>,
+    /// Removal committed, but these cleanup steps remain recoverable.
+    pub warnings: Vec<String>,
+}
+
+/// Exact checkpoint removal controls. Force permits indexed dependents, never active readers.
+#[derive(Debug, Clone, Default)]
+pub struct CheckpointRemoveOptions {
+    pub(crate) force: bool,
+}
+
 /// Result of explicit snapshot verification.
 #[derive(Debug, Clone, Serialize)]
 pub struct SnapshotVerifyReport {
@@ -254,6 +271,14 @@ impl SaveOpts {
     /// Export only the newest root-disk layers, retaining explicit dependencies.
     pub fn last_layers(mut self, count: usize) -> Self {
         self.last_layers = Some(count);
+        self
+    }
+}
+
+impl CheckpointRemoveOptions {
+    /// Permit removing an artifact with indexed dependents. Reader protections remain mandatory.
+    pub fn force(mut self) -> Self {
+        self.force = true;
         self
     }
 }

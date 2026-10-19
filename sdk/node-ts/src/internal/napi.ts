@@ -729,6 +729,7 @@ export interface NapiSnapshotCopyBuilder
 }
 
 export interface NapiSnapshot {
+  removeCheckpoint?(force: boolean): Promise<string>;
   spawnSandboxWithBuilder(builder: NapiRestoreBuilder): Promise<NapiSandbox>;
   spawnSandboxWithProgressBuilder(builder: NapiRestoreBuilder): Promise<NapiPullProgressCreate>;
   storageUsage?(): Promise<NapiStorageItemUsage>;

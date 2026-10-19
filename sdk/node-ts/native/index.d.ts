@@ -1805,6 +1805,8 @@ export declare class Snapshot {
    * Returns an unsupported-operation error when artifact archives are unavailable.
    */
   copyTo(outputArchivePath: string): JsSnapshotCopyBuilder
+  /** Remove this exact retained checkpoint and serialize its operation-owned result. */
+  removeCheckpoint(force: boolean): Promise<string>
   /** Verify this snapshot's recorded payload integrity. */
   verify(): Promise<SnapshotVerifyReport>
   /** Observe this artifact's storage through its captured backend. */

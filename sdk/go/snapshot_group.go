@@ -333,3 +333,30 @@ func (checkpoint *SnapshotArtifact) SpawnSandboxWithProgress(ctx context.Context
 		return spawnSnapshotReceiver(ctx, checkpoint.object, name, progress, opts)
 	})
 }
+
+// CheckpointRemoveResult records the identity and head decision of one removal.
+// HeadUpdate is nil only for a standalone artifact outside a group.
+type CheckpointRemoveResult struct {
+	ID         string              `json:"id"`
+	HeadUpdate *SnapshotHeadUpdate `json:"head_update"`
+	Warnings   []string            `json:"warnings"`
+}
+
+// CheckpointRemoveOptions controls dependent-checkpoint handling, never reader protection.
+type CheckpointRemoveOptions struct{ Force bool }
+
+// Remove deletes this exact retained checkpoint and returns its publication outcome.
+func (s *SnapshotArtifact) Remove(ctx context.Context, options ...CheckpointRemoveOptions) (*CheckpointRemoveResult, error) {
+	if len(options) > 1 {
+		return nil, fmt.Errorf("checkpoint removal accepts at most one options value")
+	}
+	if s.object == nil {
+		return nil, &Error{Kind: ErrUnsupportedOperation, Message: "exact checkpoint removal requires a retained receiver from an updated native library"}
+	}
+	force := len(options) == 1 && options[0].Force
+	var result CheckpointRemoveResult
+	if err := snapshotObjectRequest(ctx, s.object, map[string]any{"op": "remove", "force": force}, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}

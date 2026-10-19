@@ -7,7 +7,10 @@ documented keyword arguments (for direct Python construction).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from microsandbox._microsandbox import CheckpointRemoveResult
 
 
 class MicrosandboxError(Exception):
@@ -168,6 +171,17 @@ class PublishedSnapshotArtifact:
     path: str
     snapshot_id: str
     digest: str
+
+
+class SnapshotRemovalRecoveryError(MicrosandboxError):
+    """Removal committed; result is authoritative even though cleanup needs recovery."""
+
+    code = "snapshot-removal-recovery"
+
+    def __init__(self, message: str, result: CheckpointRemoveResult, detail: str) -> None:
+        super().__init__(message)
+        self.result = result
+        self.detail = detail
 
 
 class SnapshotVerificationError(MicrosandboxError):

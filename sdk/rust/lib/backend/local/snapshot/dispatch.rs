@@ -20,6 +20,20 @@ use crate::{MicrosandboxError, MicrosandboxResult, Operation};
 //--------------------------------------------------------------------------------------------------
 
 impl SnapshotBackend for LocalBackend {
+    fn remove_checkpoint<'a>(
+        &'a self,
+        checkpoint: &'a Snapshot,
+        options: crate::snapshot::CheckpointRemoveOptions,
+    ) -> BoxFuture<'a, MicrosandboxResult<crate::snapshot::CheckpointRemoveResult>> {
+        Box::pin(async move {
+            let reference = checkpoint.reference();
+            let selector = local_selector(self, reference).await?;
+            store::remove_snapshot_report(self, &selector, options.force, Some(checkpoint.digest()))
+                .await?
+                .ok_or_else(|| MicrosandboxError::SnapshotNotFound(checkpoint.id().to_string()))
+        })
+    }
+
     fn change_head<'a>(
         &'a self,
         reference: &'a SnapshotReference,

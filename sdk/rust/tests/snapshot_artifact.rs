@@ -651,7 +651,7 @@ async fn indexed_handle_can_remove_a_missing_local_artifact() {
                 )
                 .await
                 .unwrap();
-                Snapshot::remove(source.to_str().unwrap(), false)
+                Snapshot::remove_by_reference(source.to_str().unwrap(), false)
                     .await
                     .unwrap();
 
@@ -1683,7 +1683,7 @@ async fn repeated_loads_preserve_ids_and_resolve_local_group_names() {
         );
 
         // Removing one installed copy does not erase another group's membership or payload.
-        Snapshot::remove(&format!("{}:clean", fresh.group().unwrap()), false)
+        Snapshot::remove_by_reference(&format!("{}:clean", fresh.group().unwrap()), false)
             .await
             .unwrap();
         assert!(!fresh.path().unwrap().exists());
@@ -3201,7 +3201,7 @@ async fn replacing_child_in_place_does_not_inflate_parent_child_count() {
                 std::fs::remove_dir_all(&cdir).unwrap();
             }
             child.remove(false).await.unwrap();
-            Snapshot::remove(pdir.to_string_lossy().as_ref(), false)
+            Snapshot::remove_by_reference(pdir.to_string_lossy().as_ref(), false)
                 .await
                 .expect("parent should be removable once its only child is gone");
         })

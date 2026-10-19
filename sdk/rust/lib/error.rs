@@ -359,6 +359,16 @@ pub enum MicrosandboxError {
     #[error("{0}")]
     SnapshotImport(#[source] Box<SnapshotImportError>),
 
+    /// Filesystem removal committed, but subsequent catalog or recovery work failed.
+    #[error("checkpoint removal committed for {}; recovery remains: {source}", .result.id)]
+    SnapshotRemovalRecovery {
+        /// The exact removal and head outcome, even though cleanup did not finish.
+        result: Box<crate::snapshot::CheckpointRemoveResult>,
+        /// Original cleanup/catalog failure.
+        #[source]
+        source: Box<MicrosandboxError>,
+    },
+
     /// Group verification failed. The report retains every member outcome, including partial evidence.
     #[error("snapshot group verification failed for '{}'", .0.group)]
     SnapshotVerification(Box<crate::snapshot::SnapshotGroupVerifyReport>),

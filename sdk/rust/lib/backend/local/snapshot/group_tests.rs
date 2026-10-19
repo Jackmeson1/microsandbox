@@ -1409,10 +1409,10 @@ async fn live_public_group_capture_head_and_spawn_after_source_deletion() {
             group.set_head("next").await.unwrap();
             // The stopped-capture retry is an external child of `next`; its dependency
             // protection must still apply before we exercise successful head deletion.
-            let protected = Checkpoint::remove("history:next", false).await.unwrap_err();
+            let protected = Checkpoint::remove_by_reference("history:next", false).await.unwrap_err();
             assert!(protected.to_string().contains("indexed child"), "{protected}");
-            Checkpoint::remove("failed-initial", false).await.unwrap();
-            Checkpoint::remove("history:next", false).await.unwrap();
+            Checkpoint::remove_by_reference("failed-initial", false).await.unwrap();
+            Checkpoint::remove_by_reference("history:next", false).await.unwrap();
             let fallback = group.get_checkpoint("base").await.unwrap();
             assert_eq!(group.head().await.unwrap().unwrap().id(), fallback.id());
             assert!(group.get_checkpoint("next").await.is_err());
@@ -1424,7 +1424,7 @@ async fn live_public_group_capture_head_and_spawn_after_source_deletion() {
             removed.unwrap();
             let output = checked.unwrap();
             assert!(output.status().success, "{}", output.stderr().unwrap());
-            Checkpoint::remove("history:base", false).await.unwrap();
+            Checkpoint::remove_by_reference("history:base", false).await.unwrap();
             assert!(group.head().await.unwrap().is_none());
             assert!(group.checkpoints().await.unwrap().is_empty());
             assert!(group.spawn_sandbox().await.is_err());

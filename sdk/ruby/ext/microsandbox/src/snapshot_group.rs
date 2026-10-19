@@ -42,9 +42,26 @@ struct RubySnapshotImportResult {
     inner: microsandbox_core::SnapshotImportResult,
 }
 
+#[magnus::wrap(class = "Microsandbox::CheckpointRemoveResult", free_immediately, size)]
+pub(super) struct RubyCheckpointRemoveResult {
+    pub(super) inner: microsandbox_core::CheckpointRemoveResult,
+}
+
 //--------------------------------------------------------------------------------------------------
 // Methods
 //--------------------------------------------------------------------------------------------------
+
+impl RubyCheckpointRemoveResult {
+    fn id(&self) -> String {
+        self.inner.id.to_string()
+    }
+    fn head_update(&self) -> Result<Option<RHash>, Error> {
+        self.inner.head_update.as_ref().map(head_update).transpose()
+    }
+    fn warnings(&self) -> Vec<String> {
+        self.inner.warnings.clone()
+    }
+}
 
 impl RubyGroup {
     fn verify(ruby: &Ruby, this: typed_data::Obj<Self>) -> Result<RHash, Error> {
@@ -364,6 +381,13 @@ pub(super) fn verification_report(
 }
 
 pub(super) fn register(ruby: &Ruby, module: RModule) -> Result<(), Error> {
+    let removed = module.define_class("CheckpointRemoveResult", ruby.class_object())?;
+    removed.define_method("id", method!(RubyCheckpointRemoveResult::id, 0))?;
+    removed.define_method(
+        "head_update",
+        method!(RubyCheckpointRemoveResult::head_update, 0),
+    )?;
+    removed.define_method("warnings", method!(RubyCheckpointRemoveResult::warnings, 0))?;
     let group = module.define_class("Snapshot", ruby.class_object())?;
     group.define_singleton_method("load", function!(RubyGroup::load, -1))?;
     group.define_singleton_method("get", function!(RubyGroup::get, 1))?;
