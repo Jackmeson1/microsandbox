@@ -619,3 +619,7 @@ puts report["coverage"]["kind"]
 `verify` returns a hash with `digest`, `path`, `upper`, `checkpoint`, and `coverage`. Coverage is `complete` or `incomplete`; incomplete coverage includes an `unrecorded` array of required payload paths without checksums, including ancestor layers and owned disks. The upper/head checksum or checkpoint-root result alone does not establish complete coverage. Corruption raises an error.
 
 `Microsandbox::Snapshot.get("worker").verify` checks the whole group's pinned membership, including headless groups. Its hash contains `group`, `state`, `checkpoints`, and `payload_hashes`. States are `complete`, `incomplete`, `invalid`, and `empty` (zero checked). Each member retains its `id`, `path`, `state`, optional existing verification `report`, and specific `findings`. Shared physical payloads are hashed once per algorithm; independent copies are checked separately. Missing checksums remain incomplete. Other verification failures raise `SnapshotVerificationError` with the entire hash in `error.report`; failures before meaningful selection retain their ordinary exception.
+
+## Forking
+
+The Ruby SDK does not currently expose single or batch sandbox forking. For supported APIs and examples, see [TypeScript](/sdk/typescript/snapshots#forking), [Rust](/sdk/rust/snapshots#forking), [Python](/sdk/python/snapshots#forking), or [Go](/sdk/go/snapshots#forking).
