@@ -9,7 +9,9 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
-use microsandbox_image::checkpoint::CheckpointPayloadCheck;
+use microsandbox_image::checkpoint::{
+    CheckpointPayloadCheck, CheckpointPayloadIntegrity, sparse_file_integrity_from_file,
+};
 use microsandbox_image::snapshot::UpperIntegrity;
 use sha2::{Digest, Sha256};
 
@@ -116,19 +118,24 @@ fn verify_with_observer(
                 continue;
             }
             hashes += 1;
-            let result = (|| -> io::Result<UpperIntegrity> {
+            let result = (|| -> io::Result<CheckpointPayloadIntegrity> {
                 file.seek(SeekFrom::Start(0))?;
                 match expected {
-                    UpperIntegrity::Sha256 { .. } => {
+                    CheckpointPayloadIntegrity::Snapshot(UpperIntegrity::Sha256 { .. }) => {
                         let (digest, bytes) = sha256(&mut file, retain_metadata)?;
                         metadata_bytes = bytes;
-                        Ok(digest)
+                        Ok(digest.into())
                     }
-                    UpperIntegrity::SparseSha256V1 { .. } => {
-                        legacy_sparse_integrity_from_file(file.try_clone()?)
-                    }
-                    UpperIntegrity::FileMerkleBlake3V1 { .. } => {
-                        merkle_integrity_from_file(file.try_clone()?)
+                    CheckpointPayloadIntegrity::Snapshot(UpperIntegrity::SparseSha256V1 {
+                        ..
+                    }) => legacy_sparse_integrity_from_file(file.try_clone()?).map(Into::into),
+                    CheckpointPayloadIntegrity::Snapshot(UpperIntegrity::FileMerkleBlake3V1 {
+                        ..
+                    }) => merkle_integrity_from_file(file.try_clone()?).map(Into::into),
+                    CheckpointPayloadIntegrity::CheckpointFileV1(_) => {
+                        sparse_file_integrity_from_file(&mut file)
+                            .map(CheckpointPayloadIntegrity::CheckpointFileV1)
+                            .map_err(io::Error::other)
                     }
                 }
             })()
@@ -318,9 +325,12 @@ mod tests {
         CheckpointPayloadCheck {
             path: path.into(),
             length: bytes.len() as u64,
-            integrity: Some(UpperIntegrity::Sha256 {
-                digest: format!("sha256:{}", hex::encode(Sha256::digest(bytes))),
-            }),
+            integrity: Some(
+                UpperIntegrity::Sha256 {
+                    digest: format!("sha256:{}", hex::encode(Sha256::digest(bytes))),
+                }
+                .into(),
+            ),
             metadata_bytes: None,
         }
     }
@@ -364,16 +374,68 @@ mod tests {
         std::fs::write(&path, b"valid").unwrap();
         let sha = check(&path, b"valid");
         let mut merkle = sha.clone();
-        merkle.integrity = Some(merkle_integrity_from_file(File::open(&path).unwrap()).unwrap());
+        merkle.integrity = Some(
+            merkle_integrity_from_file(File::open(&path).unwrap())
+                .unwrap()
+                .into(),
+        );
+        let mut checkpoint = sha.clone();
+        checkpoint.integrity = Some(CheckpointPayloadIntegrity::CheckpointFileV1(
+            microsandbox_image::checkpoint::sparse_file_integrity(&path).unwrap(),
+        ));
+        assert_ne!(
+            merkle.integrity.as_ref().unwrap().value(),
+            checkpoint.integrity.as_ref().unwrap().value()
+        );
         let mut unrecorded = sha.clone();
         unrecorded.integrity = None;
-        let result = verify_payloads(&[sha, merkle, unrecorded]);
-        assert_eq!(result.hashes, 2);
+        let result = verify_payloads(&[sha, merkle, checkpoint, unrecorded]);
+        assert_eq!(result.hashes, 3);
         assert!(result.outcomes.iter().all(Result::is_ok));
         assert!(matches!(
-            result.outcomes[2],
+            result.outcomes[3],
             Ok(UpperVerifyStatus::NotRecorded)
         ));
+    }
+
+    #[test]
+    fn checkpoint_integrity_rejects_snapshot_merkle_roots_and_corrupt_aliases() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("disk");
+        let alias = root.path().join("alias");
+        std::fs::write(&path, b"valid").unwrap();
+        std::fs::hard_link(&path, &alias).unwrap();
+        let integrity = microsandbox_image::checkpoint::sparse_file_integrity(&path).unwrap();
+        let mut valid = check(&path, b"valid");
+        valid.integrity = Some(CheckpointPayloadIntegrity::CheckpointFileV1(
+            integrity.clone(),
+        ));
+        let mut wrong = valid.clone();
+        wrong.path = alias;
+        wrong.integrity = Some(CheckpointPayloadIntegrity::CheckpointFileV1(
+            microsandbox_image::checkpoint::SparseFileIntegrity {
+                root: merkle_integrity_from_file(File::open(&path).unwrap())
+                    .unwrap()
+                    .value()
+                    .into(),
+                ..integrity
+            },
+        ));
+        let result = verify_payloads(&[valid.clone(), wrong]);
+        assert_eq!(result.hashes, 1);
+        assert!(
+            matches!(&result.outcomes[0], Ok(UpperVerifyStatus::Verified { algorithm, .. }) if algorithm == "microsandbox.checkpoint-file/1")
+        );
+        assert_eq!(
+            result.outcomes[1].as_ref().unwrap_err().kind,
+            PayloadFailureKind::Invalid
+        );
+        std::fs::write(&path, b"wrong").unwrap();
+        let result = verify_payloads(&[valid]);
+        assert_eq!(
+            result.outcomes[0].as_ref().unwrap_err().kind,
+            PayloadFailureKind::Invalid
+        );
     }
 
     #[test]

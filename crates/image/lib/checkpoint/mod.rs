@@ -32,9 +32,9 @@ pub use qcow::{
 };
 pub use resolver::{
     CheckpointClosure, CheckpointObjectReadTiming, CheckpointPayloadCheck,
-    CheckpointVerificationPlan,
+    CheckpointPayloadIntegrity, CheckpointVerificationPlan,
 };
 pub use store::{
     AdmittedObject, CaptureObjectBatch, CaptureObjectBatchStats, LocalObjectStore, ObjectId,
-    SparseFileIntegrity, sparse_file_integrity,
+    SparseFileIntegrity, sparse_file_integrity, sparse_file_integrity_from_file,
 };

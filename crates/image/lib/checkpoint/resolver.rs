@@ -14,7 +14,7 @@ use super::{
     ObjectId, fs_state_budget_error,
 };
 use crate::error::{ImageError, ImageResult};
-use crate::snapshot::{FILE_MERKLE_BLAKE3_LEAF_SIZE, UpperIntegrity};
+use crate::snapshot::UpperIntegrity;
 
 //--------------------------------------------------------------------------------------------------
 // Constants
@@ -60,11 +60,23 @@ pub struct CheckpointPayloadCheck {
     /// Length observed or required while preparing the inventory.
     pub length: u64,
     /// Recorded checksum binding, when one exists.
-    pub integrity: Option<UpperIntegrity>,
+    pub integrity: Option<CheckpointPayloadIntegrity>,
     /// Exact bounded bytes used for semantic decoding. Batch verification must compare these
     /// with the hashed file, so a concurrent replacement cannot change the plan's meaning.
     /// Large RAM/disk/execution payloads are streamed and never retained here.
     pub metadata_bytes: Option<Vec<u8>>,
+}
+
+/// A verification-only checksum binding, preserving the format used by its writer.
+///
+/// Checkpoint disk roots use a different BLAKE3 domain and leaf size from snapshot file
+/// roots. This type is never serialized into artifacts and does not extend either codec.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CheckpointPayloadIntegrity {
+    /// A checksum from a snapshot descriptor or a SHA-256 object identity.
+    Snapshot(UpperIntegrity),
+    /// The fixed checkpoint-file/1 format written by `sparse_file_integrity`.
+    CheckpointFileV1(super::SparseFileIntegrity),
 }
 
 /// A structurally checked inventory for explicit batch verification, never restore admission.
@@ -87,6 +99,24 @@ struct PayloadAdmission<'a> {
 //--------------------------------------------------------------------------------------------------
 // Methods
 //--------------------------------------------------------------------------------------------------
+
+impl CheckpointPayloadIntegrity {
+    /// Identify the exact hash format for scheduling and reporting.
+    pub fn algorithm(&self) -> &'static str {
+        match self {
+            Self::Snapshot(integrity) => integrity.algorithm(),
+            Self::CheckpointFileV1(_) => "microsandbox.checkpoint-file/1",
+        }
+    }
+
+    /// Return the recorded qualified digest or root.
+    pub fn value(&self) -> &str {
+        match self {
+            Self::Snapshot(integrity) => integrity.value(),
+            Self::CheckpointFileV1(integrity) => &integrity.root,
+        }
+    }
+}
 
 impl CheckpointClosure {
     /// Inspect the bounded, identity-verified root for construction planning, not payload admission.
@@ -161,9 +191,12 @@ impl CheckpointClosure {
                     pending.push(CheckpointPayloadCheck {
                         length: open_regular(&path)?.metadata()?.len(),
                         path,
-                        integrity: Some(UpperIntegrity::Sha256 {
-                            digest: content.object.to_string(),
-                        }),
+                        integrity: Some(
+                            UpperIntegrity::Sha256 {
+                                digest: content.object.to_string(),
+                            }
+                            .into(),
+                        ),
                         metadata_bytes: None,
                     });
                 }
@@ -220,11 +253,12 @@ impl CheckpointClosure {
                         path,
                         length: layer.file_size,
                         integrity: layer.integrity_root.as_ref().map(|root| {
-                            UpperIntegrity::FileMerkleBlake3V1 {
-                                root: root.clone(),
-                                logical_size: layer.file_size,
-                                leaf_size: FILE_MERKLE_BLAKE3_LEAF_SIZE,
-                            }
+                            CheckpointPayloadIntegrity::CheckpointFileV1(
+                                super::SparseFileIntegrity {
+                                    root: root.clone(),
+                                    logical_size: layer.file_size,
+                                },
+                            )
                         }),
                         metadata_bytes: None,
                     });
@@ -387,9 +421,12 @@ impl PayloadAdmission<'_> {
         pending.push(CheckpointPayloadCheck {
             path,
             length: bytes.len() as u64,
-            integrity: Some(UpperIntegrity::Sha256 {
-                digest: id.to_string(),
-            }),
+            integrity: Some(
+                UpperIntegrity::Sha256 {
+                    digest: id.to_string(),
+                }
+                .into(),
+            ),
             metadata_bytes: Some(bytes),
         });
         Ok(decoded)
@@ -408,9 +445,12 @@ impl PayloadAdmission<'_> {
         pending.push(CheckpointPayloadCheck {
             path,
             length,
-            integrity: Some(UpperIntegrity::Sha256 {
-                digest: id.to_string(),
-            }),
+            integrity: Some(
+                UpperIntegrity::Sha256 {
+                    digest: id.to_string(),
+                }
+                .into(),
+            ),
             metadata_bytes: None,
         });
         Ok(())
@@ -428,13 +468,26 @@ impl PayloadAdmission<'_> {
             pending.push(CheckpointPayloadCheck {
                 path: path.to_path_buf(),
                 length: expected.bytes,
-                integrity: Some(UpperIntegrity::Sha256 {
-                    digest: format!("sha256:{}", expected.digest),
-                }),
+                integrity: Some(
+                    UpperIntegrity::Sha256 {
+                        digest: format!("sha256:{}", expected.digest),
+                    }
+                    .into(),
+                ),
                 metadata_bytes: None,
             });
             Ok(())
         })
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Trait Implementations
+//--------------------------------------------------------------------------------------------------
+
+impl From<UpperIntegrity> for CheckpointPayloadIntegrity {
+    fn from(integrity: UpperIntegrity) -> Self {
+        Self::Snapshot(integrity)
     }
 }
 
@@ -797,6 +850,26 @@ mod tests {
             assert!(
                 CheckpointClosure::open(directory.path(), None, DEFAULT_FS_STATE_LIMIT).is_ok()
             );
+            let root = ObjectId::from_bytes(&checkpoint.to_canonical_bytes().unwrap()).unwrap();
+            let plan = CheckpointVerificationPlan::prepare(
+                directory.path(),
+                &root,
+                DEFAULT_FS_STATE_LIMIT,
+            )
+            .unwrap();
+            let binding = plan
+                .payloads()
+                .iter()
+                .find(|check| check.path == path)
+                .unwrap();
+            match &binding.integrity {
+                Some(CheckpointPayloadIntegrity::CheckpointFileV1(actual)) => {
+                    assert!(record_integrity);
+                    assert_eq!(*actual, sparse_file_integrity(&path).unwrap());
+                }
+                None => assert!(!record_integrity),
+                other => panic!("checkpoint disk must retain its writer's hash format: {other:?}"),
+            }
             // Same-length content changes are intentionally only detectable when opted in.
             std::fs::write(&path, [18; 4096]).unwrap();
             assert_eq!(

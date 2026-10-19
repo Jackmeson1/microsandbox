@@ -4,11 +4,11 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use microsandbox_image::checkpoint::{
-    CheckpointPayloadCheck, CheckpointVerificationPlan, ObjectId,
+    CheckpointPayloadCheck, CheckpointPayloadIntegrity, CheckpointVerificationPlan, ObjectId,
+    SparseFileIntegrity,
 };
 use microsandbox_image::snapshot::{
-    FILE_MERKLE_BLAKE3_LEAF_SIZE, OwnedVolumeData, SnapshotState, UpperIntegrity,
-    visit_owned_directory_payloads,
+    OwnedVolumeData, SnapshotState, UpperIntegrity, visit_owned_directory_payloads,
 };
 
 use crate::backend::LocalBackend;
@@ -282,7 +282,7 @@ fn prepare(artifact: &Snapshot, fs_state_limit: usize) -> MicrosandboxResult<Mem
                 plan.checks.push(CheckpointPayloadCheck {
                     length: std::fs::symlink_metadata(&path)?.len(),
                     path,
-                    integrity: layer.payload.integrity.clone(),
+                    integrity: layer.payload.integrity.clone().map(Into::into),
                     metadata_bytes: None,
                 });
             }
@@ -291,9 +291,12 @@ fn prepare(artifact: &Snapshot, fs_state_limit: usize) -> MicrosandboxResult<Mem
                 plan.checks.push(CheckpointPayloadCheck {
                     path: path.into(),
                     length: expected.bytes,
-                    integrity: Some(UpperIntegrity::Sha256 {
-                        digest: format!("sha256:{}", expected.digest),
-                    }),
+                    integrity: Some(
+                        UpperIntegrity::Sha256 {
+                            digest: format!("sha256:{}", expected.digest),
+                        }
+                        .into(),
+                    ),
                     metadata_bytes: None,
                 });
                 Ok(())
@@ -308,11 +311,10 @@ fn prepare(artifact: &Snapshot, fs_state_limit: usize) -> MicrosandboxResult<Mem
                                 .join(format!("{}.{}", layer.layer_id, layer.format)),
                             length: layer.file_size,
                             integrity: layer.integrity_root.map(|root| {
-                                UpperIntegrity::FileMerkleBlake3V1 {
+                                CheckpointPayloadIntegrity::CheckpointFileV1(SparseFileIntegrity {
                                     root,
                                     logical_size: layer.file_size,
-                                    leaf_size: FILE_MERKLE_BLAKE3_LEAF_SIZE,
-                                }
+                                })
                             }),
                             metadata_bytes: None,
                         });
@@ -421,6 +423,103 @@ mod tests {
         .unwrap();
         std::fs::write(path.join(DEFAULT_UPPER_FILE), b"valid").unwrap();
         path
+    }
+
+    #[tokio::test]
+    async fn owned_disk_group_verification_matches_single_member_and_reports_missing_integrity() {
+        use microsandbox_image::checkpoint::{
+            DiskGenerationManifest, DiskLayerRef, sparse_file_integrity,
+        };
+        use microsandbox_types::{OwnedVolumeStorage, owned_volume_mount_id};
+        use std::io::{Seek, SeekFrom, Write};
+
+        for recorded in [false, true] {
+            let home = tempfile::tempdir().unwrap();
+            let local = LocalBackend::builder()
+                .home(home.path())
+                .build()
+                .await
+                .unwrap();
+            let directory = group::ensure(&local.snapshots_dir(), Some("owned-checks"))
+                .await
+                .unwrap();
+            let path = install(&directory, 1);
+            std::fs::create_dir(path.join("layers")).unwrap();
+            let disk = path.join("layers/owned.raw");
+            let mut file = std::fs::File::create(&disk).unwrap();
+            file.set_len(1024 * 1024).unwrap();
+            file.write_all(b"owned bytes").unwrap();
+            drop(file);
+            let mut manifest =
+                Manifest::from_bytes(&std::fs::read(path.join(DESCRIPTOR_FILENAME)).unwrap())
+                    .unwrap();
+            let mount_id = owned_volume_mount_id("/data");
+            manifest
+                .set_owned_volumes(vec![OwnedVolumeCapture {
+                    mount_id: mount_id.clone(),
+                    mount: OwnedMountSnapshot {
+                        guest: "/data".into(),
+                        storage: OwnedVolumeStorage::Disk { capacity_mib: 1 },
+                        options: Default::default(),
+                        stat_virtualization: microsandbox_types::StatVirtualization::Strict,
+                        host_permissions: microsandbox_types::HostPermissions::Private,
+                    },
+                    data: OwnedVolumeData::Disk {
+                        generation: DiskGenerationManifest {
+                            schema: "microsandbox.disk-generation/1".into(),
+                            volume_id: "owned-volume".into(),
+                            device_id: mount_id,
+                            generation: 1,
+                            pause_generation: 1,
+                            head: "owned".into(),
+                            layers: vec![DiskLayerRef {
+                                layer_id: "owned".into(),
+                                format: "raw".into(),
+                                virtual_size: 1024 * 1024,
+                                file_size: 1024 * 1024,
+                                predecessor: None,
+                                integrity_root: recorded
+                                    .then(|| sparse_file_integrity(&disk).unwrap().root),
+                            }],
+                        },
+                    },
+                }])
+                .unwrap();
+            std::fs::write(
+                path.join(DESCRIPTOR_FILENAME),
+                manifest.to_canonical_bytes().unwrap(),
+            )
+            .unwrap();
+            let artifact = store::open_for_verification(&local, &path).await.unwrap();
+            super::super::verify_snapshot(&artifact, local.config().fs_state_limit())
+                .await
+                .unwrap();
+            drop(artifact);
+            let report = verify_group(&local, &directory).await.unwrap();
+            assert_eq!(
+                report.state,
+                if recorded {
+                    State::Complete
+                } else {
+                    State::Incomplete
+                }
+            );
+            let mut file = std::fs::OpenOptions::new().write(true).open(&disk).unwrap();
+            file.seek(SeekFrom::Start(0)).unwrap();
+            file.write_all(b"wrong bytes").unwrap();
+            drop(file);
+            let result = verify_group(&local, &directory).await;
+            if recorded {
+                let error = result.unwrap_err();
+                let MicrosandboxError::SnapshotVerification(report) = error else {
+                    panic!("{error}")
+                };
+                assert_eq!(report.state, State::Invalid);
+                assert!(report.checkpoints[0].findings.iter().any(|finding| finding.path == disk && finding.kind == FindingKind::Invalid));
+            } else {
+                assert_eq!(result.unwrap().state, State::Incomplete);
+            }
+        }
     }
 
     #[cfg(unix)]
