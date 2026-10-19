@@ -133,7 +133,9 @@ fn format_snapshot(
         name = s.name,
         id = s.sandbox_id,
         cpu = f64::from(m.cpu_percent) / 100.0,
-        mem = if m.memory_bytes_reported {
+        mem = if m.memory_bytes_reported
+            && m.guest_memory_is_fresh_at(microsandbox_metrics::guest_memory_clock())
+        {
             format_bytes(m.memory_bytes)
         } else {
             "N/A".to_string()
@@ -183,6 +185,7 @@ mod tests {
                 memory_bytes: 14 * 1024 * 1024,
                 memory_bytes_reported: true,
                 memory_total_bytes: None,
+                guest_memory_observation: None,
                 memory_available_bytes: Some(13 * 1024 * 1024),
                 memory_host_resident_bytes: Some(12 * 1024 * 1024),
                 memory_limit_bytes: 512 * 1024 * 1024,

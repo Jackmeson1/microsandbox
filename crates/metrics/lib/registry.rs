@@ -817,6 +817,7 @@ impl MetricsRegistry {
                 cpu_percent: f32::from_bits(cpu_bits),
                 vcpu_time_ns,
                 memory_bytes: if memory_valid { memory } else { 0 },
+                guest_memory_observation: guest_memory.filter(|_| capable),
                 memory_total_bytes: guest_memory
                     .filter(|_| fresh)
                     .map(|report| report.total_bytes),
@@ -1703,8 +1704,9 @@ mod tests {
     #[test]
     fn coherent_guest_memory_preserves_usage_formula_and_independent_sources() {
         let (name, registry, writer, sample) = guest_memory_fixture("gm");
+        let report = guest_report();
         writer
-            .write_sample_with_guest_memory(sample, Some(guest_report()))
+            .write_sample_with_guest_memory(sample, Some(report))
             .unwrap();
         let item = registry.snapshot().unwrap().remove(0);
         assert_eq!(item.memory_total_bytes, Some(3000));
@@ -1713,6 +1715,12 @@ mod tests {
         assert_eq!(item.memory_bytes, 3096);
         assert!(item.memory_bytes_reported);
         assert_eq!(item.memory_limit_bytes, 4096);
+        let collected = crate::SandboxMetricSnapshot::from(item);
+        assert_eq!(collected.metrics.guest_memory_observation, Some(report));
+        assert_eq!(
+            collected.clone().metrics.guest_memory_observation,
+            Some(report)
+        );
         writer.write_sample_with_guest_memory(sample, None).unwrap();
         let item = registry.snapshot().unwrap().remove(0);
         assert_eq!(item.memory_total_bytes, None);

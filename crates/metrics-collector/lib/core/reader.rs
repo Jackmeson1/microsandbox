@@ -337,6 +337,7 @@ mod tests {
                 memory_bytes: 0,
                 memory_bytes_reported: true,
                 memory_total_bytes: None,
+                guest_memory_observation: None,
                 memory_available_bytes: None,
                 memory_host_resident_bytes: None,
                 memory_limit_bytes: 0,

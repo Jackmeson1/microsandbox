@@ -202,6 +202,7 @@ impl LegacyRegistryV2 {
                 vcpu_time_ns,
                 memory_bytes: memory,
                 memory_total_bytes: None,
+                guest_memory_observation: None,
                 memory_bytes_reported: flag_set(sample_flags, SAMPLE_FLAG_MEMORY_USED),
                 memory_available_bytes: flag_value(
                     sample_flags,

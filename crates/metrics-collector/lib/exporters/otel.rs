@@ -5,6 +5,8 @@
 //!
 //! - `microsandbox.cpu.utilization`     — gauge (vCPU-seconds per wall-second; can exceed 1.0)
 //! - `microsandbox.memory.usage`         — gauge (bytes)
+//! - `microsandbox.memory.total`         — gauge (guest usable bytes)
+//! - `microsandbox.memory.available`     — gauge (guest available bytes)
 //! - `microsandbox.memory.limit`         — gauge (bytes)
 //! - `microsandbox.memory.host_resident` — gauge (bytes)
 //! - `microsandbox.disk.bytes_read`     — gauge (cumulative bytes)
@@ -137,6 +139,8 @@ impl Default for IdentityAttributes {
 struct SandboxMetricObservation {
     cpu_utilization: f64,
     memory_usage: Option<u64>,
+    memory_total: Option<u64>,
+    memory_available: Option<u64>,
     memory_limit: u64,
     memory_host_resident: Option<u64>,
     disk_bytes_read: u64,
@@ -614,6 +618,8 @@ fn register_sandbox_instruments(meter: &Meter) -> SandboxMetricObservations {
     let cpu_observations = observations.clone();
     let memory_usage_observations = observations.clone();
     let memory_limit_observations = observations.clone();
+    let memory_total_observations = observations.clone();
+    let memory_available_observations = observations.clone();
     let memory_host_resident_observations = observations.clone();
     let disk_read_observations = observations.clone();
     let disk_write_observations = observations.clone();
@@ -650,6 +656,34 @@ fn register_sandbox_instruments(meter: &Meter) -> SandboxMetricObservations {
             memory_usage_observations.with_observations(|observations| {
                 for observation in observations {
                     if let Some(value) = observation.memory_usage {
+                        observer.observe(value, &observation.attrs);
+                    }
+                }
+            });
+        })
+        .build();
+    meter
+        .u64_observable_gauge("microsandbox.memory.total")
+        .with_description("Guest-reported usable memory capacity")
+        .with_unit("By")
+        .with_callback(move |observer| {
+            memory_total_observations.with_observations(|observations| {
+                for observation in observations {
+                    if let Some(value) = observation.memory_total {
+                        observer.observe(value, &observation.attrs);
+                    }
+                }
+            });
+        })
+        .build();
+    meter
+        .u64_observable_gauge("microsandbox.memory.available")
+        .with_description("Guest-reported memory available for workloads")
+        .with_unit("By")
+        .with_callback(move |observer| {
+            memory_available_observations.with_observations(|observations| {
+                for observation in observations {
+                    if let Some(value) = observation.memory_available {
                         observer.observe(value, &observation.attrs);
                     }
                 }
@@ -827,12 +861,25 @@ fn build_observation(
     snapshot: &SandboxMetricSnapshot,
     attrs: Vec<KeyValue>,
 ) -> SandboxMetricObservation {
+    build_observation_at(snapshot, attrs, microsandbox_metrics::guest_memory_clock())
+}
+
+fn build_observation_at(
+    snapshot: &SandboxMetricSnapshot,
+    attrs: Vec<KeyValue>,
+    now: Option<std::time::Duration>,
+) -> SandboxMetricObservation {
     let m = &snapshot.metrics;
+    // A batch can also be passed directly to this exporter or delayed while an
+    // earlier collection is sent. Recheck each collection at observation time.
+    let fresh = m.guest_memory_is_fresh_at(now);
     // cpu_percent is a 0..100 percentage in the source; OTel convention
     // for `*.utilization` is a 0..1 ratio.
     SandboxMetricObservation {
         cpu_utilization: f64::from(m.cpu_percent) / 100.0,
-        memory_usage: m.memory_bytes_reported.then_some(m.memory_bytes),
+        memory_usage: (fresh && m.memory_bytes_reported).then_some(m.memory_bytes),
+        memory_total: m.memory_total_bytes.filter(|_| fresh),
+        memory_available: m.memory_available_bytes.filter(|_| fresh),
         memory_limit: m.memory_limit_bytes,
         memory_host_resident: m.memory_host_resident_bytes,
         disk_bytes_read: m.disk_read_bytes,
@@ -875,6 +922,7 @@ mod tests {
                 memory_bytes: 1,
                 memory_bytes_reported: true,
                 memory_total_bytes: None,
+                guest_memory_observation: None,
                 memory_available_bytes: Some(2),
                 memory_host_resident_bytes: Some(3),
                 memory_limit_bytes: 2,
@@ -957,6 +1005,54 @@ mod tests {
                 .iter()
                 .all(|kv| kv.key.as_str().starts_with("sandbox."))
         );
+    }
+
+    #[test]
+    fn delayed_guest_pair_expires_together_without_renewing_or_changing_other_metrics() {
+        use microsandbox_metrics::GuestMemoryObservation;
+
+        let (_provider, reader, observations) = test_reader();
+        let mut current = snapshot();
+        let report = GuestMemoryObservation {
+            total_bytes: 100,
+            available_bytes: 20,
+            received_at: Duration::from_secs(10),
+            reporting_interval: Duration::from_secs(1),
+        };
+        current.metrics.memory_total_bytes = Some(100);
+        current.metrics.memory_available_bytes = Some(20);
+        current.metrics.guest_memory_observation = Some(report);
+        for (now, count) in [
+            (Some(Duration::from_secs(12)), 1),
+            (Some(Duration::from_secs(13)), 0),
+            (None, 0),
+        ] {
+            let attrs = build_attributes(&current, &IdentityAttributes::default(), None);
+            observations.replace(vec![build_observation_at(&current, attrs, now)]);
+            let mut exported = ResourceMetrics::default();
+            reader.collect(&mut exported).unwrap();
+            for name in ["usage", "total", "available"] {
+                assert_eq!(
+                    metric_point_count(&exported, &format!("microsandbox.memory.{name}")),
+                    count
+                );
+            }
+            for name in [
+                "microsandbox.memory.limit",
+                "microsandbox.memory.host_resident",
+                "microsandbox.disk.bytes_read",
+            ] {
+                assert_eq!(metric_point_count(&exported, name), 1);
+            }
+            assert_eq!(current.metrics.guest_memory_observation, Some(report));
+        }
+        current
+            .metrics
+            .expire_guest_memory_at(Some(Duration::from_secs(13)));
+        assert!(!current.metrics.memory_bytes_reported);
+        assert_eq!(current.metrics.memory_total_bytes, None);
+        assert_eq!(current.metrics.memory_available_bytes, None);
+        assert_eq!(current.metrics.guest_memory_observation, Some(report));
     }
 
     #[test]
