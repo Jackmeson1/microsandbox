@@ -49,6 +49,15 @@ enum Request {
         reference: String,
         reference_kind: Option<String>,
     },
+    // Legacy artifact factories still return full checkpoint objects. Route updated
+    // bindings through the owned response so their backend and identity survive.
+    CreateArtifact {
+        source: String,
+        options: Box<crate::SnapshotCreateOpts>,
+    },
+    ListDir {
+        directory: std::path::PathBuf,
+    },
     Head,
     Members,
     Member {
@@ -306,6 +315,16 @@ async fn dispatch(id: u64, request: Request, pending: &PendingObjects) -> Result
                 Checkpoint::open_ref(reference).await?,
             )))
         }
+        Request::CreateArtifact { source, options } => {
+            let builder = crate::snapshot_builder_from_opts(source, *options)?;
+            pending.insert(Object::Checkpoint(Box::new(builder.create().await?)))
+        }
+        Request::ListDir { directory } => Checkpoint::list_dir(directory)
+            .await?
+            .into_iter()
+            .map(|checkpoint| pending.insert(Object::Checkpoint(Box::new(checkpoint))))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
         Request::Get { name } => pending.insert(Object::Group(Snapshot::get(name).await?)),
         Request::List => Snapshot::list()
             .await?

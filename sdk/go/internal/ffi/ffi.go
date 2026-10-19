@@ -5685,6 +5685,19 @@ func SnapshotCreate(ctx context.Context, sourceSandbox string, opts SnapshotCrea
 	if err := checkGuestFlush(opts.GuestFlush, !opts.Full); err != nil {
 		return nil, err
 	}
+	if bool(C.has_msb_snapshot_objects()) {
+		// Capture once through the owned response; reopening by name afterward could
+		// select a replacement, and retrying a legacy response could capture twice.
+		raw, err := SnapshotObjectCall(ctx, 0, map[string]any{"op": "create_artifact", "source": sourceSandbox, "options": opts})
+		if err != nil {
+			return nil, err
+		}
+		var info SnapshotInfo
+		if err := json.Unmarshal(raw, &info); err != nil {
+			return nil, fmt.Errorf("parse retained checkpoint create: %w", err)
+		}
+		return &info, nil
+	}
 	payload, err := json.Marshal(opts)
 	if err != nil {
 		return nil, err
@@ -5829,6 +5842,17 @@ func SnapshotList(ctx context.Context) ([]*SnapshotHandleInfo, error) {
 func SnapshotListDir(ctx context.Context, dir string) ([]*SnapshotInfo, error) {
 	if err := ensureLoaded(); err != nil {
 		return nil, err
+	}
+	if bool(C.has_msb_snapshot_objects()) {
+		raw, err := SnapshotObjectCall(ctx, 0, map[string]any{"op": "list_dir", "directory": dir})
+		if err != nil {
+			return nil, err
+		}
+		var infos []*SnapshotInfo
+		if err := json.Unmarshal(raw, &infos); err != nil {
+			return nil, fmt.Errorf("parse retained checkpoint list: %w", err)
+		}
+		return infos, nil
 	}
 	cDir := C.CString(dir)
 	defer C.free(unsafe.Pointer(cDir))
