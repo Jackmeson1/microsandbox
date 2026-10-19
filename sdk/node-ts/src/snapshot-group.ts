@@ -1,4 +1,4 @@
-import type { NapiRestoreBuilder } from "./internal/napi.js";
+import type { NapiRestoreBuilder, NapiLoadOpts } from "./internal/napi.js";
 import { withMappedErrors } from "./internal/error-mapping.js";
 import { napi, type NapiSnapshotGroup, type NapiSnapshotCreateResult, type NapiSnapshotCaptureOptions, type NapiHeadUpdate } from "./internal/napi.js";
 import { Snapshot as Checkpoint, type HeadUpdate } from "./snapshot.js";
@@ -37,10 +37,43 @@ export interface CheckpointCaptureResult {
   readonly headUpdate: HeadUpdate;
 }
 
+/** Controls for one atomic import into the separately selected destination group. */
+export class SnapshotLoadOptions {
+  private options: NapiLoadOpts = {};
+  base(value: string): this { this.options.base = value; return this; }
+  destDir(value: string): this { this.options.dest = value; return this; }
+  setHead(): this { this.options.setHead = true; return this; }
+  /** @internal */
+  toNative(): NapiLoadOpts { return { ...this.options }; }
+}
+
+/** Operation-owned facts from a confirmed atomic import. */
+export interface SnapshotImportResult {
+  readonly operationId: string;
+  readonly snapshot: Snapshot;
+  readonly checkpoints: CheckpointHandle[];
+  readonly added: string[];
+  readonly reused: string[];
+  readonly headUpdate: HeadUpdate;
+  readonly warnings: string[];
+}
+
 /** Named checkpoint history; its head is resolved when an operation begins. */
 export class Snapshot {
   /** @internal */
   constructor(readonly inner: NapiSnapshotGroup) {}
+
+  static async load(group: string, files: string[]): Promise<SnapshotImportResult> {
+    return Snapshot.loadWith(group, files, options => options);
+  }
+
+  static async loadWith(group: string, files: string[], configure: (options: SnapshotLoadOptions) => SnapshotLoadOptions): Promise<SnapshotImportResult> {
+    const options = configure(new SnapshotLoadOptions()).toNative();
+    const result = await withMappedErrors(() => napi.SnapshotGroup.load(group, [...files], options));
+    return { operationId: result.operationId, snapshot: new Snapshot(result.snapshot),
+      checkpoints: result.checkpoints.map(member => new CheckpointHandle(member)),
+      added: [...result.added], reused: [...result.reused], headUpdate: headOutcome(result.headUpdate), warnings: [...result.warnings] };
+  }
 
   static async get(name: string): Promise<Snapshot> {
     return new Snapshot(await withMappedErrors(() => napi.SnapshotGroup.get(name)));

@@ -22,13 +22,24 @@ func TestSnapshotGroupsLive(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	if _, err := Checkpoint.LoadMany(ctx, []string{archive}, SnapshotLoadOptions{Group: "seed"}); err != nil {
-		t.Fatal(err)
-	}
-	seed, err := Snapshot.Get(ctx, "seed")
+	imported, err := Snapshot.Load(ctx, "seed", []string{archive, archive})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(imported.Added) == 0 || len(imported.Reused) != 0 || imported.OperationID == "" || len(imported.Warnings) != 0 {
+		t.Fatalf("initial import: %+v", imported)
+	}
+	retried, err := Snapshot.Load(ctx, "seed", []string{archive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retried.Added) != 0 || len(retried.Reused) != len(imported.Added) || retried.OperationID == imported.OperationID {
+		t.Fatalf("retry: %+v", retried)
+	}
+	if _, err := Checkpoint.LoadMany(ctx, []string{archive}, SnapshotLoadOptions{Group: "seed"}); err != nil {
+		t.Fatal(err)
+	}
+	seed := imported.Snapshot
 	if _, err := seed.Checkpoint(ctx); err == nil || !strings.Contains(err.Error(), "unbound") {
 		t.Fatalf("unbound capture: %v", err)
 	}

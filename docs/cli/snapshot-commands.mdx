@@ -191,7 +191,7 @@ msb snap export worker:ready --output ready.msb --with-image
 
 ## msb snap import
 
-Import one or more local archives. The `load` alias remains supported. Dependencies resolve regardless of input order; all members are validated before publication.
+Import one or more local archives into the required destination group. The `load` alias uses the same `GROUP --file ARCHIVE...` grammar. This replaces positional archive paths and `--group` from 0.7.x. Dependencies resolve regardless of input order; all members are validated before publication.
 
 Snapshot publication records image ownership before exposing the installed artifact and reports catalog failures. Pending publication and deletion recovery runs during snapshot listing; image pruning also reconciles pending publication.
 
@@ -207,24 +207,27 @@ When older SDKs or CLIs share the storage, the operator must control the mainten
 4. Resume the older writers only after that interval. This is operator-controlled exclusion; the new admission lock cannot restrain binaries that do not participate in its protocol.
 
 ```bash
-msb snap import ready.msb
+msb snap import received --file ready.msb
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--dest DIR` | Parent directory for groups; defaults to the configured snapshot store |
-| `--group GROUP` | Destination group; generated when omitted |
+| `GROUP` | Required destination group; created only with a committed batch |
+| `--file ARCHIVE...` | Required archive files; repeat the flag or provide multiple paths |
 | `--base SNAPSHOT` | External snapshot or standalone archive for missing dependencies |
 | `--set-head` | Select the imported tip even with divergent ancestry; requires a unique tip |
+
+The command prints `Added: ID` or `Reused: ID` for each unique supplied member only after the whole batch commits. It reports the operation’s head decision and any deferred cleanup warnings. Repeated imports reuse identical installed members.
 
 Dependencies come from the batch, matching members in the named group, or `--base`. Import preserves recorded hashes; run `verify` to check them.
 
 <Accordion title="Examples">
 
 ```bash
-msb snap import changes.msb base.msb --group received
-msb snap import changes.msb --base worker:ready --group received
-msb snap import experiment.msb --group worker --set-head
+msb snap import received --file changes.msb base.msb
+msb snap import received --file changes.msb --base worker:ready
+msb snap import worker --file experiment.msb --set-head
 ```
 
 </Accordion>

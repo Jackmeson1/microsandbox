@@ -72,7 +72,8 @@ def test_import_preserves_publication_outcome(outcome: str) -> None:
     assert error.detail == "index write failed"
 
 
-def test_native_import_failure_retains_batch_context(tmp_path: Path) -> None:
+@pytest.mark.parametrize("api", ["group", "legacy"])
+def test_native_import_failure_retains_batch_context(tmp_path: Path, api: str) -> None:
     # A subprocess selects an isolated local home before native backend initialization.
     # No VM is needed: malformed archive bytes fail before group publication.
     archive = tmp_path / "invalid.msb"
@@ -81,11 +82,14 @@ def test_native_import_failure_retains_batch_context(tmp_path: Path) -> None:
         [sys.executable, "-c", """
 import asyncio
 import sys
-from microsandbox import Snapshot, SnapshotImportError
+from microsandbox import Snapshot, Checkpoint, SnapshotImportError
 
 async def main():
     try:
-        await Snapshot.load_many([sys.argv[1]], group="history")
+        if sys.argv[2] == "group":
+            await Snapshot.load("history", [sys.argv[1]])
+        else:
+            await Checkpoint.load_many([sys.argv[1]], group="history")
     except SnapshotImportError as error:
         assert error.outcome == "not_committed", error.outcome
         assert error.archives == [sys.argv[1]], error.archives
@@ -96,7 +100,7 @@ async def main():
         raise AssertionError("malformed archive was accepted")
 
 asyncio.run(main())
-""", str(archive)],
+""", str(archive), api],
         env={**os.environ, "MSB_HOME": str(tmp_path / "home")},
         capture_output=True,
         text=True,

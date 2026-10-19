@@ -34,7 +34,7 @@ pub(super) async fn load(
     local: &LocalBackend,
     archives: &[PathBuf],
     opts: LoadOpts,
-) -> MicrosandboxResult<Vec<SnapshotHandle>> {
+) -> MicrosandboxResult<ImportedBatch> {
     let mut progress = ImportProgress {
         operation_id: format!("{:032x}", rand::random::<u128>()),
         group_path: None,
@@ -67,7 +67,7 @@ async fn load_inner(
     archives: &[PathBuf],
     opts: LoadOpts,
     progress: &mut ImportProgress,
-) -> MicrosandboxResult<Vec<SnapshotHandle>> {
+) -> MicrosandboxResult<ImportedBatch> {
     if archives.is_empty() {
         return Err(MicrosandboxError::InvalidConfig(
             "snapshot load requires at least one archive".into(),
@@ -314,7 +314,7 @@ async fn load_inner(
     let set_head = opts.set_head;
     let outcome = progress.outcome.clone();
     let operation = progress.operation_id.clone();
-    let update = tokio::spawn(async move {
+    let (mut publication, _writer) = tokio::spawn(async move {
         // Cancellation must not drop staging, image pins, or namespace pins while the
         // blocking group publisher is still moving members into their final names.
         let _protection = (image_operations, publication_leases, destination_group);
@@ -323,7 +323,7 @@ async fn load_inner(
             super::super::publication::prepare(&db, &path, snapshot.digest(), snapshot.manifest())
                 .await?;
         }
-        let update = super::super::group::publish_batch_indexed_admitted(
+        let mut publication = super::super::group::publish_batch_indexed_admitted(
             &destination,
             publication.path(),
             &aliases,
@@ -333,9 +333,14 @@ async fn load_inner(
             writer.clone(),
         )
         .await?;
-        super::super::publication::complete_batch(&db, &destination).await?;
-        drop(writer);
-        Ok::<_, MicrosandboxError>(update)
+        if let Some(warnings) =
+            super::super::publication::complete_batch_report(&db, &destination).await?
+        {
+            publication.warnings.extend(warnings);
+        }
+        // Keep admission until the caller has projected every returned member. A
+        // concurrent remover must not turn a committed report into a missing-file race.
+        Ok::<_, MicrosandboxError>((publication, writer))
     })
     .await
     .map_err(|error| {
@@ -345,12 +350,36 @@ async fn load_inner(
         .file_name()
         .and_then(|name| name.to_str())
         .expect("validated group name");
-    let mut handles = Vec::with_capacity(candidates.len());
-    for id in &candidates {
+    let legacy_update = publication.head_update.clone();
+    let head_update = publication
+        .head_update
+        .take()
+        .unwrap_or_else(|| crate::HeadUpdate {
+            group: group.into(),
+            previous: None,
+            head: None,
+            reason: crate::HeadUpdateReason::AmbiguousCandidates,
+            changed: false,
+        });
+    let mut members = BTreeMap::new();
+    for id in identities.keys() {
         let path = group_dir.join(id.as_str());
         let snapshot = store::open_snapshot(local, path.to_string_lossy().as_ref()).await?;
-        handles.push(handle(&snapshot, group, update.clone())?);
+        members.insert(
+            id.to_string(),
+            handle(&snapshot, group, Some(head_update.clone()))?,
+        );
     }
+    // The legacy result is per input archive (including duplicates). The new report
+    // contains every unique supplied member, including bundled dependencies.
+    let heads = candidates
+        .iter()
+        .map(|id| {
+            let mut handle = members[id.as_str()].clone();
+            handle.head_update = legacy_update.clone();
+            handle
+        })
+        .collect();
     tracing::info!(
         target: "microsandbox_checkpoint_timing",
         operation = "snapshot_load_batch",
@@ -360,7 +389,16 @@ async fn load_inner(
         validate_us,
         "snapshot batch load timing"
     );
-    Ok(handles)
+    Ok(ImportedBatch {
+        operation_id: progress.operation_id.clone(),
+        group_path: group_dir,
+        heads,
+        members: members.into_values().collect(),
+        added: publication.added,
+        reused: publication.reused,
+        head_update,
+        warnings: publication.warnings,
+    })
 }
 
 async fn unpack(

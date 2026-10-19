@@ -15,7 +15,10 @@ mod types;
 
 pub use api::{Checkpoint, SnapshotArchive, SnapshotBuilder, SnapshotHandle, SnapshotReference};
 pub use copy::SnapshotCopyBuilder;
-pub use group::{CheckpointCaptureResult, Snapshot, SnapshotCaptureOptions, SnapshotCreateResult};
+pub use group::{
+    CheckpointCaptureResult, Snapshot, SnapshotCaptureOptions, SnapshotCreateResult,
+    SnapshotImportResult,
+};
 pub use microsandbox_types::snapshot::{
     CheckpointSnapshotState, DESCRIPTOR_FILENAME, DiskLayer, DiskLayerId, FileSnapshotState,
     ImageRef, LayerFileKind, LayerPayload, Manifest, SnapshotCapture, SnapshotConsistency,

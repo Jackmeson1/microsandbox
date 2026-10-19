@@ -1071,7 +1071,7 @@ export type JsRuleDestinationBuilder = RuleDestinationBuilder
  */
 export declare class Sandbox {
   /** Create a new history from this exact sandbox incarnation. */
-  snapshot(name: string, options?: JsSnapshotCaptureOptions | undefined | null): Promise<JsSnapshotCreateResult>
+  snapshot(name: string, options?: SnapshotCaptureOptions): Promise<SnapshotCreateResult>
   /** Retrieve a retained managed job in this sandbox. */
   getJob(id: string): Promise<Job>
   /** List bounded managed-job metadata without creating processes. */
@@ -1659,7 +1659,7 @@ export declare class SandboxHandle {
    */
   logStream(opts?: LogStreamOptions | undefined | null): Promise<LogStream>
   /** Create a new history with the exact initial checkpoint and capture head outcome. */
-  snapshot(name: string, options?: JsSnapshotCaptureOptions | undefined | null): Promise<JsSnapshotCreateResult>
+  snapshot(name: string, options?: SnapshotCaptureOptions): Promise<SnapshotCreateResult>
 }
 export type JsSandboxHandle = SandboxHandle
 
@@ -1878,6 +1878,7 @@ export type JsSnapshotCopyBuilder = SnapshotCopyBuilder
 
 /** A named snapshot history, separate from an immutable checkpoint. */
 export declare class SnapshotGroup {
+  static load(group: string, archives: string[], opts?: LoadOpts): Promise<SnapshotImportResult>
   /**
    * Consume destination options; the receiver always selects the source and backend.
    *
@@ -2834,6 +2835,17 @@ export interface SnapshotCreateResult {
   snapshot: SnapshotGroup
   checkpoint: Snapshot
   headUpdate: HeadUpdate
+}
+
+/** A committed archive batch, including reused members and deferred cleanup. */
+export interface SnapshotImportResult {
+  operationId: string
+  snapshot: SnapshotGroup
+  checkpoints: Array<SnapshotHandle>
+  added: Array<string>
+  reused: Array<string>
+  headUpdate: HeadUpdate
+  warnings: Array<string>
 }
 
 /** Snapshot index info from the local DB cache. */

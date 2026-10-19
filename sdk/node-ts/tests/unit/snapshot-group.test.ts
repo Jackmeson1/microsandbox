@@ -3,7 +3,7 @@ import { Snapshot, snapshotCreateResult } from "../../dist/snapshot-group.js";
 import { napi } from "../../dist/internal/napi.js";
 
 vi.mock("../../dist/internal/napi.js", () => ({
-  napi: { SnapshotGroup: { get: vi.fn(), list: vi.fn() }, Snapshot: { groupHead: vi.fn() } },
+  napi: { SnapshotGroup: { get: vi.fn(), list: vi.fn(), load: vi.fn() }, Snapshot: { groupHead: vi.fn() } },
 }));
 vi.mock("../../dist/sandbox.js", () => ({ Sandbox: class {} }));
 
@@ -56,4 +56,21 @@ describe("group and checkpoint separation", () => {
     expect(result.checkpoint.id).toBe("initial");
     expect(native.head).not.toHaveBeenCalled();
   });
+});
+
+it("preserves committed import facts and callback options without rereading head", async () => {
+  const native = group();
+  const added = ["new"];
+  const warnings = ["cleanup remains"];
+  vi.mocked(napi.SnapshotGroup.load).mockResolvedValue({ operationId: "attempt", snapshot: native, checkpoints: [], added, reused: ["old"], warnings,
+    headUpdate: { group: "history", previous: undefined, head: undefined, reason: "ambiguous_candidates", changed: false } } as never);
+  const result = await Snapshot.loadWith("history", ["child.msb", "base.msb"], options => options.destDir("store").base("external.msb").setHead());
+  expect(napi.SnapshotGroup.load).toHaveBeenCalledWith("history", ["child.msb", "base.msb"], { dest: "store", base: "external.msb", setHead: true });
+  added.push("later"); warnings.push("later");
+  expect(result.added).toEqual(["new"]);
+  expect(result.reused).toEqual(["old"]);
+  expect(result.warnings).toEqual(["cleanup remains"]);
+  expect(result.operationId).toBe("attempt");
+  expect(result.headUpdate.head).toBeNull();
+  expect(native.head).not.toHaveBeenCalled();
 });

@@ -103,6 +103,7 @@ fn _microsandbox(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<snapshot::PySnapshot>()?;
     m.add_class::<snapshot_group::PySnapshotGroup>()?;
     m.add_class::<snapshot_group::PySnapshotCreateResult>()?;
+    m.add_class::<snapshot_group::PySnapshotImportResult>()?;
     m.add_class::<snapshot_group::PyCheckpointCaptureResult>()?;
     m.add_class::<snapshot::PySnapshotArchive>()?;
     m.add_class::<snapshot::PySnapshotCopyBuilder>()?;

@@ -230,7 +230,7 @@ pub(super) fn pending_index(
 
 /// Persist the index acknowledgement before retiring the journal. If recursive cleanup
 /// fails, subsequent accesses can retry it without repeating or undoing the committed batch.
-pub(super) fn finish_index(directory: &Path) -> MicrosandboxResult<()> {
+pub(super) fn finish_index(directory: &Path) -> MicrosandboxResult<Vec<String>> {
     let journal = directory.join(DIRECTORY);
     let intent: Intent = serde_json::from_slice(&read_regular(
         &journal.join("intent.json"),
@@ -239,9 +239,14 @@ pub(super) fn finish_index(directory: &Path) -> MicrosandboxResult<()> {
     write_json(&journal, "indexed", &intent.operation)?;
     finish_creation(directory)?;
     if let Err(error) = retire(directory) {
-        tracing::warn!(%error, "snapshot batch committed and indexed; journal cleanup will retry");
+        let warning = format!(
+            "snapshot batch committed and indexed; journal cleanup will retry at {}: {error}",
+            directory.display()
+        );
+        tracing::warn!(%warning);
+        return Ok(vec![warning]);
     }
-    Ok(())
+    Ok(Vec::new())
 }
 
 fn index_acknowledged(journal: &Path, intent: &Intent) -> MicrosandboxResult<bool> {

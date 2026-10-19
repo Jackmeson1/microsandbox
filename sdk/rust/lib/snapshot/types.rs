@@ -112,6 +112,26 @@ pub enum HeadUpdateReason {
 // Methods
 //--------------------------------------------------------------------------------------------------
 
+impl LoadOpts {
+    /// Supply a base for omitted disk layers or memory objects.
+    pub fn base(mut self, base: impl Into<String>) -> Self {
+        self.base = Some(base.into());
+        self
+    }
+
+    /// Install the named group beneath this local store root.
+    pub fn dest_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.dest = Some(path.into());
+        self
+    }
+
+    /// Select the unique imported tip even when it is not a fast-forward.
+    pub fn set_head(mut self) -> Self {
+        self.set_head = true;
+        self
+    }
+}
+
 impl SaveOpts {
     /// Include the recorded parent chain.
     pub fn with_parents(mut self) -> Self {

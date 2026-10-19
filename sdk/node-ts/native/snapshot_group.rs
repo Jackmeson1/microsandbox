@@ -1,6 +1,7 @@
 //! Native group handles retain their backend and return operation-owned capture results.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use microsandbox::snapshot::GuestFlush;
 use microsandbox::{Snapshot as RustGroup, SnapshotCaptureOptions};
@@ -47,12 +48,58 @@ pub struct JsCheckpointCaptureResult {
     pub head_update: JsHeadUpdate,
 }
 
+/// A committed archive batch, including reused members and deferred cleanup.
+#[napi(object, object_from_js = false, js_name = "SnapshotImportResult")]
+pub struct JsSnapshotImportResult {
+    pub operation_id: String,
+    pub snapshot: JsSnapshotGroup,
+    pub checkpoints: Vec<JsSnapshotHandle>,
+    pub added: Vec<String>,
+    pub reused: Vec<String>,
+    pub head_update: JsHeadUpdate,
+    pub warnings: Vec<String>,
+}
+
 //--------------------------------------------------------------------------------------------------
 // Methods
 //--------------------------------------------------------------------------------------------------
 
 #[napi]
 impl JsSnapshotGroup {
+    #[napi(
+        ts_args_type = "group: string, archives: string[], opts?: LoadOpts",
+        ts_return_type = "Promise<SnapshotImportResult>"
+    )]
+    pub async fn load(
+        group: String,
+        archives: Vec<String>,
+        opts: Option<crate::snapshot::JsLoadOpts>,
+    ) -> Result<JsSnapshotImportResult> {
+        let opts = opts.unwrap_or_default();
+        let files = archives.into_iter().map(PathBuf::from).collect::<Vec<_>>();
+        let result = RustGroup::load_with(&group, &files, |_| microsandbox::LoadOpts {
+            dest: opts.dest.map(PathBuf::from),
+            base: opts.base,
+            group: opts.group,
+            set_head: opts.set_head.unwrap_or(false),
+        })
+        .await
+        .map_err(to_napi_error)?;
+        Ok(JsSnapshotImportResult {
+            operation_id: result.operation_id,
+            snapshot: Self::from_rust(result.snapshot),
+            checkpoints: result
+                .checkpoints
+                .into_iter()
+                .map(JsSnapshotHandle::from_rust)
+                .collect(),
+            added: result.added.into_iter().map(|id| id.to_string()).collect(),
+            reused: result.reused.into_iter().map(|id| id.to_string()).collect(),
+            head_update: head_update_to_js(&result.head_update),
+            warnings: result.warnings,
+        })
+    }
+
     /// Consume destination options; the receiver always selects the source and backend.
     ///
     /// # Safety

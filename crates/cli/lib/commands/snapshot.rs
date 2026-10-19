@@ -1,5 +1,6 @@
 //! `msb snapshot` command — capture, restore, and manage snapshots.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
@@ -273,8 +274,11 @@ pub struct SnapshotSaveArgs {
 /// Arguments for `msb snapshot import` (also available as `load`).
 #[derive(Debug, Args)]
 pub struct SnapshotLoadArgs {
+    /// Destination snapshot group, created only when the complete batch commits.
+    pub group: String,
+
     /// Archives to import together; dependencies are resolved regardless of argument order.
-    #[arg(required = true, num_args = 1.., value_name = "ARCHIVE")]
+    #[arg(long = "file", required = true, num_args = 1.., value_name = "ARCHIVE")]
     pub archives: Vec<PathBuf>,
 
     /// Destination directory (defaults to `~/.microsandbox/snapshots/`).
@@ -283,10 +287,6 @@ pub struct SnapshotLoadArgs {
     /// External base snapshot or standalone archive if batch/group members cannot supply dependencies.
     #[arg(long)]
     pub base: Option<String>,
-
-    /// Import into this group (generated when omitted).
-    #[arg(long, value_name = "GROUP")]
-    pub group: Option<String>,
 
     /// Select the batch's unique tip as head even if it is not a fast-forward.
     #[arg(long)]
@@ -798,34 +798,27 @@ async fn save(args: SnapshotSaveArgs) -> anyhow::Result<()> {
 }
 
 async fn load(args: SnapshotLoadArgs) -> anyhow::Result<()> {
-    let handles = Snapshot::load_many(
-        &args.archives,
-        microsandbox::snapshot::LoadOpts {
-            dest: args.dest,
-            base: args.base,
-            group: args.group,
-            set_head: args.set_head,
-        },
-    )
+    let result = SnapshotGroup::load_with(&args.group, &args.archives, |mut options| {
+        options.dest = args.dest;
+        options.base = args.base;
+        options.set_head = args.set_head;
+        options
+    })
     .await?;
-    // Every imported member belongs to one batch; report its single head decision once.
-    if let Some(update) = handles.iter().find_map(|handle| handle.head_update()) {
-        report_head_update(update);
-    } else if let Some(group) = handles.first().and_then(|handle| handle.group()) {
-        eprintln!(
-            "group {group}: imported members without selecting a head; choose a member explicitly"
-        );
+    report_head_update(&result.head_update);
+    for warning in &result.warnings {
+        ui::warn(warning);
     }
-    for (index, handle) in handles.iter().enumerate() {
-        if handles.len() > 1 {
-            if index > 0 {
-                println!();
-            }
-            println!("Snapshot: {}", handle.id());
-        }
-        println!("{}", handle.digest());
-        // Preserve the single-archive digest/path output consumed by shell scripts.
-        println!("{}", format_reference(&handle.reference()));
+    // Report only committed members. Include reuse explicitly so retrying a batch
+    // cannot be mistaken for importing another copy of the same checkpoints.
+    let added: BTreeSet<_> = result.added.iter().map(|id| id.as_str()).collect();
+    for checkpoint in &result.checkpoints {
+        let action = if added.contains(checkpoint.id()) {
+            "Added"
+        } else {
+            "Reused"
+        };
+        println!("{action}: {}", checkpoint.id());
     }
     Ok(())
 }
@@ -1233,12 +1226,12 @@ mod tests {
         for command in ["import", "load"] {
             let SnapshotCommands::Load(args) = parse_snapshot_args(&[
                 command,
+                "received",
+                "--file",
                 "changes.msb",
                 "base.msb",
                 "--base",
                 "app:base",
-                "--group",
-                "received",
                 "--dest",
                 "/tmp/snaps",
                 "--set-head",
@@ -1255,7 +1248,7 @@ mod tests {
                 ]
             );
             assert_eq!(args.base.as_deref(), Some("app:base"));
-            assert_eq!(args.group.as_deref(), Some("received"));
+            assert_eq!(args.group, "received");
             assert_eq!(
                 args.dest.as_deref(),
                 Some(std::path::Path::new("/tmp/snaps"))
@@ -1282,7 +1275,14 @@ mod tests {
 
     #[test]
     fn load_parses_args() {
-        let parsed = parse_snapshot_args(&["load", "bundle.tar", "--dest", "/tmp/snaps"]);
+        let parsed = parse_snapshot_args(&[
+            "load",
+            "received",
+            "--file",
+            "bundle.tar",
+            "--dest",
+            "/tmp/snaps",
+        ]);
         let SnapshotCommands::Load(args) = parsed.command else {
             panic!("expected load command");
         };
@@ -1297,12 +1297,13 @@ mod tests {
     fn load_parses_multiple_archives_and_a_named_destination() {
         let parsed = parse_snapshot_args(&[
             "load",
+            "received",
+            "--file",
             "changes.msb",
+            "--file",
             "base.msb",
             "--dest",
             "/tmp/snaps",
-            "--group",
-            "received",
         ]);
         let SnapshotCommands::Load(args) = parsed.command else {
             panic!("expected load command");
@@ -1318,30 +1319,30 @@ mod tests {
             args.dest.as_deref(),
             Some(std::path::Path::new("/tmp/snaps"))
         );
-        assert_eq!(args.group.as_deref(), Some("received"));
+        assert_eq!(args.group, "received");
     }
 
     #[test]
     fn load_requires_at_least_one_archive() {
-        assert!(TestCli::try_parse_from(["msb", "load", "--group", "received"]).is_err());
+        assert!(TestCli::try_parse_from(["msb", "load", "received"]).is_err());
     }
 
     #[test]
     fn load_accepts_group_and_explicit_head_selection() {
         let parsed = parse_snapshot_args(&[
             "load",
+            "work",
+            "--file",
             "changes.msb",
             "--base",
             "work:base",
-            "--group",
-            "work",
             "--set-head",
         ]);
         let SnapshotCommands::Load(args) = parsed.command else {
             panic!("expected load command");
         };
         assert_eq!(args.base.as_deref(), Some("work:base"));
-        assert_eq!(args.group.as_deref(), Some("work"));
+        assert_eq!(args.group, "work");
         assert!(args.set_head);
     }
 

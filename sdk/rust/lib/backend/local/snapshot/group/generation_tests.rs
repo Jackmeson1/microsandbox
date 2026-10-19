@@ -2,7 +2,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, atomic::AtomicU8, mpsc};
 use std::time::Duration;
 
 use microsandbox_image::storage_lease::StorageLease;
@@ -908,4 +908,57 @@ async fn production_crash_worker() {
         .await
         .unwrap();
     panic!("publisher missed requested crash boundary");
+}
+
+#[tokio::test]
+async fn confirmed_publication_returns_cleanup_warning_without_losing_members() {
+    let root = tempfile::tempdir().unwrap();
+    let group = group::ensure(root.path(), Some("history")).await.unwrap();
+    add(&group, 1, None).await;
+    let input = stage(root.path(), &[descriptor(2, Some(1))]);
+    let outcome = Arc::new(AtomicU8::new(SnapshotImportOutcome::NotCommitted as u8));
+    let operation = group::IndexedPublication {
+        operation: "00000000000000000000000000000043".into(),
+        outcome: outcome.clone(),
+    };
+    let _owner = group::lock_group(&group).unwrap();
+    let incoming = read_members(input.path(), false).unwrap();
+    let warnings = publish_with_flush(
+        &group,
+        input.path(),
+        &incoming,
+        &BTreeMap::new(),
+        Some(id(2).to_string()),
+        &operation,
+        |parent| {
+            sync_directory(parent)?;
+            // Force only retired-generation cleanup to fail, after publication and
+            // durability have succeeded. All paths belong to this disposable fixture.
+            let retired = fs::read_dir(parent)?
+                .map(|entry| entry.unwrap())
+                .find(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".group-generation-")
+                })
+                .unwrap()
+                .path();
+            fs::remove_dir_all(&retired)?;
+            fs::write(retired, b"cleanup fault")?;
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        outcome.load(Ordering::Acquire),
+        SnapshotImportOutcome::Committed as u8
+    );
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("cleanup remains"));
+    assert_eq!(read_members(&group, true).unwrap().len(), 2);
+    assert_eq!(
+        group::read_group(&group).unwrap().head,
+        Some(id(2).to_string())
+    );
 }

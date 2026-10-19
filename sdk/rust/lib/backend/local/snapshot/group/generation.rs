@@ -180,7 +180,7 @@ pub(super) fn publish(
     aliases: &BTreeMap<String, String>,
     head: Option<String>,
     operation: &super::IndexedPublication,
-) -> MicrosandboxResult<()> {
+) -> MicrosandboxResult<Vec<String>> {
     publish_with_flush(
         group,
         input,
@@ -200,7 +200,7 @@ fn publish_with_flush(
     head: Option<String>,
     operation: &super::IndexedPublication,
     flush: impl FnOnce(&Path) -> io::Result<()>,
-) -> MicrosandboxResult<()> {
+) -> MicrosandboxResult<Vec<String>> {
     let parent = group
         .parent()
         .ok_or_else(|| integrity("group has no parent".into()))?;
@@ -233,9 +233,14 @@ fn publish_with_flush(
     // Cleanup failure cannot undo a published batch. The old generation contains
     // only extra links; removing them cannot invalidate live reader descriptors.
     if let Err(error) = fs::remove_dir_all(&retired).and_then(|()| sync_directory(parent)) {
-        tracing::warn!(%error, path = %retired.display(), "snapshot batch committed; retired generation cleanup remains");
+        let warning = format!(
+            "snapshot batch committed; retired generation cleanup remains at {}: {error}",
+            retired.display()
+        );
+        tracing::warn!(%warning);
+        return Ok(vec![warning]);
     }
-    Ok(())
+    Ok(Vec::new())
 }
 
 /// No payload-copy fallback: a hard-link error leaves the published generation intact.

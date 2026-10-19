@@ -113,7 +113,10 @@ impl Sandbox {
 #[napi]
 impl Sandbox {
     /// Create a new history from this exact sandbox incarnation.
-    #[napi]
+    #[napi(
+        ts_args_type = "name: string, options?: SnapshotCaptureOptions",
+        ts_return_type = "Promise<SnapshotCreateResult>"
+    )]
     pub async fn snapshot(
         &self,
         name: String,

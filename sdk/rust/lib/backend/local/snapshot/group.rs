@@ -92,6 +92,14 @@ pub(super) struct IndexedPublication {
     pub(super) outcome: Arc<AtomicU8>,
 }
 
+/// Facts recorded under publication ownership, before another writer can change the group.
+pub(super) struct BatchPublication {
+    pub(super) head_update: Option<HeadUpdate>,
+    pub(super) added: Vec<SnapshotId>,
+    pub(super) reused: Vec<SnapshotId>,
+    pub(super) warnings: Vec<String>,
+}
+
 /// A committed filesystem view retained until all corresponding index rows commit.
 pub(super) struct PendingIndex {
     _lock: File,
@@ -104,7 +112,7 @@ pub(super) struct PendingIndex {
 //--------------------------------------------------------------------------------------------------
 
 impl PendingIndex {
-    pub(super) async fn finish(self) -> MicrosandboxResult<()> {
+    pub(super) async fn finish(self) -> MicrosandboxResult<Vec<String>> {
         blocking(move || {
             let result = transaction::finish_index(&self.directory);
             drop(self); // Keep ownership through the durable acknowledgement and cleanup.
@@ -497,7 +505,9 @@ pub(super) async fn publish_batch(
     candidates: &[SnapshotId],
     set_head: bool,
 ) -> MicrosandboxResult<Option<HeadUpdate>> {
-    publish_batch_inner(group_dir, staged, aliases, candidates, set_head, None, None).await
+    publish_batch_inner(group_dir, staged, aliases, candidates, set_head, None, None)
+        .await
+        .map(|publication| publication.head_update)
 }
 
 /// Retain the committed journal until publication::complete_batch has indexed every member.
@@ -520,6 +530,7 @@ pub(super) async fn publish_batch_indexed(
         None,
     )
     .await
+    .map(|publication| publication.head_update)
 }
 
 pub(super) async fn publish_admitted(
@@ -539,6 +550,7 @@ pub(super) async fn publish_admitted(
         Some(writer),
     )
     .await?
+    .head_update
     .ok_or_else(|| integrity("single snapshot publication did not choose a head".into()))
 }
 
@@ -550,7 +562,7 @@ pub(super) async fn publish_batch_indexed_admitted(
     set_head: bool,
     operation: IndexedPublication,
     writer: WriterLease,
-) -> MicrosandboxResult<Option<HeadUpdate>> {
+) -> MicrosandboxResult<BatchPublication> {
     publish_batch_inner(
         group_dir,
         staged,
@@ -571,7 +583,7 @@ async fn publish_batch_inner(
     set_head: bool,
     index_operation: Option<IndexedPublication>,
     writer: Option<WriterLease>,
-) -> MicrosandboxResult<Option<HeadUpdate>> {
+) -> MicrosandboxResult<BatchPublication> {
     if candidates.is_empty() {
         return Err(MicrosandboxError::InvalidConfig(
             "snapshot batch must contain at least one candidate head".into(),
@@ -611,6 +623,8 @@ async fn publish_batch_inner(
         let mut members = read_members(&group_dir, true)?;
         validate_head(&state, &members)?;
 
+        let mut added = Vec::new();
+        let mut reused = Vec::new();
         for (id, member) in &incoming {
             if let Some(existing) = members.get(id) {
                 if existing.digest != member.digest {
@@ -618,7 +632,13 @@ async fn publish_batch_inner(
                         "snapshot ID {id} already exists in this group with a different descriptor"
                     )));
                 }
+                reused.push(
+                    SnapshotId::new(id.clone()).map_err(|error| integrity(error.to_string()))?,
+                );
             } else {
+                added.push(
+                    SnapshotId::new(id.clone()).map_err(|error| integrity(error.to_string()))?,
+                );
                 // Even an unrecognized file at the destination must not be overwritten.
                 if path_exists(&group_dir.join(id))? {
                     return Err(integrity(format!(
@@ -658,10 +678,15 @@ async fn publish_batch_inner(
             .or_else(|| state.head.clone());
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         if let Some(operation) = index_operation.as_ref() {
-            generation::publish(
+            let warnings = generation::publish(
                 &group_dir, &staged, &incoming, &aliases, next_head, operation,
             )?;
-            return Ok(update);
+            return Ok(BatchPublication {
+                head_update: update,
+                added,
+                reused,
+                warnings,
+            });
         }
         transaction::publish(
             &group_dir,
@@ -672,7 +697,12 @@ async fn publish_batch_inner(
             next_head,
             index_operation.as_ref(),
         )?;
-        Ok(update)
+        Ok(BatchPublication {
+            head_update: update,
+            added,
+            reused,
+            warnings: Vec::new(),
+        })
     })
     .await
 }

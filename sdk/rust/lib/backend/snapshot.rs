@@ -136,6 +136,21 @@ pub trait SnapshotBackend: Send + Sync {
         })
     }
 
+    /// Atomically import an archive set and report the group, all members, and commit facts.
+    fn load_group<'a>(
+        &'a self,
+        _backend: Arc<dyn Backend>,
+        _group: &'a str,
+        _archives: &'a [PathBuf],
+        _opts: LoadOpts,
+    ) -> BoxFuture<'a, MicrosandboxResult<crate::SnapshotImportResult>> {
+        Box::pin(async {
+            Err(crate::MicrosandboxError::local_only(
+                crate::Operation::SnapshotOps,
+            ))
+        })
+    }
+
     /// Validate and import one batch with explicit local dependency/head policy.
     fn load_many<'a>(
         &'a self,

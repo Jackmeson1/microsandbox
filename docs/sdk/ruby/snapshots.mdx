@@ -6,6 +6,18 @@ description: Capture and manage snapshots with the Ruby SDK.
 
 See [Snapshots](/sandboxes/snapshots) for capture behavior and compatibility. Ruby does not expose sandbox restore, forking, or full-capture options.
 
+## Group archive import
+
+```ruby
+Microsandbox::Snapshot.load(group, files, dest: "store", base: "base.msb", set_head: true)
+```
+
+`files` is an array of host paths. The keywords are optional. Returns `SnapshotImportResult` with `snapshot`, `checkpoints`, `added`, `reused`, `head_update`, `operation_id`, and `warnings` readers.
+
+The result contains every unique supplied checkpoint, including bundled dependencies, in stable ID order. `added` and `reused` identify what was new versus already installed at publication; archive argument order does not select the head. The head outcome belongs to this operation and does not change when another operation edits the group. Multiple incomparable tips can commit a headless group; explicit head selection refuses ambiguous tips.
+
+A successful return confirms publication and catalog completion. Warnings describe deferred cleanup after commit. A structured import error distinguishes no publication, confirmed publication with a later failure, and an unknown outcome needing recovery. Import never binds a group to a source sandbox. See [atomic import requirements](/cli/snapshot-commands#msb-snap-import) for filesystem capabilities and maintenance requirements.
+
 ## SandboxHandle
 
 #### <span className="msb-recv">handle.</span><span className="msb-hn">snapshot()</span>

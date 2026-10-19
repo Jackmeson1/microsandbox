@@ -26,6 +26,11 @@ enum Object {
 #[derive(serde::Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
+    Load {
+        name: String,
+        files: Vec<std::path::PathBuf>,
+        options: crate::SnapshotLoadOptsJson,
+    },
     Get {
         name: String,
     },
@@ -219,6 +224,26 @@ fn checkpoint(id: u64) -> Result<Checkpoint, FfiError> {
 
 async fn dispatch(id: u64, request: Request, pending: &PendingObjects) -> Result<Value, FfiError> {
     match request {
+        Request::Load {
+            name,
+            files,
+            options,
+        } => {
+            let result = Snapshot::load_with(name, &files, |_| microsandbox::LoadOpts {
+                dest: options.dest,
+                base: options.base,
+                group: options.group,
+                set_head: options.set_head,
+            })
+            .await?;
+            Ok(json!({
+                "operation_id": result.operation_id,
+                "snapshot": pending.insert(Object::Group(result.snapshot))?,
+                "checkpoints": result.checkpoints.iter().map(snapshot_handle_json).collect::<Vec<_>>(),
+                "added": result.added, "reused": result.reused,
+                "head_update": result.head_update, "warnings": result.warnings,
+            }))
+        }
         Request::LookupSource { name } => pending.insert(Object::Source(Arc::new(
             microsandbox::Sandbox::get(&name).await?,
         ))),

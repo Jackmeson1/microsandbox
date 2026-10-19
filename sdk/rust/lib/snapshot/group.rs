@@ -8,7 +8,8 @@ use crate::backend::Backend;
 use crate::{MicrosandboxError, MicrosandboxResult, Sandbox};
 
 use super::{
-    Checkpoint, GuestFlush, HeadUpdate, SnapshotConfig, SnapshotHandle, SnapshotReference,
+    Checkpoint, GuestFlush, HeadUpdate, LoadOpts, SnapshotConfig, SnapshotHandle, SnapshotId,
+    SnapshotReference,
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -43,6 +44,25 @@ pub struct CheckpointCaptureResult {
     pub head_update: HeadUpdate,
 }
 
+/// The committed result of one atomic archive batch, independent of subsequent head changes.
+#[derive(Debug, Clone)]
+pub struct SnapshotImportResult {
+    /// Identifier for this import attempt, also carried by structured import errors.
+    pub operation_id: String,
+    /// Destination history, including when it has no selected head.
+    pub snapshot: Snapshot,
+    /// Every unique member supplied by the batch, including bundled dependencies, in ID order.
+    pub checkpoints: Vec<SnapshotHandle>,
+    /// Members newly installed by this operation, in ID order.
+    pub added: Vec<SnapshotId>,
+    /// Identical members already installed at commit time, in ID order.
+    pub reused: Vec<SnapshotId>,
+    /// Head decision made by this operation, including ambiguous headless imports.
+    pub head_update: HeadUpdate,
+    /// Cleanup still needed after a confirmed successful commit.
+    pub warnings: Vec<String>,
+}
+
 /// Capture controls shared by initial group creation and subsequent checkpoint capture.
 /// The receiver selects the source; options cannot silently rebind an existing group.
 #[derive(Debug, Clone)]
@@ -73,6 +93,32 @@ impl Snapshot {
     pub async fn list() -> MicrosandboxResult<Vec<Self>> {
         let backend = crate::backend::default_backend();
         backend.snapshots().list_groups(backend.clone()).await
+    }
+
+    /// Atomically import an archive set into a named history, resolving dependencies together.
+    pub async fn load(
+        group: impl AsRef<str>,
+        files: &[PathBuf],
+    ) -> MicrosandboxResult<SnapshotImportResult> {
+        Self::load_with(group, files, |options| options).await
+    }
+
+    /// Configure archive dependencies, destination, and head policy for one atomic import.
+    pub async fn load_with(
+        group: impl AsRef<str>,
+        files: &[PathBuf],
+        configure: impl FnOnce(LoadOpts) -> LoadOpts,
+    ) -> MicrosandboxResult<SnapshotImportResult> {
+        let backend = crate::backend::default_backend();
+        backend
+            .snapshots()
+            .load_group(
+                backend.clone(),
+                group.as_ref(),
+                files,
+                configure(LoadOpts::default()),
+            )
+            .await
     }
 
     /// Local history name.

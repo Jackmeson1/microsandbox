@@ -28,6 +28,17 @@ type CheckpointCaptureResult struct {
 	HeadUpdate *SnapshotHeadUpdate
 }
 
+// SnapshotImportResult contains only facts from this committed import attempt.
+type SnapshotImportResult struct {
+	OperationID string
+	Snapshot    *SnapshotGroup
+	Checkpoints []*SnapshotHandle
+	Added       []string
+	Reused      []string
+	HeadUpdate  *SnapshotHeadUpdate
+	Warnings    []string
+}
+
 // SnapshotCaptureConfig controls capture only; the receiver fixes the source.
 type SnapshotCaptureConfig struct {
 	Name            string            `json:"name,omitempty"`
@@ -80,6 +91,40 @@ func snapshotObjectRequest(ctx context.Context, object *ffi.SnapshotObject, requ
 		return fmt.Errorf("parse snapshot operation: %w", err)
 	}
 	return nil
+}
+
+// Load atomically imports files into a named group, with optional dependency/head policy.
+func (snapshotFactory) Load(ctx context.Context, group string, files []string, options ...SnapshotLoadOptions) (*SnapshotImportResult, error) {
+	if len(options) > 1 {
+		return nil, fmt.Errorf("snapshot load accepts at most one options value")
+	}
+	var opts SnapshotLoadOptions
+	if len(options) == 1 {
+		opts = options[0]
+	}
+	var wire struct {
+		OperationID string                    `json:"operation_id"`
+		Snapshot    *snapshotGroupWire        `json:"snapshot"`
+		Checkpoints []*ffi.SnapshotHandleInfo `json:"checkpoints"`
+		Added       []string                  `json:"added"`
+		Reused      []string                  `json:"reused"`
+		HeadUpdate  *ffi.SnapshotHeadUpdate   `json:"head_update"`
+		Warnings    []string                  `json:"warnings"`
+	}
+	if err := snapshotObjectRequest(ctx, nil, map[string]any{"op": "load", "name": group, "files": files,
+		"options": ffi.SnapshotLoadOptions{Dest: opts.Dest, Base: opts.Base, Group: opts.Group, SetHead: opts.SetHead}}, &wire); err != nil {
+		return nil, err
+	}
+	history, err := snapshotGroupFromWire(wire.Snapshot)
+	if err != nil {
+		return nil, err
+	}
+	checkpoints := make([]*SnapshotHandle, len(wire.Checkpoints))
+	for i, item := range wire.Checkpoints {
+		checkpoints[i] = snapshotHandleFromInfo(item)
+	}
+	return &SnapshotImportResult{OperationID: wire.OperationID, Snapshot: history, Checkpoints: checkpoints,
+		Added: wire.Added, Reused: wire.Reused, HeadUpdate: snapshotHeadUpdateFromInfo(wire.HeadUpdate), Warnings: wire.Warnings}, nil
 }
 
 func (snapshotFactory) Get(ctx context.Context, name string) (*SnapshotGroup, error) {

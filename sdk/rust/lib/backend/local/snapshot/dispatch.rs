@@ -366,6 +366,48 @@ impl SnapshotBackend for LocalBackend {
         })
     }
 
+    fn load_group<'a>(
+        &'a self,
+        backend: Arc<dyn Backend>,
+        name: &'a str,
+        paths: &'a [PathBuf],
+        mut opts: LoadOpts,
+    ) -> BoxFuture<'a, MicrosandboxResult<crate::SnapshotImportResult>> {
+        Box::pin(async move {
+            group::validate_group_name(name)?;
+            if opts.group.as_deref().is_some_and(|group| group != name) {
+                return Err(MicrosandboxError::InvalidConfig(
+                    "import options cannot select a different destination group".into(),
+                ));
+            }
+            opts.group = Some(name.into());
+            let paths = paths
+                .iter()
+                .map(std::path::absolute)
+                .collect::<std::io::Result<Vec<_>>>()?;
+            opts.dest = opts.dest.map(std::path::absolute).transpose()?;
+            opts.base = opts.base.map(anchor_archive_selector).transpose()?;
+            let imported = archive::load_group(self, &paths, opts).await?;
+            Ok(crate::SnapshotImportResult {
+                operation_id: imported.operation_id,
+                snapshot: crate::Snapshot {
+                    backend: backend.clone(),
+                    name: name.into(),
+                    reference: SnapshotReference::path(imported.group_path.to_string_lossy()),
+                },
+                checkpoints: imported
+                    .members
+                    .into_iter()
+                    .map(|handle| from_handle(backend.clone(), handle))
+                    .collect(),
+                added: imported.added,
+                reused: imported.reused,
+                head_update: imported.head_update,
+                warnings: imported.warnings,
+            })
+        })
+    }
+
     fn load_many<'a>(
         &'a self,
         backend: Arc<dyn Backend>,

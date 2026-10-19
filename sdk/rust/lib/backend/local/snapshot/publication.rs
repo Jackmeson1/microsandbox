@@ -90,12 +90,20 @@ pub(super) async fn complete_batch(
     db: &DbWriteConnection,
     directory: &Path,
 ) -> MicrosandboxResult<bool> {
+    Ok(complete_batch_report(db, directory).await?.is_some())
+}
+
+/// Return cleanup warnings to the initiating operation while retaining the existing
+/// recovery helper's boolean contract for readers and maintenance callers.
+pub(super) async fn complete_batch_report(
+    db: &DbWriteConnection,
+    directory: &Path,
+) -> MicrosandboxResult<Option<Vec<String>>> {
     let Some(pending) = super::group::pending_index(directory).await? else {
-        return Ok(false);
+        return Ok(None);
     };
     super::store::index_write_batch(db, &pending.snapshots).await?;
-    pending.finish().await?;
-    Ok(true)
+    Ok(Some(pending.finish().await?))
 }
 
 /// Recover whole groups, including external destinations. Namespace pins distinguish dead

@@ -36,11 +36,38 @@ struct RubyCheckpointCaptureResult {
     inner: CheckpointCaptureResult,
 }
 
+#[magnus::wrap(class = "Microsandbox::SnapshotImportResult", free_immediately, size)]
+struct RubySnapshotImportResult {
+    inner: microsandbox_core::SnapshotImportResult,
+}
+
 //--------------------------------------------------------------------------------------------------
 // Methods
 //--------------------------------------------------------------------------------------------------
 
 impl RubyGroup {
+    fn load(ruby: &Ruby, args: &[Value]) -> Result<RubySnapshotImportResult, Error> {
+        let parsed = scan_args::<(String, Vec<String>), (), (), (), RHash, ()>(args)?;
+        let (group, files) = parsed.required;
+        let keywords = parsed.keywords;
+        reject_unknown_keywords(ruby, keywords, &["dest", "base", "set_head"])?;
+        let options = microsandbox_core::LoadOpts {
+            dest: keyword::<String>(keywords, "dest")?.map(Into::into),
+            base: keyword(keywords, "base")?,
+            group: None,
+            set_head: keyword::<bool>(keywords, "set_head")?.unwrap_or(false),
+        };
+        let files = files
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .collect::<Vec<_>>();
+        Ok(RubySnapshotImportResult {
+            inner: run(ruby, async move {
+                Snapshot::load_with(group, &files, |_| options).await
+            })?,
+        })
+    }
+
     fn get(ruby: &Ruby, name: String) -> Result<Self, Error> {
         Ok(Self {
             inner: run(ruby, async move { Snapshot::get(name).await })?,
@@ -140,6 +167,38 @@ impl RubySandbox {
                 sandbox.snapshot_with(&name, |_| options).await
             })?,
         })
+    }
+}
+
+impl RubySnapshotImportResult {
+    fn operation_id(&self) -> String {
+        self.inner.operation_id.clone()
+    }
+    fn snapshot(&self) -> RubyGroup {
+        RubyGroup {
+            inner: self.inner.snapshot.clone(),
+        }
+    }
+    fn checkpoints(&self) -> Result<RArray, Error> {
+        let result = current_ruby().ary_new();
+        for inner in &self.inner.checkpoints {
+            result.push(RubySnapshotHandle {
+                inner: inner.clone(),
+            })?;
+        }
+        Ok(result)
+    }
+    fn added(&self) -> Vec<String> {
+        self.inner.added.iter().map(ToString::to_string).collect()
+    }
+    fn reused(&self) -> Vec<String> {
+        self.inner.reused.iter().map(ToString::to_string).collect()
+    }
+    fn head_update(&self) -> Result<RHash, Error> {
+        head_update(&self.inner.head_update)
+    }
+    fn warnings(&self) -> Vec<String> {
+        self.inner.warnings.clone()
     }
 }
 
@@ -247,6 +306,7 @@ fn head_update(update: &microsandbox_core::HeadUpdate) -> Result<RHash, Error> {
 
 pub(super) fn register(ruby: &Ruby, module: RModule) -> Result<(), Error> {
     let group = module.define_class("Snapshot", ruby.class_object())?;
+    group.define_singleton_method("load", function!(RubyGroup::load, -1))?;
     group.define_singleton_method("get", function!(RubyGroup::get, 1))?;
     group.define_singleton_method("list", function!(RubyGroup::list, 0))?;
     group.define_method("name", method!(RubyGroup::name, 0))?;
@@ -256,6 +316,23 @@ pub(super) fn register(ruby: &Ruby, module: RModule) -> Result<(), Error> {
     group.define_method("set_head", method!(RubyGroup::set_head, 1))?;
     group.define_method("clear_head", method!(RubyGroup::clear_head, 0))?;
     group.define_method("checkpoint", method!(RubyGroup::checkpoint, -1))?;
+    let imported = module.define_class("SnapshotImportResult", ruby.class_object())?;
+    imported.define_method(
+        "operation_id",
+        method!(RubySnapshotImportResult::operation_id, 0),
+    )?;
+    imported.define_method("snapshot", method!(RubySnapshotImportResult::snapshot, 0))?;
+    imported.define_method(
+        "checkpoints",
+        method!(RubySnapshotImportResult::checkpoints, 0),
+    )?;
+    imported.define_method("added", method!(RubySnapshotImportResult::added, 0))?;
+    imported.define_method("reused", method!(RubySnapshotImportResult::reused, 0))?;
+    imported.define_method(
+        "head_update",
+        method!(RubySnapshotImportResult::head_update, 0),
+    )?;
+    imported.define_method("warnings", method!(RubySnapshotImportResult::warnings, 0))?;
     let initial = module.define_class("SnapshotCreateResult", ruby.class_object())?;
     initial.define_method("snapshot", method!(RubySnapshotCreateResult::snapshot, 0))?;
     initial.define_method(

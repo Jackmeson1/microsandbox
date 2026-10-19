@@ -1520,6 +1520,7 @@ export interface NapiSnapshotCaptureOptions {
 }
 
 export interface NapiSnapshotGroupStatic {
+  load(group: string, archives: string[], opts?: NapiLoadOpts): Promise<NapiSnapshotImportResult>;
   get(name: string): Promise<NapiSnapshotGroup>;
   list(): Promise<NapiSnapshotGroup[]>;
 }
@@ -1546,4 +1547,14 @@ export interface NapiSnapshotCreateResult {
 export interface NapiCheckpointCaptureResult {
   checkpoint: NapiSnapshot;
   headUpdate: NapiHeadUpdate;
+}
+
+export interface NapiSnapshotImportResult {
+  operationId: string;
+  snapshot: NapiSnapshotGroup;
+  checkpoints: NapiSnapshotHandle[];
+  added: string[];
+  reused: string[];
+  headUpdate: NapiHeadUpdate;
+  warnings: string[];
 }

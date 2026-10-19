@@ -29,12 +29,41 @@ pub struct PyCheckpointCaptureResult {
     inner: microsandbox::CheckpointCaptureResult,
 }
 
+#[pyclass(name = "SnapshotImportResult")]
+pub struct PySnapshotImportResult {
+    inner: microsandbox::SnapshotImportResult,
+}
+
 //--------------------------------------------------------------------------------------------------
 // Methods
 //--------------------------------------------------------------------------------------------------
 
 #[pymethods]
 impl PySnapshotGroup {
+    #[staticmethod]
+    #[pyo3(signature = (group, files, *, dest=None, base=None, set_head=false))]
+    fn load<'py>(
+        py: Python<'py>,
+        group: String,
+        files: Vec<PathBuf>,
+        dest: Option<PathBuf>,
+        base: Option<String>,
+        set_head: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            Ok(PySnapshotImportResult {
+                inner: RustGroup::load_with(group, &files, |_| microsandbox::LoadOpts {
+                    dest,
+                    base,
+                    group: None,
+                    set_head,
+                })
+                .await
+                .map_err(to_py_err)?,
+            })
+        })
+    }
+
     #[staticmethod]
     fn get<'py>(py: Python<'py>, name: String) -> PyResult<Bound<'py, PyAny>> {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -177,6 +206,45 @@ impl PySnapshotGroup {
                     .map_err(to_py_err)?,
             })
         })
+    }
+}
+
+#[pymethods]
+impl PySnapshotImportResult {
+    #[getter]
+    fn operation_id(&self) -> &str {
+        &self.inner.operation_id
+    }
+    #[getter]
+    fn snapshot(&self) -> PySnapshotGroup {
+        PySnapshotGroup {
+            inner: self.inner.snapshot.clone(),
+        }
+    }
+    #[getter]
+    fn checkpoints(&self) -> Vec<PySnapshotHandle> {
+        self.inner
+            .checkpoints
+            .iter()
+            .cloned()
+            .map(PySnapshotHandle::from_rust)
+            .collect()
+    }
+    #[getter]
+    fn added(&self) -> Vec<String> {
+        self.inner.added.iter().map(ToString::to_string).collect()
+    }
+    #[getter]
+    fn reused(&self) -> Vec<String> {
+        self.inner.reused.iter().map(ToString::to_string).collect()
+    }
+    #[getter]
+    fn head_update(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        head_update_to_py(py, &self.inner.head_update)
+    }
+    #[getter]
+    fn warnings(&self) -> Vec<String> {
+        self.inner.warnings.clone()
     }
 }
 

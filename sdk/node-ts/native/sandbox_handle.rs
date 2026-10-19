@@ -475,7 +475,10 @@ impl JsSandboxHandle {
     }
 
     /// Create a new history with the exact initial checkpoint and capture head outcome.
-    #[napi]
+    #[napi(
+        ts_args_type = "name: string, options?: SnapshotCaptureOptions",
+        ts_return_type = "Promise<SnapshotCreateResult>"
+    )]
     pub async fn snapshot(
         &self,
         name: String,
