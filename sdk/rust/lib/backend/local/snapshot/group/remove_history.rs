@@ -35,6 +35,14 @@ pub(in crate::backend::local::snapshot) async fn remove(
     local: &LocalBackend,
     directory: &Path,
 ) -> MicrosandboxResult<SnapshotRemoveResult> {
+    remove_observed(local, directory, || Ok(())).await
+}
+
+async fn remove_observed(
+    local: &LocalBackend,
+    directory: &Path,
+    before_admission: impl FnOnce() -> MicrosandboxResult<()> + Send,
+) -> MicrosandboxResult<SnapshotRemoveResult> {
     let directory = directory.canonicalize()?;
     let parent = directory
         .parent()
@@ -45,9 +53,14 @@ pub(in crate::backend::local::snapshot) async fn remove(
     deletion::recover_parent(local, &directory).await?;
     // The parent pointer outlives the last member row and also covers external stores.
     deletion::register_parent(local, parent)?;
+    before_admission()?;
     let writer = WriterLease::try_acquire(&directory)?.ok_or_else(|| {
         super::integrity("snapshot group has an active writer; retry removal".into())
     })?;
+    // Another member removal may have committed between the first recovery pass
+    // and admission. Reconcile its receipt now, before retiring the containing group.
+    publication::complete_batch(pools.write(), &directory).await?;
+    deletion::recover_parent_admitted(local, &directory, writer.clone()).await?;
     let prepared = super::blocking({
         let directory = directory.clone();
         move || prepare(&directory, writer)
@@ -118,6 +131,7 @@ fn prepare(directory: &Path, writer: WriterLease) -> MicrosandboxResult<Prepared
     let group = lease::group_deletion(directory)?
         .ok_or_else(|| super::integrity("snapshot group is in use by verification".into()))?;
     let lock = super::lock_group(directory)?;
+    deletion::require_no_pending(directory)?;
     let state = super::read_group(directory)?;
     let selected = super::read_members(directory, true)?;
     super::validate_head(&state, &selected)?;
@@ -242,6 +256,105 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+
+    #[test]
+    fn whole_group_removal_recovers_member_retired_before_admission() {
+        // The assertion models the old process's descriptors being fully gone.
+        // Isolate it from unrelated fork/exec tests inheriting those descriptors.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "backend::local::snapshot::group::remove_history::tests::member_recovery_worker",
+                "--ignored",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "subprocess-only recovery interleaving"]
+    async fn member_recovery_worker() {
+        let home = tempfile::tempdir().unwrap();
+        let local = crate::test_support::local_backend_builder(home.path())
+            .build()
+            .await
+            .unwrap();
+        let directory = super::super::ensure(&local.snapshots_dir(), Some("history"))
+            .await
+            .unwrap();
+        super::super::tests::add(&directory, 1, None).await;
+        super::super::tests::add(&directory, 2, None).await;
+        store::reindex_dir(&local, &local.snapshots_dir())
+            .await
+            .unwrap();
+        let pools = local.db().await.unwrap();
+        assert_eq!(
+            snapshot::Entity::find()
+                .all(pools.read())
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+        let head = super::super::read_group(&directory).unwrap().head.unwrap();
+        let retired = if head == super::super::tests::id(1).as_str() {
+            2
+        } else {
+            1
+        };
+        let path = directory.join(super::super::tests::id(retired).as_str());
+        let report = remove_observed(&local, &directory, || {
+            // Leave exactly the receipt/payload state from a remover that exits
+            // after retirement and before its catalog reconciliation.
+            deletion::quarantine(&path)
+        })
+        .await
+        .unwrap();
+        assert_eq!(report.removed.len(), 1);
+        assert!(!directory.exists());
+        // Query the catalog directly: a listing must not repair the state under test.
+        assert!(
+            snapshot::Entity::find()
+                .all(pools.read())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            super::super::retirement::pending(&local.snapshots_dir())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn whole_group_removal_preserves_busy_member_receipt() {
+        let home = tempfile::tempdir().unwrap();
+        let local = crate::test_support::local_backend_builder(home.path())
+            .build()
+            .await
+            .unwrap();
+        let directory = super::super::ensure(&local.snapshots_dir(), Some("history"))
+            .await
+            .unwrap();
+        let (receipt, active) =
+            deletion::prepare_retirement(&directory, std::ffi::OsStr::new("retired")).unwrap();
+        let error = remove(&local, &directory).await.unwrap_err();
+        assert!(
+            error.to_string().contains("pending member cleanup"),
+            "{error}"
+        );
+        assert!(receipt.join("source.json").is_file());
+        assert!(directory.exists());
+        drop(active);
+    }
 
     #[tokio::test]
     async fn cancelled_whole_group_preflight_retains_worker_ownership() {

@@ -103,6 +103,24 @@ pub(super) async fn recover_parent(local: &LocalBackend, parent: &Path) -> Micro
     } else {
         None
     };
+    recover_parent_owned(local, parent, writer).await
+}
+
+/// A whole-history remover already owns admission; do not skip its final recovery pass.
+pub(super) async fn recover_parent_admitted(
+    local: &LocalBackend,
+    parent: &Path,
+    writer: super::writer::WriterLease,
+) -> MicrosandboxResult<()> {
+    writer.validate(parent)?;
+    recover_parent_owned(local, parent, Some(writer)).await
+}
+
+async fn recover_parent_owned(
+    local: &LocalBackend,
+    parent: &Path,
+    writer: Option<super::writer::WriterLease>,
+) -> MicrosandboxResult<()> {
     if let Some(admission) = writer.clone() {
         let directory = parent.to_path_buf();
         tokio::task::spawn_blocking(move || {
@@ -221,6 +239,31 @@ pub(super) async fn recover_parent(local: &LocalBackend, parent: &Path) -> Micro
         .map_err(|error| {
             MicrosandboxError::Custom(format!("snapshot cleanup recovery: {error}"))
         })??;
+    }
+    Ok(())
+}
+
+/// Never erase a receipt skipped because another process still owns its active lock.
+/// Called under the group publication lock after admitted recovery has completed.
+pub(super) fn require_no_pending(parent: &Path) -> MicrosandboxResult<()> {
+    let root = parent.join(".snapshot-deletions");
+    match std::fs::symlink_metadata(&root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => {
+            return Err(MicrosandboxError::SnapshotIntegrity(
+                "snapshot deletion directory is not a real directory".into(),
+            ));
+        }
+    }
+    for entry in std::fs::read_dir(root)? {
+        if entry?.file_name().to_string_lossy().starts_with("delete-") {
+            return Err(MicrosandboxError::SnapshotIntegrity(
+                "snapshot group still has pending member cleanup; retry removal after recovery"
+                    .into(),
+            ));
+        }
     }
     Ok(())
 }

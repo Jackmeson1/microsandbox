@@ -171,7 +171,7 @@ async fn cancelling_removal_keeps_worker_ownership_until_atomic_publication() {
     add(&directory, 1, None).await;
     add(&directory, 2, Some(1)).await;
     let second = directory.join(id(2).as_str());
-    let pin = lease::deletion(&second).unwrap().unwrap();
+    let pin = released_deletion(&second).await;
     let lock = group::lock_group(&directory).unwrap();
     let worker_path = second.clone();
     let (started, ready) = tokio::sync::oneshot::channel();
