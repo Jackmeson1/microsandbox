@@ -10,9 +10,7 @@ mod txf;
 
 use super::writer::WriterLease;
 
-// Qualify complete-directory publication against the existing locking protocol before
-// enabling it for imports. In particular, a successful rename is not a lease-safety proof.
-#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod generation;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -118,9 +116,22 @@ impl PendingIndex {
 // Functions
 //--------------------------------------------------------------------------------------------------
 
-#[cfg(windows)]
 pub(super) fn check_atomic_import(root: &Path) -> MicrosandboxResult<()> {
-    txf::check(root)
+    #[cfg(windows)]
+    {
+        txf::check(root)
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        generation::check(root)
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    {
+        Err(MicrosandboxError::InvalidConfig(format!(
+            "atomic snapshot import is unavailable at {}: this platform has no qualified atomic publisher",
+            root.display()
+        )))
+    }
 }
 
 /// Resolve a group head or a qualified group member; explicit paths belong to the caller.
@@ -645,14 +656,9 @@ async fn publish_batch_inner(
             .as_ref()
             .and_then(|update| update.head.clone())
             .or_else(|| state.head.clone());
-        // Exercise the real import/index/restore pipeline in an isolated test process.
-        // This branch is absent from release builds; the prototype's concurrency gates
-        // must pass before any production importer can select directory exchange.
-        #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
-        if let Some(operation) = index_operation.as_ref()
-            && generation::requested(&group_dir)
-        {
-            generation::publish_for_live_test(
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        if let Some(operation) = index_operation.as_ref() {
+            generation::publish(
                 &group_dir, &staged, &incoming, &aliases, next_head, operation,
             )?;
             return Ok(update);

@@ -75,7 +75,6 @@ async fn load_inner(
     }
     let started = Instant::now();
     let snapshots_dir = opts.dest.clone().unwrap_or_else(|| local.snapshots_dir());
-    #[cfg(windows)]
     {
         let destination = snapshots_dir.clone();
         tokio::task::spawn_blocking(move || super::super::group::check_atomic_import(&destination))

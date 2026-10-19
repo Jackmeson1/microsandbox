@@ -51,9 +51,9 @@ struct AliasChange {
 // Functions
 //--------------------------------------------------------------------------------------------------
 
-/// Prepare catalog recovery metadata inside an unpublished complete generation. The test
+/// Prepare catalog recovery metadata inside an unpublished complete generation. The
 /// publisher selects this committed view only by exchanging the containing directory.
-#[cfg(test)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(super) fn stage_generation_index(
     directory: &Path,
     incoming: &BTreeMap<String, Member>,
@@ -165,8 +165,18 @@ pub(super) fn recover(directory: &Path) -> MicrosandboxResult<()> {
                 "snapshot batch commit marker does not match its intent".into(),
             ));
         }
-        // Every payload/name/head was flushed before this marker. Do not roll a committed
-        // import back because a later cleanup attempt failed.
+        // A generation's marker is prepared before its directory exchange. Recovery
+        // must confirm the containing name is durable before exposing work to SQLite;
+        // the original publisher may have failed its post-exchange parent flush.
+        if intent.index_pending {
+            sync_directory(
+                directory
+                    .parent()
+                    .ok_or_else(|| integrity("group has no parent".into()))?,
+            )?;
+        }
+        // Do not roll the complete filesystem view back because catalog completion or
+        // later cleanup was interrupted.
         if intent.index_pending && !index_acknowledged(&journal, &intent)? {
             return Ok(());
         }
