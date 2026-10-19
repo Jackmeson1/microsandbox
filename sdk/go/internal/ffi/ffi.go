@@ -22,10 +22,9 @@
 //   - A heap-allocated C string (JSON {kind,message}) on failure. The Go
 //     side MUST free it with call_msb_free_string immediately after reading.
 //
-// Raw agent calls (`msb_agent_*`) are the exception: they return scalar values
-// through out parameters and variable-size CBOR bodies as Rust-allocated byte
-// buffers. The Go side MUST copy those bytes and free them with
-// call_msb_agent_free_bytes.
+// Raw agent calls (`msb_agent_*`) return scalars and allocated CBOR bodies.
+// Snapshot-object owned calls return allocated JSON. Go MUST copy both kinds
+// of allocated byte buffer and release them with call_msb_agent_free_bytes.
 //
 // Sandboxes are identified across the boundary by opaque uint64 handles
 // allocated by the Rust side. Call (*Sandbox).Close to release.
@@ -37,8 +36,8 @@
 // Go pointers across calls. Error strings returned by Rust are heap-allocated
 // by Rust and freed by Go via call_msb_free_string. Output JSON is written
 // into a Go-owned buffer; Rust does not retain that pointer. Raw agent byte
-// outputs are allocated by Rust, copied by Go, then released through
-// call_msb_agent_free_bytes.
+// outputs and snapshot-object owned responses are allocated by Rust, copied
+// by Go, then released through call_msb_agent_free_bytes.
 //
 // # Thread safety
 //
@@ -228,6 +227,7 @@ typedef char *(*msb_image_inspect_fn)(uint64_t cancel_id, const char *reference,
 typedef char *(*msb_image_remove_fn)(uint64_t cancel_id, const char *reference, bool force, uint8_t *buf, size_t buf_len);
 typedef char *(*msb_image_prune_fn)(uint64_t cancel_id, uint8_t *buf, size_t buf_len);
 typedef char *(*msb_snapshot_object_fn)(uint64_t, uint64_t, const char *, uint8_t *, size_t);
+typedef char *(*msb_snapshot_object_owned_fn)(uint64_t, uint64_t, const char *, uint8_t **, size_t *);
 typedef void (*msb_snapshot_object_close_fn)(uint64_t);
 typedef char *(*msb_storage_usage_fn)(uint64_t cancel_id, uint8_t *buf, size_t buf_len);
 typedef char *(*msb_sandbox_storage_usage_fn)(uint64_t cancel_id, uint64_t handle, uint8_t *buf, size_t buf_len);
@@ -418,6 +418,7 @@ static msb_image_inspect_fn        ptr_msb_image_inspect        = NULL;
 static msb_image_remove_fn         ptr_msb_image_remove         = NULL;
 static msb_image_prune_fn         ptr_msb_image_prune         = NULL;
 static msb_snapshot_object_fn ptr_msb_snapshot_object = NULL;
+static msb_snapshot_object_owned_fn ptr_msb_snapshot_object_owned = NULL;
 static msb_snapshot_object_close_fn ptr_msb_snapshot_object_close = NULL;
 static msb_storage_usage_fn       ptr_msb_storage_usage       = NULL;
 static msb_sandbox_storage_usage_fn ptr_msb_sandbox_storage_usage = NULL;
@@ -628,6 +629,7 @@ const char *load_microsandbox(const char *path) {
 	RESOLVE(msb_image_prune);
 	RESOLVE_OPTIONAL(msb_storage_usage);
 	RESOLVE_OPTIONAL(msb_snapshot_object);
+	RESOLVE_OPTIONAL(msb_snapshot_object_owned);
 	RESOLVE_OPTIONAL(msb_snapshot_object_close);
 	RESOLVE_OPTIONAL(msb_sandbox_storage_usage);
 	RESOLVE_OPTIONAL(msb_storage_prune);
@@ -1090,6 +1092,10 @@ char *call_msb_image_prune(uint64_t cancel_id, uint8_t *buf, size_t buf_len) {
 bool has_msb_snapshot_objects(void) { return ptr_msb_snapshot_object && ptr_msb_snapshot_object_close; }
 char *call_msb_snapshot_object(uint64_t cancel_id, uint64_t handle, const char *request, uint8_t *buf, size_t buf_len) {
     return ptr_msb_snapshot_object ? ptr_msb_snapshot_object(cancel_id, handle, request, buf, buf_len) : NULL;
+}
+bool has_msb_snapshot_object_owned(void) { return ptr_msb_snapshot_object_owned != NULL; }
+char *call_msb_snapshot_object_owned(uint64_t cancel_id, uint64_t handle, const char *request, uint8_t **out, size_t *len) {
+    return ptr_msb_snapshot_object_owned(cancel_id, handle, request, out, len);
 }
 void call_msb_snapshot_object_close(uint64_t handle) {
     if (ptr_msb_snapshot_object_close) ptr_msb_snapshot_object_close(handle);
@@ -6107,6 +6113,10 @@ func SnapshotObjectCall(ctx context.Context, handle uint64, request any) ([]byte
 	}
 	text := C.CString(string(payload))
 	defer C.free(unsafe.Pointer(text))
+	if bool(C.has_msb_snapshot_object_owned()) {
+		return snapshotObjectOwned(ctx, handle, text)
+	}
+	// Retain the old ABI for earlier native bundles. Never replay mutations on buffer errors.
 	// Unlike metadata-only calls, a successful result transfers native ownership.
 	// Cancellation racing a completed call must not discard those object handles.
 	buf := make([]byte, defaultBufSize)
@@ -6134,6 +6144,37 @@ func SnapshotObjectCall(ctx context.Context, handle uint64, request any) ([]byte
 		end++
 	}
 	return buf[:end], nil
+}
+
+// Successful completion wins a cancellation race: the response owns native receivers
+// and may describe an already committed mutation. Always join before freeing input/slots.
+func snapshotObjectOwned(ctx context.Context, handle uint64, text *C.char) ([]byte, error) {
+	out, length, cleanup := allocRustBytesOut()
+	defer cleanup()
+	defer freeRustBytes(out, length)
+	cancelID := C.call_msb_cancel_alloc()
+	done := make(chan *C.char, 1)
+	go func() {
+		done <- C.call_msb_snapshot_object_owned(cancelID, C.uint64_t(handle), text, out, length)
+	}()
+	var failure *C.char
+	select {
+	case failure = <-done:
+	case <-ctx.Done():
+		C.call_msb_cancel_trigger(cancelID)
+		failure = <-done
+	}
+	if failure != nil {
+		err := errorFromPtr(failure)
+		if native, ok := err.(*Error); ok && native.Kind == KindCancelled && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, err
+	}
+	// Move ownership before copying, so a panicking copy cannot free the allocation twice.
+	ptr, size := *out, *length
+	*out, *length = nil, 0
+	return takeRustBytes(ptr, size), nil
 }
 
 func releaseSnapshotObject(handle uint64) { C.call_msb_snapshot_object_close(C.uint64_t(handle)) }

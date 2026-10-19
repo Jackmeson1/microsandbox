@@ -1117,6 +1117,19 @@ char *msb_snapshot_object(uint64_t cancel_id,
                           uintptr_t buf_len);
 
 /**
+ * Execute once and transfer an allocated JSON response, without a fixed buffer limit.
+ *
+ * # Safety
+ * `request` must point to a readable NUL-terminated string. `out_ptr` and `out_len`
+ * must point to writable slots. Free successful output with `msb_agent_free_bytes`.
+ */
+char *msb_snapshot_object_owned(uint64_t cancel_id,
+                                uint64_t handle,
+                                const char *request,
+                                unsigned char **out_ptr,
+                                uintptr_t *out_len);
+
+/**
  * Release a receiver, without deleting its persistent artifact or group.
  */
 void msb_snapshot_object_close(uint64_t handle);
