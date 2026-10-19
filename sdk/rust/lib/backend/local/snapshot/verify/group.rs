@@ -48,9 +48,10 @@ async fn verify_group_observed(
     directory: &Path,
     pinned: impl FnOnce() + Send + 'static,
 ) -> MicrosandboxResult<SnapshotGroupVerifyReport> {
-    // Select under writer admission, then retain one stable lifetime lease outside
-    // the replaceable directory. Updated removers honor this lease; append-only
-    // publication can continue after selection without opening every descriptor.
+    // Keep writer admission and one stable lifetime lease through hashing. Atomic
+    // imports link existing payloads into a new generation, changing their ctime
+    // even without changing bytes; allowing that during hashing would produce a
+    // false mutation report. Neither lease opens every checkpoint descriptor.
     let writer = WriterLease::acquire(directory).await?;
     // Complete any pending recovery before taking the reader lifetime gate;
     // rollback may need the exclusive side of that gate itself.
@@ -87,7 +88,6 @@ async fn verify_group_observed(
         };
         members.push((path, result));
     }
-    drop(writer);
     let group = directory
         .file_name()
         .unwrap_or_default()
@@ -97,6 +97,7 @@ async fn verify_group_observed(
     // The worker owns the leases, so cancelling the async caller cannot release protection while
     // blocking payload hashing is still running.
     tokio::task::spawn_blocking(move || {
+        let _writer = writer;
         let _history = history;
         pinned();
         verify_members(group, members, fs_state_limit)
@@ -473,7 +474,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn selection_stays_pinned_and_cancellation_keeps_worker_reader_leases() {
+    async fn selection_stays_pinned_and_cancellation_keeps_worker_admission() {
         for cancel in [false, true] {
             let home = tempfile::tempdir().unwrap();
             let local = Arc::new(
@@ -504,11 +505,14 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            // Normal updated writers may proceed once the selection is pinned. A newly
-            // published member must not enter this verification's already-selected report.
-            let admission = WriterLease::try_acquire(&directory).unwrap().unwrap();
-            install(&directory, 2);
-            drop(admission);
+            // Import/capture/head writers must remain excluded for the entire hash
+            // worker, but unrelated histories and ordinary readers remain usable.
+            assert!(WriterLease::try_acquire(&directory).unwrap().is_none());
+            let other = group::ensure(&local.snapshots_dir(), Some("unrelated"))
+                .await
+                .unwrap();
+            assert!(WriterLease::try_acquire(&other).unwrap().is_some());
+            drop(store::open_for_verification(&local, &first).await.unwrap());
             assert!(
                 super::super::super::lease::deletion(&first)
                     .unwrap()
@@ -517,6 +521,7 @@ mod tests {
             if cancel {
                 verifier.abort();
                 assert!(verifier.await.unwrap_err().is_cancelled());
+                assert!(WriterLease::try_acquire(&directory).unwrap().is_none());
                 assert!(
                     super::super::super::lease::deletion(&first)
                         .unwrap()
@@ -544,6 +549,106 @@ mod tests {
             })
             .await
             .unwrap();
+            let admission =
+                tokio::time::timeout(Duration::from_secs(10), WriterLease::acquire(&directory))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            install(&directory, 2);
+            drop(admission);
+            assert_eq!(
+                verify_group(&local, &directory)
+                    .await
+                    .unwrap()
+                    .checkpoints
+                    .len(),
+                2
+            );
         }
+    }
+
+    #[tokio::test]
+    async fn verification_delays_atomic_import_until_hash_worker_finishes() {
+        use super::super::super::archive;
+        use crate::snapshot::{LoadOpts, SaveOpts};
+
+        let home = tempfile::tempdir().unwrap();
+        let local = Arc::new(
+            LocalBackend::builder()
+                .home(home.path())
+                .build()
+                .await
+                .unwrap(),
+        );
+        let directory = group::ensure(&local.snapshots_dir(), Some("verification"))
+            .await
+            .unwrap();
+        install(&directory, 1);
+        let incoming = group::ensure(&local.snapshots_dir(), Some("incoming"))
+            .await
+            .unwrap();
+        let second = install(&incoming, 2);
+        let archive = home.path().join("second.msb");
+        archive::save_snapshot(
+            &local,
+            second.to_str().unwrap(),
+            &archive,
+            SaveOpts::default(),
+        )
+        .await
+        .unwrap();
+
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let verifier = tokio::spawn({
+            let local = local.clone();
+            let directory = directory.clone();
+            async move {
+                verify_group_observed(&local, &directory, move || {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                })
+                .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(10), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut importer = tokio::spawn({
+            let local = local.clone();
+            async move {
+                archive::load_group(
+                    &local,
+                    &[archive],
+                    LoadOpts {
+                        group: Some("verification".into()),
+                        ..LoadOpts::default()
+                    },
+                )
+                .await
+            }
+        });
+        // This invokes the actual importer, including complete-directory exchange,
+        // rather than merely checking that another lock acquisition is refused.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut importer)
+                .await
+                .is_err()
+        );
+        assert!(WriterLease::try_acquire(&directory).unwrap().is_none());
+        assert!(!directory.join(second.file_name().unwrap()).exists());
+        release_tx.send(()).unwrap();
+        let report = verifier.await.unwrap().unwrap();
+        assert_eq!(report.state, State::Complete);
+        assert_eq!(report.checkpoints.len(), 1);
+        tokio::time::timeout(Duration::from_secs(10), importer)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let report = verify_group(&local, &directory).await.unwrap();
+        assert_eq!(report.state, State::Complete);
+        assert_eq!(report.checkpoints.len(), 2);
     }
 }
