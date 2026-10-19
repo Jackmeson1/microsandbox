@@ -36,6 +36,9 @@ pub enum SnapshotCommands {
     /// Create a disk snapshot, or include memory and execution state with --full.
     Create(SnapshotCreateArgs),
 
+    /// Append a checkpoint to an existing group from its bound source sandbox.
+    Checkpoint(SnapshotCheckpointArgs),
+
     /// Restore saved state into a new sandbox running in the background.
     Restore(Box<RestoreArgs>),
 
@@ -126,6 +129,46 @@ pub struct SnapshotCreateArgs {
     #[arg(long)]
     pub full: bool,
     /// Guest writeback: auto (disk-only default), required, or skip. Mandatory barriers remain.
+    #[arg(long, default_value = "auto")]
+    pub guest_flush: microsandbox::snapshot::GuestFlush,
+
+    /// Suppress output.
+    #[arg(short, long)]
+    pub quiet: bool,
+}
+
+/// Arguments for source-bound checkpoint capture. A sandbox is a selector, never a rebind.
+#[derive(Debug, Args)]
+pub struct SnapshotCheckpointArgs {
+    /// Existing snapshot group. Required unless --sandbox is supplied.
+    #[arg(value_name = "GROUP", required_unless_present = "sandbox")]
+    pub group: Option<String>,
+
+    /// Select this sandbox's sole associated group, or verify the explicit group's source.
+    #[arg(long, value_name = "SANDBOX")]
+    pub sandbox: Option<String>,
+
+    /// Checkpoint name within the group; generated when omitted.
+    #[arg(short, long, value_name = "NAME")]
+    pub name: Option<String>,
+
+    /// Group-store root instead of the configured snapshot directory.
+    #[arg(long = "dest-dir", value_name = "DIR")]
+    pub dest_dir: Option<PathBuf>,
+
+    /// Add a key=value label. May be repeated.
+    #[arg(long = "label", value_name = "K=V")]
+    pub labels: Vec<String>,
+
+    /// Record content integrity for the checkpoint.
+    #[arg(long)]
+    pub integrity: bool,
+
+    /// Include memory, execution, and device state.
+    #[arg(long)]
+    pub full: bool,
+
+    /// Guest writeback policy. Mandatory capture barriers remain enforced.
     #[arg(long, default_value = "auto")]
     pub guest_flush: microsandbox::snapshot::GuestFlush,
 
@@ -294,6 +337,7 @@ impl SnapshotSaveArgs {
 pub async fn run(args: SnapshotArgs) -> anyhow::Result<()> {
     match args.command {
         SnapshotCommands::Create(args) => create(args).await,
+        SnapshotCommands::Checkpoint(args) => checkpoint(args).await,
         SnapshotCommands::Restore(args) => restore::run(*args, None).await,
         SnapshotCommands::List(args) => list(args).await,
         SnapshotCommands::Inspect(args) => inspect(args).await,
@@ -303,6 +347,62 @@ pub async fn run(args: SnapshotArgs) -> anyhow::Result<()> {
         SnapshotCommands::Save(args) => save(args).await,
         SnapshotCommands::Load(args) => load(args).await,
         SnapshotCommands::Head(args) => head(args).await,
+    }
+}
+
+async fn checkpoint(args: SnapshotCheckpointArgs) -> anyhow::Result<()> {
+    let labels = args
+        .labels
+        .iter()
+        .map(|label| {
+            label
+                .split_once('=')
+                .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                .ok_or_else(|| anyhow::anyhow!("invalid --label '{label}': expected K=V"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let selector = args
+        .group
+        .as_deref()
+        .or(args.sandbox.as_deref())
+        .expect("clap requires a selector");
+    let spinner = if args.quiet {
+        ui::Spinner::quiet()
+    } else {
+        ui::Spinner::start("Checkpointing", selector)
+    };
+    let config = microsandbox::SnapshotConfig {
+        name: args.name.unwrap_or_default(),
+        group: args.group,
+        source_sandbox: args.sandbox.unwrap_or_default(),
+        dest_dir: args.dest_dir,
+        labels,
+        force: false,
+        record_integrity: args.integrity,
+        full: args.full,
+        guest_flush: args.guest_flush,
+    };
+    let backend = microsandbox::backend::default_backend();
+    match backend
+        .snapshots()
+        .checkpoint(backend.clone(), config)
+        .await
+    {
+        Ok(checkpoint) => {
+            spinner.finish_success("Checkpointed");
+            if !args.quiet {
+                if let Some(update) = checkpoint.head_update() {
+                    report_head_update(update);
+                }
+                println!("{}", checkpoint.id());
+                println!("{}", checkpoint.path()?.display());
+            }
+            Ok(())
+        }
+        Err(error) => {
+            spinner.finish_clear();
+            Err(error.into())
+        }
     }
 }
 
@@ -751,6 +851,47 @@ mod tests {
 
     fn parse_snapshot_args(args: &[&str]) -> SnapshotArgs {
         TestCli::parse_from(std::iter::once("msb").chain(args.iter().copied())).args
+    }
+
+    #[test]
+    fn checkpoint_requires_selectors_and_keeps_capture_controls() {
+        assert!(TestCli::try_parse_from(["msb", "checkpoint"]).is_err());
+        for form in [
+            vec!["checkpoint", "history"],
+            vec!["checkpoint", "--sandbox", "app"],
+            vec!["checkpoint", "history", "--sandbox", "app"],
+        ] {
+            let SnapshotCommands::Checkpoint(args) = parse_snapshot_args(&form).command else {
+                panic!("wrong command")
+            };
+            assert!(args.group.is_some() || args.sandbox.is_some());
+        }
+        let SnapshotCommands::Checkpoint(args) = parse_snapshot_args(&[
+            "checkpoint",
+            "history",
+            "--name",
+            "saved",
+            "--full",
+            "--integrity",
+            "--guest-flush",
+            "required",
+            "--label",
+            "stage=ready",
+            "--quiet",
+        ])
+        .command
+        else {
+            panic!("wrong command")
+        };
+        assert_eq!(args.name.as_deref(), Some("saved"));
+        assert!(args.full && args.integrity && args.quiet);
+        assert_eq!(args.labels, ["stage=ready"]);
+        for invalid in [
+            vec!["checkpoint", "history", "--output", "backup.msb"],
+            vec!["checkpoint", "history", "--force"],
+        ] {
+            assert!(TestCli::try_parse_from(std::iter::once("msb").chain(invalid)).is_err());
+        }
     }
 
     #[test]

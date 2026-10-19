@@ -56,6 +56,7 @@ async fn open_snapshot_impl(
     }
 
     let dir = resolve_path(local, path_or_name).await?;
+    super::group::recover_member(&dir).await?;
     let mut lease = if reader {
         Some(
             super::lease::reader_async(canonical_path(&dir))
@@ -248,6 +249,84 @@ pub(super) async fn index_write(
     availability: &str,
     name: Option<String>,
 ) -> MicrosandboxResult<()> {
+    write_index_rows(
+        db,
+        vec![index_row(
+            artifact_path,
+            digest,
+            manifest,
+            availability,
+            name,
+        )?],
+        Vec::new(),
+    )
+    .await
+}
+
+/// Publish ready index rows in one SQLite transaction; a batch must never appear a row at a time.
+pub(super) async fn index_write_batch(
+    db: &microsandbox_db::DbWriteConnection,
+    snapshots: &[(PathBuf, String, Manifest)],
+) -> MicrosandboxResult<()> {
+    let rows = snapshots
+        .iter()
+        .map(|(path, digest, manifest)| index_row(path, digest, manifest, "ready", None))
+        .collect::<MicrosandboxResult<Vec<_>>>()?;
+    write_index_rows(db, rows, Vec::new()).await
+}
+
+/// Resolve all reservations from one recovered batch in the same index commit. Absent
+/// payloads are rolled-back reservations, not members to expose and remove in a second pass.
+pub(super) async fn index_recover_batch(
+    db: &microsandbox_db::DbWriteConnection,
+    snapshots: &[(PathBuf, String, Manifest)],
+    absent: Vec<String>,
+) -> MicrosandboxResult<()> {
+    let rows = snapshots
+        .iter()
+        .map(|(path, digest, manifest)| index_row(path, digest, manifest, "ready", None))
+        .collect::<MicrosandboxResult<Vec<_>>>()?;
+    write_index_rows(db, rows, absent).await
+}
+
+async fn write_index_rows(
+    db: &microsandbox_db::DbWriteConnection,
+    rows: Vec<(snapshot_entity::ActiveModel, sea_orm::Condition)>,
+    absent: Vec<String>,
+) -> MicrosandboxResult<()> {
+    db.transaction::<_, _, _, sea_orm::DbErr>(|transaction| {
+        let rows = rows.clone();
+        let absent = absent.clone();
+        async move {
+            if !absent.is_empty() {
+                snapshot_entity::Entity::delete_many()
+                    .filter(snapshot_entity::Column::ArtifactPath.is_in(absent))
+                    .filter(snapshot_entity::Column::Availability.eq("publishing"))
+                    .exec(&transaction)
+                    .await?;
+            }
+            for (row, supersede) in rows {
+                snapshot_entity::Entity::delete_many()
+                    .filter(supersede)
+                    .exec(&transaction)
+                    .await?;
+                row.insert(&transaction).await?;
+            }
+            recompute_children(&transaction).await?;
+            Ok((transaction, ()))
+        }
+    })
+    .await?;
+    Ok(())
+}
+
+fn index_row(
+    artifact_path: &Path,
+    digest: &str,
+    manifest: &Manifest,
+    availability: &str,
+    name: Option<String>,
+) -> MicrosandboxResult<(snapshot_entity::ActiveModel, sea_orm::Condition)> {
     let created_at = chrono::DateTime::parse_from_rfc3339(&manifest.capture.created_at)
         .map(|d| d.naive_utc())
         .unwrap_or_else(|_| Utc::now().naive_utc());
@@ -345,22 +424,7 @@ pub(super) async fn index_write(
         indexed_at: Set(indexed_at),
         child_count: Set(0),
     };
-    db.transaction::<_, _, _, sea_orm::DbErr>(|transaction| {
-        let row = row.clone();
-        let supersede = supersede.clone();
-        async move {
-            snapshot_entity::Entity::delete_many()
-                .filter(supersede)
-                .exec(&transaction)
-                .await?;
-            row.insert(&transaction).await?;
-            recompute_children(&transaction).await?;
-            Ok((transaction, ()))
-        }
-    })
-    .await?;
-
-    Ok(())
+    Ok((row, supersede))
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -443,14 +507,7 @@ pub(super) async fn list_dir(
         if path.join(super::group::GROUP_FILENAME).is_file() {
             // Groups are exactly one level deep. Do not recursively walk arbitrary folders,
             // symlink trees, checkpoint stores, or failed staging directories.
-            let mut members = tokio::fs::read_dir(&path).await?;
-            while let Some(member) = members.next_entry().await? {
-                if member.file_type().await?.is_dir()
-                    && !member.file_name().to_string_lossy().starts_with('.')
-                {
-                    candidates.push(member.path());
-                }
-            }
+            candidates.extend(super::group::member_paths(&path).await?);
         } else {
             candidates.push(path);
         }
@@ -486,9 +543,13 @@ pub(crate) async fn remove_snapshot_expected(
     expected: Option<&str>,
 ) -> MicrosandboxResult<()> {
     let path = canonical_path(&resolve_path(local, path_or_name).await?);
+    super::group::recover_member(&path).await?;
     // Initialize/reconcile before taking the deletion lock: migration itself pins the
     // namespace, so starting it while holding that namespace exclusively would deadlock.
     let pools = local.db().await?;
+    if let Some(group) = super::group::group_path(&path) {
+        super::publication::complete_batch(pools.write(), &group).await?;
+    }
     if !path.join(DESCRIPTOR_FILENAME).exists() && path.join(V066_DESCRIPTOR_FILENAME).exists() {
         super::migration::reconcile_explicit(pools, &path).await?;
     }
@@ -1136,6 +1197,192 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn committed_batch_recovery_finishes_index_with_live_publisher_pins() {
+        let home = tempfile::tempdir().unwrap();
+        let local = crate::test_support::local_backend_builder(home.path())
+            .build()
+            .await
+            .unwrap();
+        let group = super::super::group::ensure(&local.snapshots_dir(), Some("committed"))
+            .await
+            .unwrap()
+            .canonicalize()
+            .unwrap();
+        let staged = tempfile::tempdir_in(&group).unwrap();
+        let base = manifest(970, None);
+        let child = manifest(971, Some(&base));
+        let db = local.db().await.unwrap();
+        let mut publishers = Vec::new();
+        for data in [&base, &child] {
+            let path = group.join(data.snapshot_id.as_str());
+            publishers.push(StorageLease::shared(&path).unwrap());
+            super::super::publication::prepare(db.write(), &path, &data.digest().unwrap(), data)
+                .await
+                .unwrap();
+            let incoming = staged.path().join(data.snapshot_id.as_str());
+            std::fs::create_dir(&incoming).unwrap();
+            std::fs::write(
+                incoming.join(DESCRIPTOR_FILENAME),
+                data.to_canonical_bytes().unwrap(),
+            )
+            .unwrap();
+        }
+        super::super::group::publish_batch_indexed(
+            &group,
+            staged.path(),
+            &BTreeMap::new(),
+            std::slice::from_ref(&child.snapshot_id),
+            false,
+            super::super::group::IndexedPublication {
+                operation: "00000000000000000000000000000001".into(),
+                outcome: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(group.join(".group-transaction").exists());
+
+        // A post-filesystem failure retains a committed journal and the complete reservation
+        // set. Reading must report failure rather than silently return an older index view.
+        db.write()
+            .execute_unprepared(
+                "CREATE TRIGGER fail_batch_index BEFORE INSERT ON snapshot_index \
+             WHEN NEW.availability = 'ready' AND EXISTS \
+             (SELECT 1 FROM snapshot_index WHERE availability = 'ready') \
+             BEGIN SELECT RAISE(FAIL, 'injected batch-index failure'); END",
+            )
+            .await
+            .unwrap();
+        assert!(
+            list_indexed(&local)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("injected batch-index failure")
+        );
+        for data in [&base, &child] {
+            assert_eq!(
+                indexed_path(&local, &group.join(data.snapshot_id.as_str()))
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .availability,
+                "publishing"
+            );
+        }
+        assert!(group.join(".group-transaction").exists());
+        db.write()
+            .execute_unprepared("DROP TRIGGER fail_batch_index")
+            .await
+            .unwrap();
+        let listed = tokio::time::timeout(std::time::Duration::from_secs(5), list_indexed(&local))
+            .await
+            .expect("committed recovery waited on the original publisher's pins")
+            .unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().all(|member| member.availability == "ready"));
+        assert!(!group.join(".group-transaction").exists());
+        assert!(
+            !super::super::publication::complete_batch(db.write(), &group)
+                .await
+                .unwrap()
+        );
+        drop(publishers);
+    }
+
+    #[tokio::test]
+    async fn pending_batch_recovery_defers_live_publishers_and_commits_all_rows_together() {
+        let home = tempfile::tempdir().unwrap();
+        let local = crate::test_support::local_backend_builder(home.path())
+            .build()
+            .await
+            .unwrap();
+        let group = super::super::group::ensure(&local.snapshots_dir(), Some("batch"))
+            .await
+            .unwrap()
+            .canonicalize()
+            .unwrap();
+        let db = local.db().await.unwrap();
+        let mut paths = Vec::new();
+        for number in 0..3 {
+            let data = manifest(950 + number, None);
+            let path = group.join(data.snapshot_id.as_str());
+            super::super::publication::prepare(db.write(), &path, &data.digest().unwrap(), &data)
+                .await
+                .unwrap();
+            if number < 2 {
+                std::fs::create_dir(&path).unwrap();
+                std::fs::write(
+                    path.join(DESCRIPTOR_FILENAME),
+                    data.to_canonical_bytes().unwrap(),
+                )
+                .unwrap();
+            }
+            paths.push(path);
+        }
+
+        // One still-live publisher must defer its whole group, including earlier entries
+        // that a per-row recovery loop would otherwise expose prematurely.
+        let publisher = StorageLease::shared(&paths[1]).unwrap();
+        super::super::publication::recover(&local).await.unwrap();
+        for path in &paths {
+            assert_eq!(
+                indexed_path(&local, path)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .availability,
+                "publishing"
+            );
+        }
+        drop(publisher);
+
+        // Fail after the first ready insertion inside the transaction. Both that insertion
+        // and deletion of the absent reservation must roll back, preserving all three roots.
+        db.write()
+            .execute_unprepared(
+                "CREATE TRIGGER fail_second_ready BEFORE INSERT ON snapshot_index \
+             WHEN NEW.availability = 'ready' AND EXISTS \
+             (SELECT 1 FROM snapshot_index WHERE availability = 'ready') \
+             BEGIN SELECT RAISE(FAIL, 'injected second-row failure'); END",
+            )
+            .await
+            .unwrap();
+        let error = super::super::publication::recover(&local)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("injected second-row failure"));
+        for path in &paths {
+            assert_eq!(
+                indexed_path(&local, path)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .availability,
+                "publishing"
+            );
+        }
+        db.write()
+            .execute_unprepared("DROP TRIGGER fail_second_ready")
+            .await
+            .unwrap();
+        super::super::publication::recover(&local).await.unwrap();
+        for path in &paths[..2] {
+            assert_eq!(
+                indexed_path(&local, path)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .availability,
+                "ready"
+            );
+        }
+        assert!(indexed_path(&local, &paths[2]).await.unwrap().is_none());
+        super::super::publication::recover(&local).await.unwrap();
+        assert_eq!(list_indexed(&local).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
     async fn recovery_finds_quarantine_after_last_index_row_is_gone() {
         let home = tempfile::tempdir().unwrap();
         let external = tempfile::tempdir().unwrap();
@@ -1256,6 +1503,63 @@ mod tests {
             .await
             .unwrap();
         assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_only_grouped_snapshot_preserves_explicit_path_reads() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let local = crate::test_support::local_backend_builder(home.path())
+            .build()
+            .await
+            .unwrap();
+        let group = super::super::group::ensure(external.path(), Some("readonly"))
+            .await
+            .unwrap();
+        let data = manifest(902, None);
+        let path = group.join(data.snapshot_id.as_str());
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(
+            path.join(DESCRIPTOR_FILENAME),
+            data.to_canonical_bytes().unwrap(),
+        )
+        .unwrap();
+        let lock = group.join(".group.lock");
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::fs::set_permissions(&group, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = open_snapshot_leased(&local, path.to_str().unwrap()).await;
+        std::fs::set_permissions(&group, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let reader = result.unwrap();
+        assert_eq!(reader.id(), &data.snapshot_id);
+        assert!(!group.join(".msb-leases").exists());
+    }
+
+    #[tokio::test]
+    async fn group_listing_retains_valid_artifacts_beside_malformed_metadata() {
+        let home = tempfile::tempdir().unwrap();
+        let local = crate::test_support::local_backend_builder(home.path())
+            .build()
+            .await
+            .unwrap();
+        let data = manifest(904, None);
+        let path = install(&local, "history", "baseline", &data).await;
+        let group = path.parent().unwrap();
+        let corrupt = group.join("snap_00000000000000000000000000000389");
+        std::fs::create_dir(&corrupt).unwrap();
+        std::fs::write(corrupt.join(DESCRIPTOR_FILENAME), b"malformed descriptor").unwrap();
+        // Explicit-path discovery has always been useful for recovering otherwise healthy
+        // artifacts when local selection metadata is damaged. Preserve that behavior.
+        std::fs::write(
+            group.join(super::super::group::GROUP_FILENAME),
+            b"malformed group",
+        )
+        .unwrap();
+        let found = list_dir(&local, &local.snapshots_dir()).await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id(), &data.snapshot_id);
     }
 
     #[cfg(unix)]

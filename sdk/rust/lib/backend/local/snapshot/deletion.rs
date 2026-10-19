@@ -85,6 +85,18 @@ pub(super) async fn recover_parent(local: &LocalBackend, parent: &Path) -> Micro
             .into());
         }
     }
+    // Recovery creates namespace leases and retires journal paths too. It must
+    // enter before those operations, otherwise a group exchange could move its
+    // journal while the worker is still using the old pathname. Busy recovery is
+    // deferred; never wait on admission while catalog initialization owns locks.
+    let writer = if super::group::is_group(parent) {
+        let Some(writer) = super::writer::WriterLease::try_acquire(parent)? else {
+            return Ok(());
+        };
+        Some(writer)
+    } else {
+        None
+    };
     let entries = match std::fs::read_dir(&root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -164,8 +176,9 @@ pub(super) async fn recover_parent(local: &LocalBackend, parent: &Path) -> Micro
             Ok(_) => {} // Publication or a crash before retirement left a valid live name.
         }
         let path = entry.path();
+        let worker_writer = writer.clone();
         tokio::task::spawn_blocking(move || {
-            let _guards = (lease, lock);
+            let _guards = (lease, lock, worker_writer);
             discard(&path)
         })
         .await
@@ -275,4 +288,42 @@ fn sync_dir(path: &Path) -> std::io::Result<()> {
     #[cfg(not(unix))]
     let _ = path;
     Ok(())
+}
+
+//--------------------------------------------------------------------------------------------------
+// Tests
+//--------------------------------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn group_recovery_defers_namespace_and_journal_mutation_until_writer_finishes() {
+        let home = tempfile::tempdir().unwrap();
+        let local = crate::test_support::local_backend_builder(home.path())
+            .build()
+            .await
+            .unwrap();
+        local.db().await.unwrap();
+        let group = super::super::group::ensure(&local.snapshots_dir(), Some("history"))
+            .await
+            .unwrap();
+        let journal = group.join(".snapshot-deletions/delete-interrupted");
+        std::fs::create_dir_all(journal.join("payload")).unwrap();
+        std::fs::write(journal.join("source.json"), b"\"retired\"").unwrap();
+        std::fs::write(journal.join("payload/marker"), b"retained").unwrap();
+        let admission = super::super::writer::WriterLease::acquire(&group)
+            .await
+            .unwrap();
+
+        recover_parent(&local, &group).await.unwrap();
+        assert!(journal.join("payload/marker").is_file());
+        assert!(!group.join(".msb-leases").exists());
+
+        drop(admission);
+        recover_parent(&local, &group).await.unwrap();
+        assert!(!journal.exists());
+        assert!(group.join(super::super::group::GROUP_FILENAME).is_file());
+    }
 }

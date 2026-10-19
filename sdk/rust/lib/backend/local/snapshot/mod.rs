@@ -14,8 +14,10 @@ mod metadata;
 pub(super) mod migration;
 pub(crate) mod publication;
 mod restore;
+mod source;
 mod store;
 mod verify;
+mod writer;
 
 //--------------------------------------------------------------------------------------------------
 // Re-Exports

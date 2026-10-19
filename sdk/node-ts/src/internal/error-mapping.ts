@@ -30,6 +30,7 @@ import {
   SandboxReplacedError,
   SandboxStillRunningError,
   SnapshotSourceRecoveryError,
+  SnapshotImportError,
   TerminalError,
   UnsupportedOperationError,
   UnsupportedError,
@@ -95,6 +96,7 @@ export function mapNapiError(err: unknown): unknown {
   if (!(err instanceof Error)) return err;
   const m = PATTERN.exec(err.message);
   if (!m) return err;
+  if (m[1] === "SnapshotImport") return mapImportError(m[2]!, err);
   if (m[1] === "SnapshotSourceRecovery") {
     return mapRecoveryError(m[2]!, err);
   }
@@ -136,5 +138,24 @@ export async function withMappedErrors<T>(fn: () => Promise<T>): Promise<T> {
     return await fn();
   } catch (e) {
     throw mapNapiError(e);
+  }
+}
+
+function mapImportError(payload: string, raw: Error): unknown {
+  try {
+    const envelope = JSON.parse(payload);
+    const details = envelope.import;
+    if (typeof envelope.message !== "string" || !details ||
+        typeof details.operation_id !== "string" || typeof details.detail !== "string" ||
+        !(details.group_path === null || typeof details.group_path === "string") ||
+        !["not_committed", "committed", "unknown"].includes(details.outcome) ||
+        !Array.isArray(details.archives) || !details.archives.every((path: unknown) => typeof path === "string")) return raw;
+    return new SnapshotImportError(envelope.message, {
+      operationId: details.operation_id, archives: details.archives,
+      groupPath: details.group_path, outcome: details.outcome, detail: details.detail,
+    }, { cause: raw });
+  } catch {
+    // A mismatched native payload is still a failure, never an inferred successful import.
+    return raw;
   }
 }

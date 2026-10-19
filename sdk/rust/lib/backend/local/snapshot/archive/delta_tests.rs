@@ -1839,6 +1839,49 @@ async fn memory_dependency_validation_rejects_incomplete_and_misbound_inventorie
         serde_json::from_value::<ArchiveInventory>(serde_json::to_value(&inventory).unwrap())
             .unwrap()
     };
+    // Both wire dialects carry the same dependency contract. Neither alias may bypass
+    // completeness checks or claim a requirement without the exact matching payload key.
+    let capability = extensions::Extension::Dependencies;
+    let mut canonical = clone();
+    let payload = canonical.extensions.remove(REQUIREMENT).unwrap();
+    canonical
+        .extensions
+        .insert(capability.canonical().into(), payload.clone());
+    canonical.requires.retain(|key| key != REQUIREMENT);
+    canonical.requires.push(capability.canonical().into());
+    canonical.requires.sort();
+    assert!(validate(&canonical).unwrap().is_some());
+    let mut equal_aliases = canonical.clone();
+    equal_aliases
+        .extensions
+        .insert(REQUIREMENT.into(), payload.clone());
+    equal_aliases.requires.push(REQUIREMENT.into());
+    equal_aliases.requires.sort();
+    assert!(validate(&equal_aliases).unwrap().is_some());
+    let mut conflicting_aliases = equal_aliases.clone();
+    conflicting_aliases
+        .extensions
+        .insert(REQUIREMENT.into(), serde_json::json!({}));
+    assert!(
+        validate(&conflicting_aliases)
+            .unwrap_err()
+            .to_string()
+            .contains("conflicting")
+    );
+    let mut misbound = canonical.clone();
+    misbound
+        .requires
+        .retain(|key| key != capability.canonical());
+    misbound.requires.push(REQUIREMENT.into());
+    assert!(
+        validate(&misbound)
+            .unwrap_err()
+            .to_string()
+            .contains("no matching payload")
+    );
+    let mut incomplete = canonical;
+    incomplete.completeness = "boot-complete".into();
+    assert!(validate(&incomplete).is_err());
     let mut missing_requirement = clone();
     missing_requirement
         .requires
@@ -1993,4 +2036,134 @@ async fn standalone_base_archive_resolves_ram_but_dependent_base_archive_is_refu
         .checkpoint_restore
         .is_some()
     );
+}
+
+#[tokio::test]
+async fn archive_extension_aliases_import_payloads_without_rewriting_descriptors() {
+    use std::io::Read;
+
+    let temp = tempfile::tempdir().unwrap();
+    let local = LocalBackend::builder()
+        .home(temp.path().join("home"))
+        .build()
+        .await
+        .unwrap();
+    let base = fixture(&local, &temp.path().join("base"), 1, None, false).await;
+    let target = fixture(&local, &temp.path().join("target"), 4, Some(&base), false).await;
+    let descriptor = std::fs::read(target.path().join(DESCRIPTOR_FILENAME)).unwrap();
+    let archive = temp.path().join("original.tar");
+    save_snapshot(
+        &local,
+        target.path().to_str().unwrap(),
+        &archive,
+        SaveOpts {
+            since: Some(base.path().to_string_lossy().into_owned()),
+            plain_tar: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    // Change only archive metadata, keeping payload and transport-integrity bytes intact.
+    // Exercising the real tar reader catches admission checks that a resolver unit test misses.
+    for dialect in ["historical", "canonical", "both", "conflicting", "misbound"] {
+        let rewritten = temp.path().join(format!("{dialect}.tar"));
+        let mut input = tar::Archive::new(std::fs::File::open(&archive).unwrap());
+        let mut output = tar::Builder::new(std::fs::File::create(&rewritten).unwrap());
+        for entry in input.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let path = entry.path().unwrap().into_owned();
+            let mut header = entry.header().clone();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            if path == Path::new("archive.json") {
+                let mut inventory: ArchiveInventory = serde_json::from_slice(&bytes).unwrap();
+                let dependency = extensions::Extension::Dependencies;
+                let payload = inventory
+                    .extensions
+                    .remove(dependency.historical())
+                    .unwrap();
+                inventory.requires.retain(|key| !dependency.recognizes(key));
+                let key = if dialect == "historical" {
+                    dependency.historical()
+                } else {
+                    dependency.canonical()
+                };
+                inventory.extensions.insert(key.into(), payload.clone());
+                inventory.requires.push(key.into());
+                if matches!(dialect, "both" | "conflicting") {
+                    inventory.extensions.insert(
+                        dependency.historical().into(),
+                        if dialect == "both" {
+                            payload
+                        } else {
+                            serde_json::json!({})
+                        },
+                    );
+                    inventory.requires.push(dependency.historical().into());
+                }
+                if dialect == "misbound" {
+                    inventory.requires.retain(|key| !dependency.recognizes(key));
+                    inventory.requires.push(dependency.historical().into());
+                }
+                let names = extensions::Extension::MemberNames;
+                let name_key = if dialect == "historical" {
+                    names.historical()
+                } else {
+                    names.canonical()
+                };
+                inventory.extensions.insert(
+                    name_key.into(),
+                    serde_json::json!({target.id().to_string(): "imported-checkpoint"}),
+                );
+                inventory.requires.push(name_key.into());
+                inventory.requires.sort();
+                bytes = serde_json::to_vec(&inventory).unwrap();
+                header.set_size(bytes.len() as u64);
+                header.set_cksum();
+            }
+            output
+                .append_data(&mut header, &path, bytes.as_slice())
+                .unwrap();
+        }
+        output.finish().unwrap();
+        drop(output);
+        let result = load_snapshot_with_options(
+            &local,
+            &rewritten,
+            LoadOpts {
+                base: Some(base.path().to_string_lossy().into_owned()),
+                group: Some(dialect.into()),
+                ..Default::default()
+            },
+        )
+        .await;
+        if matches!(dialect, "conflicting" | "misbound") {
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("malformed aliases must refuse import"),
+            };
+            let expected = if dialect == "conflicting" {
+                "conflicting"
+            } else {
+                "no matching payload"
+            };
+            assert!(error.to_string().contains(expected), "{error}");
+            assert!(!local.snapshots_dir().join(dialect).exists());
+        } else {
+            let loaded = result.unwrap();
+            assert_ram(loaded.path(), 4);
+            assert_eq!(
+                std::fs::read(loaded.path().join(DESCRIPTOR_FILENAME)).unwrap(),
+                descriptor
+            );
+            assert_eq!(
+                super::super::super::group::member_name(loaded.path())
+                    .unwrap()
+                    .as_deref(),
+                Some("imported-checkpoint")
+            );
+        }
+    }
 }

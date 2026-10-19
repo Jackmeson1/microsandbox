@@ -16,6 +16,20 @@ use crate::snapshot::{
 
 /// Backend implementation for snapshot lifecycle operations.
 pub trait SnapshotBackend: Send + Sync {
+    /// Append to an existing source-bound group. Group-only, source-only, or matching
+    /// combined selectors are accepted; no missing group is created implicitly.
+    fn checkpoint<'a>(
+        &'a self,
+        _backend: Arc<dyn Backend>,
+        _config: SnapshotConfig,
+    ) -> BoxFuture<'a, MicrosandboxResult<Snapshot>> {
+        Box::pin(async {
+            Err(crate::MicrosandboxError::local_only(
+                crate::Operation::SnapshotOps,
+            ))
+        })
+    }
+
     /// Capture directly to an archive; unsupported backends must reject before capture.
     fn create_archive<'a>(
         &'a self,

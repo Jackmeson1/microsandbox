@@ -493,6 +493,7 @@ export {
   SandboxReplacedError,
   SandboxStillRunningError,
   SnapshotSourceRecoveryError,
+  SnapshotImportError,
   TerminalError,
   UnsupportedOperationError,
   UnsupportedError,
@@ -503,6 +504,8 @@ export type {
   MicrosandboxErrorCode,
   PublishedSnapshotArtifact,
   SnapshotSourceRecoveryDetails,
+  SnapshotImportDetails,
+  SnapshotImportOutcome,
 } from "./errors.js";
 
 // Sizes

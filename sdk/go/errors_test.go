@@ -203,3 +203,30 @@ func TestKindFromFFIAllTags(t *testing.T) {
 		}
 	}
 }
+
+func TestSnapshotImportPublicationOutcome(t *testing.T) {
+	for _, outcome := range []string{"not_committed", "committed", "unknown"} {
+		t.Run(outcome, func(t *testing.T) {
+			payload := fmt.Sprintf(`{"kind":"snapshot_import","message":"batch failure","import":{"operation_id":"attempt-1","archives":["/base.msb","/child.msb"],"group_path":null,"outcome":%q,"detail":"index failure"}}`, outcome)
+			var native ffi.Error
+			if err := json.Unmarshal([]byte(payload), &native); err != nil {
+				t.Fatal(err)
+			}
+			err := wrapFFI(&native)
+			var imported *SnapshotImportError
+			if !errors.As(err, &imported) || !IsKind(err, ErrSnapshotImport) {
+				t.Fatalf("lost import details: %v", err)
+			}
+			if string(imported.Details.Outcome) != outcome || imported.Details.OperationID != "attempt-1" || imported.Details.GroupPath != nil || len(imported.Details.Archives) != 2 {
+				t.Fatalf("wrong details: %+v", imported.Details)
+			}
+			native.Import.Archives[0] = "changed"
+			if imported.Details.Archives[0] != "/base.msb" {
+				t.Fatal("native payload remained aliased")
+			}
+			if imported.Error() != native.Message || imported.Details.Detail != "index failure" {
+				t.Fatal("original diagnostic lost")
+			}
+		})
+	}
+}

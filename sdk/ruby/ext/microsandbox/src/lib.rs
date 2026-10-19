@@ -272,6 +272,7 @@ fn core_error_class_name(error: &MicrosandboxError) -> &'static str {
         MicrosandboxError::SnapshotImageMissing(_) => "SnapshotImageMissingError",
         MicrosandboxError::SnapshotIntegrity(_) => "SnapshotIntegrityError",
         MicrosandboxError::SnapshotSourceRecovery(_) => "SnapshotSourceRecoveryError",
+        MicrosandboxError::SnapshotImport(_) => "SnapshotImportError",
         MicrosandboxError::SnapshotMigration { .. } => "SnapshotMigrationError",
         // Always present: the extension enables the core's `net` feature.
         MicrosandboxError::NetworkBuilder(_) => "NetworkPolicyError",
@@ -304,6 +305,39 @@ fn exception_class(ruby: &Ruby, name: &str) -> ExceptionClass {
 fn core_error(ruby: &Ruby, error: MicrosandboxError) -> Error {
     if let MicrosandboxError::Unsupported { op, reason } = &error {
         return unsupported_error(ruby, &ruby_api_name(*op), &ruby_hint(reason));
+    }
+    if let MicrosandboxError::SnapshotImport(details) = &error {
+        let class = exception_class(ruby, "SnapshotImportError");
+        let message = error.to_string();
+        let exception = match class.new_instance((message.as_str(),)) {
+            Ok(exception) => exception,
+            Err(_) => return Error::new(class, message),
+        };
+        if let Some(object) = RObject::from_value(exception.as_value()) {
+            let outcome = match details.outcome {
+                microsandbox_core::SnapshotImportOutcome::NotCommitted => "not_committed",
+                microsandbox_core::SnapshotImportOutcome::Committed => "committed",
+                microsandbox_core::SnapshotImportOutcome::Unknown => "unknown",
+            };
+            let paths = ruby.ary_from_iter(
+                details
+                    .archives
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned()),
+            );
+            let _ = object.ivar_set("@operation_id", details.operation_id.as_str());
+            let _ = object.ivar_set("@archives", paths);
+            let _ = object.ivar_set(
+                "@group_path",
+                details
+                    .group_path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned()),
+            );
+            let _ = object.ivar_set("@outcome", outcome);
+            let _ = object.ivar_set("@detail", details.detail.as_str());
+        }
+        return exception.into();
     }
     if let MicrosandboxError::SnapshotSourceRecovery(recovery) = &error {
         return snapshot_source_recovery_error(ruby, error.to_string(), recovery);

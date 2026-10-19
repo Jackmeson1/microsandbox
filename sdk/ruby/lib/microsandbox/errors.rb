@@ -91,6 +91,7 @@ module Microsandbox
   # Capture completed, but the source sandbox failed to recover its prior
   # execution state; see the class body below for the recovery locator.
   define_error(:SnapshotSourceRecoveryError, "snapshot-source-recovery")
+  define_error(:SnapshotImportError, "snapshot-import")
   # The automatic adjacent-release snapshot migration was blocked.
   define_error(:SnapshotMigrationError, "snapshot-migration")
 
@@ -128,6 +129,19 @@ module Microsandbox
     attr_reader :operation
     # @return [String, nil] why it was rejected or what to use instead
     attr_reader :hint
+  end
+
+  class SnapshotImportError
+    # @return [String, nil] this import attempt's durable journal identity
+    attr_reader :operation_id
+    # @return [Array<String>, nil] supplied archive paths
+    attr_reader :archives
+    # @return [String, nil] prepared destination group directory
+    attr_reader :group_path
+    # @return [String, nil] "not_committed", "committed", or "unknown"
+    attr_reader :outcome
+    # @return [String, nil] the original failure diagnostic
+    attr_reader :detail
   end
 
   # The native layer attaches the recovery locator as attributes, mirroring

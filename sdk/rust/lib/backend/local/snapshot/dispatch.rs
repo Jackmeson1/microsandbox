@@ -20,6 +20,20 @@ use crate::{MicrosandboxError, MicrosandboxResult, Operation};
 //--------------------------------------------------------------------------------------------------
 
 impl SnapshotBackend for LocalBackend {
+    fn checkpoint<'a>(
+        &'a self,
+        backend: Arc<dyn Backend>,
+        mut config: SnapshotConfig,
+    ) -> BoxFuture<'a, MicrosandboxResult<Snapshot>> {
+        Box::pin(async move {
+            config.dest_dir = config.dest_dir.map(std::path::absolute).transpose()?;
+            Ok(from_artifact(
+                backend,
+                create::create_checkpoint(self, config).await?,
+            ))
+        })
+    }
+
     fn create<'a>(
         &'a self,
         backend: Arc<dyn Backend>,

@@ -13,6 +13,7 @@ use microsandbox_image::storage_lease::StorageLease;
 #[derive(Clone)]
 pub(super) struct DeletionLease {
     _namespace: StorageLease,
+    _writer: Option<super::writer::WriterLease>,
     #[cfg(unix)]
     _descriptor: Option<StorageLease>,
 }
@@ -55,6 +56,28 @@ pub(super) async fn reader_async(path: std::path::PathBuf) -> std::io::Result<St
 }
 
 pub(super) fn deletion(path: &Path) -> std::io::Result<Option<DeletionLease>> {
+    // Enter before member pins, never while waiting on the group publication lock.
+    let writer = if let Some(group) = super::group::group_path(path) {
+        let Some(writer) = super::writer::WriterLease::try_acquire(&group)? else {
+            return Ok(None);
+        };
+        Some(writer)
+    } else {
+        None
+    };
+    deletion_inner(path, writer)
+}
+
+/// Journal recovery already owns the group lock and must not invert admission ordering.
+/// It only tries member pins; a conflicting remover leaves the journal intact for retry.
+pub(super) fn deletion_under_group_lock(path: &Path) -> std::io::Result<Option<DeletionLease>> {
+    deletion_inner(path, None)
+}
+
+fn deletion_inner(
+    path: &Path,
+    writer: Option<super::writer::WriterLease>,
+) -> std::io::Result<Option<DeletionLease>> {
     let Some(namespace) = StorageLease::try_exclusive(path)? else {
         return Ok(None);
     };
@@ -83,12 +106,14 @@ pub(super) fn deletion(path: &Path) -> std::io::Result<Option<DeletionLease>> {
         drop(descriptor);
         Ok(Some(DeletionLease {
             _namespace: namespace,
+            _writer: writer,
         }))
     }
     #[cfg(unix)]
     {
         Ok(Some(DeletionLease {
             _namespace: namespace,
+            _writer: writer,
             _descriptor: descriptor,
         }))
     }

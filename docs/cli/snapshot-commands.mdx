@@ -40,6 +40,8 @@ msb snap create ready --sandbox worker
 
 Local disk capture accepts running, paused, stopped, or crashed sources. Cloud requires a stopped persistent source.
 
+New local groups bind to the source sandbox's database identity and row ID. Recreating a sandbox with the same name does not give it permission to append to that history. Imported and historical groups without a source association remain usable for inspection, export, verification and restoration, but cannot capture new checkpoints; create a new group for the desired source.
+
 <Accordion title="Examples">
 
 ```bash
@@ -53,6 +55,30 @@ msb snap create ready --sandbox worker -o ready.msb
 <span id="guest-filesystem-flush" />
 
 Guest flushing is shared by the CLI and SDKs. See [guest flushing](/sandboxes/snapshots#guest-flushing) for policies and examples.
+
+## msb snap checkpoint
+
+Append a checkpoint from an existing group's bound source. This command does not create a missing group or change its source association.
+
+```bash
+msb snap checkpoint history --name ready
+msb snap checkpoint --sandbox worker
+msb snap checkpoint history --sandbox worker --full
+```
+
+With only a group, the command resolves its original sandbox. With only `--sandbox`, exactly one associated group must exist; zero or multiple matches produce an error. Supplying both verifies that they identify the same sandbox instance. An unbound group, deleted source, or replacement sandbox is refused before capture.
+
+| Argument / flag | Description |
+| --- | --- |
+| `GROUP` | Existing local group; optional only with `--sandbox` |
+| `--sandbox NAME` | Select a unique associated group or verify the explicit group's source |
+| `-n`, `--name NAME` | Friendly checkpoint name; generated when omitted |
+| `--dest-dir DIR` | Group-store root instead of the configured snapshots directory |
+| `--full` | Include memory and execution state |
+| `--guest-flush auto|required|skip` | Guest writeback policy |
+| `--integrity` | Record content integrity |
+| `--label KEY=VALUE` | Attach a label; repeatable |
+| `-q`, `--quiet` | Suppress output |
 
 ## msb snap restore
 
@@ -168,6 +194,15 @@ msb snap export worker:ready --output ready.msb --with-image
 Import one or more local archives. The `load` alias remains supported. Dependencies resolve regardless of input order; all members are validated before publication.
 
 Snapshot publication records image ownership before exposing the installed artifact and reports catalog failures. Pending publication and deletion recovery runs during snapshot listing; image pruning also reconciles pending publication.
+
+On Windows, atomic import requires a local NTFS destination with working Transactional NTFS (TxF) support. The importer checks both the volume capability and an actual disposable transaction before unpacking archives or changing a group. Unsupported destinations fail explicitly; there is no non-atomic fallback. Group members, aliases, head and the filesystem commit marker publish in one transaction. Catalog completion is recoverable after interruption; retry the same batch and destination with the updated CLI before resuming conflicting older storage writers.
+
+When older SDKs or CLIs share the storage, the operator must control the maintenance interval:
+
+1. Suspend new capture/import/removal/head-edit/reindex requests affecting the destination and conflicting shared-cache pruning, and drain requests already in flight. Quiesce the responsible applications or jobs; upgrading the CLI alone does not update an application's SDK. Unrelated running sandboxes need not stop.
+2. Keep those writers suspended while the updated CLI imports the batch and completes catalog recovery. Read-only use remains supported; a version or process scan is not a substitute for controlling the writers.
+3. If the import is interrupted or reports an unknown outcome, retry the same archives and destination with the updated CLI. Keep maintenance in effect until publication and recovery complete successfully, or the reported failure establishes that nothing was committed and pending recovery has been completed. Do not manually delete recovery journals.
+4. Resume the older writers only after that interval. This is operator-controlled exclusion; the new admission lock cannot restrain binaries that do not participate in its protocol.
 
 ```bash
 msb snap import ready.msb

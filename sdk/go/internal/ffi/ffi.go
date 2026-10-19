@@ -1276,11 +1276,21 @@ const logsBufSize = 48 << 20
 // serialises {kind, message} JSON with optional recovery metadata; this type unmarshals it. The public SDK
 // maps Kind back into microsandbox.ErrorKind.
 type Error struct {
+	Import   *SnapshotImportDetails         `json:"import,omitempty"`
 	Kind     string                         `json:"kind"`
 	Message  string                         `json:"message"`
 	Recovery *SnapshotSourceRecoveryDetails `json:"recovery,omitempty"`
 	// Local volume errors retain host errno/Win32 identity. Older libraries omit it.
 	OSError *int32 `json:"os_error,omitempty"`
+}
+
+// SnapshotImportDetails keeps publication certainty across the native boundary.
+type SnapshotImportDetails struct {
+	OperationID string   `json:"operation_id"`
+	Archives    []string `json:"archives"`
+	GroupPath   *string  `json:"group_path"`
+	Outcome     string   `json:"outcome"`
+	Detail      string   `json:"detail"`
 }
 
 // SnapshotSourceRecoveryDetails preserves native recovery metadata across the FFI.
@@ -1332,6 +1342,7 @@ const (
 	KindSnapshotIntegrity      = "snapshot_integrity"
 	KindSnapshotMigration      = "snapshot_migration"
 	KindSnapshotSourceRecovery = "snapshot_source_recovery"
+	KindSnapshotImport         = "snapshot_import"
 	KindPatchFailed            = "patch_failed"
 	KindMetricsDisabled        = "metrics_disabled"
 	KindMetricsUnavailable     = "metrics_unavailable"

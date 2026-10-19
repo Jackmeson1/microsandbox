@@ -12,11 +12,11 @@ use super::*;
 // Functions
 //--------------------------------------------------------------------------------------------------
 
-fn id(value: u128) -> SnapshotId {
+pub(super) fn id(value: u128) -> SnapshotId {
     SnapshotId::new(format!("snap_{value:032x}")).unwrap()
 }
 
-fn descriptor(value: u128, parent: Option<u128>) -> Manifest {
+pub(super) fn descriptor(value: u128, parent: Option<u128>) -> Manifest {
     let layer_id = DiskLayerId::new(format!("layer_{value:032x}")).unwrap();
     Manifest {
         schema: SCHEMA.into(),
@@ -55,7 +55,7 @@ fn descriptor(value: u128, parent: Option<u128>) -> Manifest {
     }
 }
 
-fn stage(root: &Path, manifests: &[Manifest]) -> tempfile::TempDir {
+pub(super) fn stage(root: &Path, manifests: &[Manifest]) -> tempfile::TempDir {
     let staging = tempfile::Builder::new()
         .prefix(".stage-")
         .tempdir_in(root)
@@ -78,16 +78,124 @@ fn stage(root: &Path, manifests: &[Manifest]) -> tempfile::TempDir {
     staging
 }
 
-async fn add(group: &Path, value: u128, parent: Option<u128>) -> HeadUpdate {
+pub(super) async fn add(group: &Path, value: u128, parent: Option<u128>) -> HeadUpdate {
     let staging = stage(group.parent().unwrap(), &[descriptor(value, parent)]);
     publish(group, staging.path(), &BTreeMap::new(), &id(value), false)
         .await
         .unwrap()
 }
 
+#[test]
+fn cancelled_head_selection_retains_writer_until_blocking_mutation_finishes() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap()
+        .block_on(async {
+            let root = tempfile::tempdir().unwrap();
+            let group = ensure(root.path(), Some("history")).await.unwrap();
+            add(&group, 1, None).await;
+            add(&group, 2, Some(1)).await;
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (release, wait) = std::sync::mpsc::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                started.send(()).unwrap();
+                wait.recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+            });
+            ready.await.unwrap();
+
+            let selector = format!("history:{}", id(1));
+            let mut selection = Box::pin(select(root.path(), &selector));
+            assert!(futures::poll!(selection.as_mut()).is_pending());
+            drop(selection);
+            // The queued blocking mutation still owns admission after its caller
+            // cancels. A directory publisher cannot move its destination away.
+            assert!(super::WriterLease::try_acquire(&group).unwrap().is_none());
+            release.send(()).unwrap();
+            blocker.await.unwrap();
+            tokio::task::spawn_blocking(|| {}).await.unwrap();
+            assert_eq!(read_group(&group).unwrap().head, Some(id(1).to_string()));
+            // Parallel subprocess tests may have forked while this file was
+            // open. CLOEXEC releases the child's copy at exec, not at fork;
+            // test eventual release with a deadline, not instantaneous OS state.
+            let _reacquired = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                super::WriterLease::acquire(&group),
+            )
+            .await
+            .expect("cancelled publisher leaked writer admission")
+            .unwrap();
+        });
+}
+
 //--------------------------------------------------------------------------------------------------
 // Tests
 //--------------------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn indexed_publication_distinguishes_preflight_rejection_from_committed() {
+    let root = tempfile::tempdir().unwrap();
+    let group = ensure(root.path(), Some("certainty")).await.unwrap();
+    add(&group, 1, None).await;
+    let old_descriptor = fs::read(group.join(id(1).as_str()).join(DESCRIPTOR_FILENAME)).unwrap();
+    let state = Arc::new(AtomicU8::new(SnapshotImportOutcome::NotCommitted as u8));
+    let publish = || IndexedPublication {
+        operation: "00000000000000000000000000000001".into(),
+        outcome: state.clone(),
+    };
+    let mut conflicting = descriptor(1, None);
+    conflicting.capture.created_at = "2026-10-14T00:00:00Z".into();
+    let staged = stage(root.path(), &[conflicting, descriptor(2, Some(1))]);
+    let error = publish_batch_indexed(
+        &group,
+        staged.path(),
+        &BTreeMap::new(),
+        &[id(2)],
+        false,
+        publish(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("different descriptor"),
+        "{error}"
+    );
+    assert_eq!(
+        state.load(Ordering::Acquire),
+        SnapshotImportOutcome::NotCommitted as u8
+    );
+    assert_eq!(
+        fs::read(group.join(id(1).as_str()).join(DESCRIPTOR_FILENAME)).unwrap(),
+        old_descriptor
+    );
+    assert!(!group.join(id(2).as_str()).exists());
+    assert!(!group.join(".group-transaction").exists());
+
+    let staged = stage(root.path(), &[descriptor(2, Some(1))]);
+    publish_batch_indexed(
+        &group,
+        staged.path(),
+        &BTreeMap::new(),
+        &[id(2)],
+        false,
+        publish(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        state.load(Ordering::Acquire),
+        SnapshotImportOutcome::Committed as u8
+    );
+    // The commit is certain even before the index acknowledgement. Readers can
+    // finish indexing the retained journal without replaying publication.
+    let pending = pending_index(&group).await.unwrap().unwrap();
+    assert_eq!(pending.snapshots.len(), 1);
+    assert_eq!(pending.snapshots[0].2.snapshot_id, id(2));
+    pending.finish().await.unwrap();
+    assert!(!group.join(".group-transaction").exists());
+}
 
 #[tokio::test]
 async fn batch_head_is_independent_of_archive_and_staging_order() {
@@ -837,4 +945,165 @@ async fn symlinked_group_and_descriptor_paths_are_rejected() {
     );
     assert!(!group.join(id(1).as_str()).exists());
     assert!(external.is_file());
+}
+#[tokio::test]
+async fn capture_binding_is_atomic_and_cannot_be_reassigned_by_name() {
+    use super::super::source::{SOURCE_FILENAME, Source};
+    use crate::backend::LocalBackend;
+
+    let home = tempfile::tempdir().unwrap();
+    let local = LocalBackend::builder()
+        .home(home.path())
+        .build()
+        .await
+        .unwrap();
+    let db = local.db().await.unwrap().write();
+    let root = local.snapshots_dir();
+    let source = Source::capture(db, 1, "app").await.unwrap();
+    let group = ensure_capture(&root, "history", source.clone())
+        .await
+        .unwrap();
+    let original = fs::read(group.join(SOURCE_FILENAME)).unwrap();
+    ensure_capture(&root, "history", source).await.unwrap();
+    let replacement = Source::capture(db, 2, "app").await.unwrap();
+    assert!(ensure_capture(&root, "history", replacement).await.is_err());
+    assert_eq!(original, fs::read(group.join(SOURCE_FILENAME)).unwrap());
+    // The strict legacy group document is unchanged; source information lives beside it.
+    let state: serde_json::Value =
+        serde_json::from_slice(&fs::read(group.join(GROUP_FILENAME)).unwrap()).unwrap();
+    assert_eq!(state.as_object().unwrap().len(), 2);
+
+    let unbound = ensure(&root, Some("imported")).await.unwrap();
+    assert!(
+        ensure_capture(
+            &root,
+            "imported",
+            Source::capture(db, 1, "app").await.unwrap()
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("unbound")
+    );
+    assert!(!unbound.join(SOURCE_FILENAME).exists());
+}
+
+#[tokio::test]
+async fn competing_capture_sources_never_share_a_group() {
+    use super::super::source::Source;
+    use crate::backend::LocalBackend;
+
+    let home = tempfile::tempdir().unwrap();
+    let local = LocalBackend::builder()
+        .home(home.path())
+        .build()
+        .await
+        .unwrap();
+    let db = local.db().await.unwrap().write();
+    let left = Source::capture(db, 1, "left").await.unwrap();
+    let right = Source::capture(db, 2, "right").await.unwrap();
+    let root = local.snapshots_dir();
+    let (left, right) = tokio::join!(
+        ensure_capture(&root, "history", left),
+        ensure_capture(&root, "history", right)
+    );
+    assert_ne!(left.is_ok(), right.is_ok());
+}
+
+#[tokio::test]
+async fn checkpoint_selectors_require_one_matching_live_association() {
+    use super::super::source::Source;
+    use crate::{backend::LocalBackend, db::entity::sandbox, sandbox::SandboxConfig};
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
+
+    let home = tempfile::tempdir().unwrap();
+    let local = LocalBackend::builder()
+        .home(home.path())
+        .build()
+        .await
+        .unwrap();
+    let db = local.db().await.unwrap();
+    let model = sandbox::ActiveModel {
+        name: Set("app".into()),
+        config: Set(serde_json::to_string(&SandboxConfig::default()).unwrap()),
+        status: Set(sandbox::SandboxStatus::Stopped),
+        ephemeral: Set(false),
+        ..Default::default()
+    }
+    .insert(db.write())
+    .await
+    .unwrap();
+    let source = Source::capture(db.write(), model.id, "app").await.unwrap();
+    let root = local.snapshots_dir();
+    assert!(capture_source(&local, &root, None, None).await.is_err());
+    assert!(
+        capture_source(&local, &root, None, Some("app"))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("no associated")
+    );
+    ensure_capture(&root, "stable", source.clone())
+        .await
+        .unwrap();
+    for (group, name) in [
+        (Some("stable"), None),
+        (None, Some("app")),
+        (Some("stable"), Some("app")),
+    ] {
+        assert_eq!(
+            capture_source(&local, &root, group, name).await.unwrap(),
+            ("stable".into(), "app".into())
+        );
+    }
+    ensure_capture(&root, "experiment", source.clone())
+        .await
+        .unwrap();
+    assert!(
+        capture_source(&local, &root, None, Some("app"))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("multiple associated")
+    );
+    ensure(&root, Some("imported")).await.unwrap();
+    assert!(
+        capture_source(&local, &root, Some("imported"), Some("app"))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("unbound")
+    );
+    sandbox::Entity::delete_by_id(model.id)
+        .exec(db.write())
+        .await
+        .unwrap();
+    sandbox::ActiveModel {
+        name: Set("app".into()),
+        config: Set(serde_json::to_string(&SandboxConfig::default()).unwrap()),
+        status: Set(sandbox::SandboxStatus::Stopped),
+        ephemeral: Set(false),
+        ..Default::default()
+    }
+    .insert(db.write())
+    .await
+    .unwrap();
+    assert!(
+        capture_source(&local, &root, Some("stable"), None)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("no longer exists")
+    );
+    assert!(
+        capture_source(&local, &root, Some("stable"), Some("app"))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("another sandbox instance")
+    );
+    // A checkpoint must not recreate a group removed between selector resolution and capture.
+    fs::remove_dir_all(root.join("stable")).unwrap();
+    assert!(ensure_checkpoint(&root, "stable", source).await.is_err());
+    assert!(!root.join("stable").exists());
 }

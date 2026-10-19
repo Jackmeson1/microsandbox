@@ -170,6 +170,32 @@ class PublishedSnapshotArtifact:
     digest: str
 
 
+class SnapshotImportError(MicrosandboxError):
+    """An import failure retaining whether the entire batch committed.
+
+    ``unknown`` requires recovery before assuming either success or no changes.
+    """
+
+    code = "snapshot-import"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation_id: str,
+        archives: list[str],
+        group_path: str | None,
+        outcome: Literal["not_committed", "committed", "unknown"],
+        detail: str,
+    ) -> None:
+        super().__init__(message)
+        self.operation_id = operation_id
+        self.archives = list(archives)
+        self.group_path = group_path
+        self.outcome = outcome
+        self.detail = detail
+
+
 class SnapshotSourceRecoveryError(MicrosandboxError):
     """Capture completed, but the source requires recovery before further use.
 

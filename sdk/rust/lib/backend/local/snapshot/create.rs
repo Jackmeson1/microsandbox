@@ -121,7 +121,35 @@ impl Drop for SnapshotDiskClosure {
 
 pub(super) async fn create_snapshot(
     local: &LocalBackend,
+    config: SnapshotConfig,
+) -> MicrosandboxResult<Snapshot> {
+    create_snapshot_inner(local, config, false).await
+}
+
+pub(super) async fn create_checkpoint(
+    local: &LocalBackend,
     mut config: SnapshotConfig,
+) -> MicrosandboxResult<Snapshot> {
+    let root = config
+        .dest_dir
+        .clone()
+        .unwrap_or_else(|| local.snapshots_dir());
+    let (group, source) = super::group::capture_source(
+        local,
+        &root,
+        config.group.as_deref(),
+        (!config.source_sandbox.is_empty()).then_some(config.source_sandbox.as_str()),
+    )
+    .await?;
+    config.group = Some(group);
+    config.source_sandbox = source;
+    create_snapshot_inner(local, config, true).await
+}
+
+async fn create_snapshot_inner(
+    local: &LocalBackend,
+    mut config: SnapshotConfig,
+    require_existing_group: bool,
 ) -> MicrosandboxResult<Snapshot> {
     if config.force {
         return Err(MicrosandboxError::InvalidConfig(
@@ -142,10 +170,23 @@ pub(super) async fn create_snapshot(
         .group
         .take()
         .unwrap_or_else(|| config.source_sandbox.clone());
-    let group_dir = super::group::ensure(&root, Some(&group_name)).await?;
+    let source = super::source::Source::capture(
+        local.db().await?.write(),
+        lineage.sandbox_id(),
+        &config.source_sandbox,
+    )
+    .await?;
+    let group_dir = if require_existing_group {
+        super::group::ensure_checkpoint(&root, &group_name, source).await?
+    } else {
+        super::group::ensure_capture(&root, &group_name, source).await?
+    };
+    super::publication::complete_batch(local.db().await?.write(), &group_dir).await?;
+    // Capture may continue while a group generation is exchanged. Its private staging
+    // must therefore live beside the group, never inside the directory being replaced.
     let staging = tempfile::Builder::new()
         .prefix(".capture-")
-        .tempdir_in(&group_dir)?;
+        .tempdir_in(&root)?;
     let name = config.name.clone();
     let source_sandbox = config.source_sandbox.clone();
     config.dest_dir = Some(staging.path().to_path_buf());
@@ -154,9 +195,9 @@ pub(super) async fn create_snapshot(
         local,
         captured,
         staging,
+        group_dir,
         lineage,
-        name,
-        generated_name,
+        (name, generated_name),
         &source_sandbox,
     )
     .await
@@ -168,20 +209,15 @@ async fn publish_snapshot_group(
     local: &LocalBackend,
     captured: StagedSnapshot,
     staging: tempfile::TempDir,
+    group_dir: PathBuf,
     lineage: super::lineage::CaptureLineage,
-    name: String,
-    generated_name: bool,
+    (name, generated_name): (String, bool),
     source_sandbox: &str,
 ) -> MicrosandboxResult<Snapshot> {
     let StagedSnapshot {
         snapshot: mut captured,
         source_recovery,
     } = captured;
-    let group_dir = staging
-        .path()
-        .parent()
-        .expect("group staging has a parent")
-        .to_path_buf();
     let published = async {
     lineage.validate_source(local, source_sandbox).await?;
     // Ancestry belongs to the immutable descriptor, not to the group head or export base.
@@ -199,16 +235,18 @@ async fn publish_snapshot_group(
     // release the source lock while a blocking group commit is still running in the background.
     let publication_db = local.db().await?.write().clone();
     let captured = tokio::spawn(async move {
+        let writer = super::writer::WriterLease::acquire(&group_dir).await?;
         let destination = group_dir.join(captured.id().as_str());
         let _publication = microsandbox_image::storage_lease::StorageLease::shared_async(destination.clone()).await?;
         super::publication::prepare(&publication_db, &destination, captured.digest(), captured.manifest()).await?;
-        let update = publish_with_name_retry(
+        let update = publish_with_name_retry_admitted(
             &group_dir,
             staging.path(),
             captured.id(),
             name,
             generated_name,
             || format!("msb-{:08x}", rand::random::<u32>()),
+            writer.clone(),
         ).await?;
         captured.path = group_dir.join(captured.id().as_str());
         super::publication::complete(&publication_db, captured.path(), captured.digest(), captured.manifest()).await?;
@@ -224,17 +262,48 @@ async fn publish_snapshot_group(
 }
 
 /// Retry generated local names against the same captured artifact; explicit names remain strict.
+#[cfg(test)]
 pub(super) async fn publish_with_name_retry(
+    group_dir: &Path,
+    staged: &Path,
+    snapshot_id: &SnapshotId,
+    name: String,
+    generated_name: bool,
+    next_name: impl FnMut() -> String,
+) -> MicrosandboxResult<super::group::HeadUpdate> {
+    let writer = super::writer::WriterLease::acquire(group_dir).await?;
+    publish_with_name_retry_admitted(
+        group_dir,
+        staged,
+        snapshot_id,
+        name,
+        generated_name,
+        next_name,
+        writer,
+    )
+    .await
+}
+
+async fn publish_with_name_retry_admitted(
     group_dir: &Path,
     staged: &Path,
     snapshot_id: &SnapshotId,
     mut name: String,
     generated_name: bool,
     mut next_name: impl FnMut() -> String,
+    writer: super::writer::WriterLease,
 ) -> MicrosandboxResult<super::group::HeadUpdate> {
     loop {
         let aliases = BTreeMap::from([(snapshot_id.to_string(), name)]);
-        match super::group::publish(group_dir, staged, &aliases, snapshot_id, false).await {
+        match super::group::publish_admitted(
+            group_dir,
+            staged,
+            &aliases,
+            snapshot_id,
+            writer.clone(),
+        )
+        .await
+        {
             Err(MicrosandboxError::SnapshotAlreadyExists(_)) if generated_name => {
                 // Alias conflicts are preflight errors: no staged payload was moved and the
                 // descriptor's identity/ancestry remain unchanged, so no recapture is needed.
@@ -2494,9 +2563,9 @@ mod tests {
                 &local,
                 staged,
                 staging,
+                group.clone(),
                 lineage,
-                "snapshot".into(),
-                false,
+                ("snapshot".into(), false),
                 "box",
             )
             .await
@@ -2951,11 +3020,22 @@ mod tests {
                 // The sentinel runs after the detached capture on the same one-thread queue.
                 tokio::task::spawn_blocking(|| {}).await.unwrap();
                 assert!(weak.upgrade().is_none());
-                assert!(
-                    microsandbox_runtime::ipc::try_acquire_lifecycle_guard(&run, "box")
-                        .unwrap()
-                        .is_some()
-                );
+                // Unrelated subprocess tests can temporarily inherit this
+                // descriptor between fork and exec. The Rust worker is gone;
+                // require bounded OS release rather than a zero-latency probe.
+                let _reacquired = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                    loop {
+                        if let Some(guard) =
+                            microsandbox_runtime::ipc::try_acquire_lifecycle_guard(&run, "box")
+                                .unwrap()
+                        {
+                            break guard;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }
+                })
+                .await
+                .expect("cancelled capture leaked lifecycle ownership");
                 assert!(std::fs::read_dir(&sandbox).unwrap().all(|entry| {
                     !entry
                         .unwrap()

@@ -11,6 +11,7 @@
 
 mod batch;
 mod delta;
+mod extensions;
 mod owned;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -3083,7 +3084,8 @@ async fn validate_archive_inventory(
     if inventory.requires.windows(2).any(|pair| pair[0] >= pair[1])
         || inventory.requires.iter().any(|requirement| {
             requirement != ARCHIVE_MEMBER_TRANSPORT_ALGORITHM
-                && requirement != delta::REQUIREMENT
+                && !extensions::Extension::Dependencies.recognizes(requirement)
+                && !extensions::Extension::MemberNames.recognizes(requirement)
                 && requirement != GUEST_CLOCK_EXTENSION
         })
     {
@@ -3095,6 +3097,7 @@ async fn validate_archive_inventory(
             )),
         ));
     }
+    extensions::Extension::MemberNames.resolve(&inventory.extensions, &inventory.requires)?;
     delta::validate(&inventory)?;
     let requires_transport = inventory
         .requires
@@ -4407,6 +4410,34 @@ mod tests {
                 error.to_string().contains("injected catalog failure"),
                 "{error}"
             );
+            let MicrosandboxError::SnapshotImport(details) = &error else {
+                panic!("import discarded publication context: {error}");
+            };
+            assert_eq!(
+                details.outcome,
+                if block_prepare {
+                    crate::SnapshotImportOutcome::NotCommitted
+                } else {
+                    crate::SnapshotImportOutcome::Committed
+                }
+            );
+            assert_eq!(details.archives, vec![archive.clone()]);
+            let group = details.group_path.as_ref().unwrap();
+            if block_prepare {
+                assert!(!group.join(super::super::group::GROUP_FILENAME).exists());
+                assert!(
+                    store::list_dir(&destination, &destination.snapshots_dir())
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
+            } else {
+                let journal: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(group.join(".group-transaction/intent.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(journal["operation"], details.operation_id);
+            }
             let rows = crate::db::entity::snapshot::Entity::find()
                 .all(db.read())
                 .await
@@ -4454,6 +4485,20 @@ mod tests {
             if let Some(snapshot) = repaired.first() {
                 assert_eq!(snapshot.availability, "ready");
             }
+            // A failed first import must not strand its name as an empty visible group;
+            // both pre-commit failure and lost post-commit completion are safe to retry.
+            let retry = load_snapshot_with_options(
+                &destination,
+                &archive,
+                LoadOpts {
+                    group: Some(group.file_name().unwrap().to_str().unwrap().to_owned()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert!(retry.artifact_path.join(DESCRIPTOR_FILENAME).exists());
+            assert_eq!(store::list_indexed(&destination).await.unwrap().len(), 1);
         }
     }
 

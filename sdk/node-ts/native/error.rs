@@ -8,7 +8,7 @@ use napi::Status;
 /// Convert a `MicrosandboxError` into a `napi::Error` with a typed code string.
 pub fn to_napi_error(err: MicrosandboxError) -> napi::Error {
     let code = error_type_str(&err);
-    if let Some(payload) = source_recovery_payload(&err) {
+    if let Some(payload) = source_recovery_payload(&err).or_else(|| import_payload(&err)) {
         return napi::Error::new(Status::GenericFailure, format!("[{code}] {payload}"));
     }
     napi::Error::new(Status::GenericFailure, format!("[{code}] {err}"))
@@ -21,6 +21,14 @@ fn source_recovery_payload(err: &MicrosandboxError) -> Option<String> {
     // Only this error carries recovery metadata; ordinary errors retain their existing wire form.
     let recovery = serde_json::to_value(recovery).ok()?;
     Some(serde_json::json!({ "message": err.to_string(), "recovery": recovery }).to_string())
+}
+
+fn import_payload(err: &MicrosandboxError) -> Option<String> {
+    let MicrosandboxError::SnapshotImport(details) = err else {
+        return None;
+    };
+    let details = serde_json::to_value(details).ok()?;
+    Some(serde_json::json!({ "message": err.to_string(), "import": details }).to_string())
 }
 
 /// Return a string tag for the error variant, used as the JS error `code` field.
@@ -76,6 +84,7 @@ fn error_type_str(err: &MicrosandboxError) -> &'static str {
         MicrosandboxError::SnapshotImageMissing(_) => "SnapshotImageMissing",
         MicrosandboxError::SnapshotIntegrity(_) => "SnapshotIntegrity",
         MicrosandboxError::SnapshotSourceRecovery(_) => "SnapshotSourceRecovery",
+        MicrosandboxError::SnapshotImport(_) => "SnapshotImport",
         MicrosandboxError::SnapshotMigration { .. } => "SnapshotMigration",
         MicrosandboxError::MetricsDisabled(_) => "MetricsDisabled",
         MicrosandboxError::MetricsUnavailable(_) => "MetricsUnavailable",

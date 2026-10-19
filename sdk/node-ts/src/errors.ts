@@ -29,6 +29,7 @@ export type MicrosandboxErrorCode =
   | "image"
   | "patchFailed"
   | "snapshotSourceRecovery"
+  | "snapshotImport"
   | "metricsDisabled"
   | "metricsUnavailable"
   | "unsupportedOperation"
@@ -256,6 +257,24 @@ export class SnapshotSourceRecoveryError extends MicrosandboxError {
     options?: ErrorOptions,
   ) {
     super("snapshotSourceRecovery", message, options);
+  }
+}
+
+/** Known publication state of a failed archive batch. Unknown requires recovery. */
+export type SnapshotImportOutcome = "not_committed" | "committed" | "unknown";
+
+export interface SnapshotImportDetails {
+  readonly operationId: string;
+  readonly archives: readonly string[];
+  readonly groupPath: string | null;
+  readonly outcome: SnapshotImportOutcome;
+  readonly detail: string;
+}
+
+/** Preserve partial success: a failed call may have committed its entire batch. */
+export class SnapshotImportError extends MicrosandboxError {
+  constructor(message: string, readonly details: SnapshotImportDetails, options?: ErrorOptions) {
+    super("snapshotImport", message, options);
   }
 }
 

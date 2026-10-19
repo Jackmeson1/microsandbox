@@ -9,6 +9,7 @@ import {
   SandboxNotFoundError,
   SandboxReplacedError,
   SnapshotSourceRecoveryError,
+  SnapshotImportError,
   SandboxStopTimedOutError,
 } from "../../dist/index.js";
 import { mapNapiError } from "../../dist/internal/error-mapping.js";
@@ -138,5 +139,23 @@ describe("mapNapiError", () => {
     expect(mapped).toBeInstanceOf(SandboxReplacedError);
     expect((mapped as SandboxReplacedError).code).toBe("sandboxReplaced");
     expect((mapped as MicrosandboxError).cause).toBe(raw);
+  });
+});
+
+describe("snapshot import outcomes", () => {
+  for (const outcome of ["not_committed", "committed", "unknown"]) {
+    it(`preserves ${outcome} across the native boundary`, () => {
+      const details = { operation_id: "attempt-1", archives: ["/base.msb", "/child.msb"], group_path: null, outcome, detail: "index failure" };
+      const raw = new Error(`[SnapshotImport] ${JSON.stringify({ message: "batch failure", import: details })}`);
+      const mapped = mapNapiError(raw) as SnapshotImportError;
+      expect(mapped).toBeInstanceOf(SnapshotImportError);
+      expect(mapped.code).toBe("snapshotImport");
+      expect(mapped.details).toEqual({ operationId: "attempt-1", archives: details.archives, groupPath: null, outcome, detail: "index failure" });
+      expect(mapped.cause).toBe(raw);
+    });
+  }
+  it("preserves unknown native payloads as failures", () => {
+    const raw = new Error('[SnapshotImport] {"message":"failed","import":{"outcome":"new_unknown_value"}}');
+    expect(mapNapiError(raw)).toBe(raw);
   });
 });
