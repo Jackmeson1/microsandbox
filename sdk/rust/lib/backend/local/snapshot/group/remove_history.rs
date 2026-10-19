@@ -358,6 +358,34 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_whole_group_preflight_retains_worker_ownership() {
+        const CHILD: &str = "MSB_GROUP_PREFLIGHT_CANCELLATION_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // Other parallel tests fork while this test briefly probes admission.
+            // CLOEXEC closes inherited descriptors at exec, not at fork, so a
+            // successful probe does not guarantee the next nonblocking removal
+            // can acquire its lock. Keep this cancellation test's exact ownership
+            // assertions in a process with no unrelated fork producers.
+            let output = tokio::task::spawn_blocking(|| {
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "backend::local::snapshot::group::remove_history::tests::cancelled_whole_group_preflight_retains_worker_ownership",
+                        "--nocapture",
+                    ])
+                    .env(CHILD, "1")
+                    .output()
+                    .unwrap()
+            })
+            .await
+            .unwrap();
+            assert!(
+                output.status.success(),
+                "isolated preflight cancellation test failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
         let home = tempfile::tempdir().unwrap();
         let local = crate::test_support::local_backend_builder(home.path())
             .build()
