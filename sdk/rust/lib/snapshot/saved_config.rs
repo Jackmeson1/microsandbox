@@ -9,6 +9,9 @@ mod execution_tests;
 mod resource_tests;
 mod resources;
 mod runtime;
+mod storage;
+#[cfg(test)]
+mod storage_tests;
 #[cfg(test)]
 mod tests;
 mod types;
@@ -25,6 +28,10 @@ pub use resources::{
     ResourceDefaultClear, ResourceDefaultSelection, ResourceRestoreMode, select_resource_defaults,
 };
 pub use runtime::select_runtime_defaults;
+pub use storage::{
+    MountInputSelection, StorageApprovalRequirement, StorageInputSelection, StorageRelaxation,
+    VsockInputSelection, select_storage_inputs,
+};
 pub use types::{
     RuntimeDefaultClear, RuntimeDefaultSelection, RuntimeSelectionContext, SavedCmdPolicy,
     SnapshotConfigMode,
