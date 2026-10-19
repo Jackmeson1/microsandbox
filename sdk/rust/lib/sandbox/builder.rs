@@ -381,6 +381,7 @@ impl SandboxBuilder {
     }
 
     /// Set a managed root disk of the given size for an OCI rootfs.
+    /// Canonical snapshot launch instead grows the captured root layout in child-only storage.
     ///
     /// Sugar for `root_disk_with(|d| d.size(size))`.
     pub fn root_disk(self, size: impl Into<Mebibytes>) -> Self {
@@ -413,6 +414,19 @@ impl SandboxBuilder {
                 return self;
             }
         };
+        if self.canonical_snapshot_launch {
+            // A size-only request grows the captured layout; it must not select a new
+            // managed root and accidentally discard a captured flat filesystem.
+            match root_disk {
+                microsandbox_types::RootDisk::Managed { size_mib: Some(size) } => {
+                    self.config.snapshot_root_growth_mib = Some(size);
+                }
+                _ => return self.config_error(
+                    "snapshot launch accepts only a root-disk capacity; replacing its layout, format or backing file is unsupported",
+                ),
+            }
+            return self;
+        }
         let mut image = self.config.spec.image.clone().unwrap_or_default();
         match &mut image {
             RootfsSource::Oci(oci) if !oci.reference.is_empty() => {
@@ -1621,6 +1635,22 @@ impl SandboxBuilder {
             return Ok(());
         }
         self.pending_snapshot_from_config = false;
+        if self.canonical_snapshot_launch
+            && let Some(RootfsSource::Oci(oci)) = &mut self.config.spec.image
+            && oci.reference.is_empty()
+            && let Some(disk) = oci.root_disk.take()
+        {
+            // Configuration-file size choices have the same meaning as the CLI's
+            // size-only flag. Ambient backend root defaults are merged only afterward.
+            match disk {
+                microsandbox_types::RootDisk::Managed { size_mib: Some(size) } => {
+                    self.config.snapshot_root_growth_mib.get_or_insert(size);
+                }
+                _ => return Err(MicrosandboxError::InvalidConfig(
+                    "snapshot launch accepts only a root-disk capacity; replacing its layout, format or backing file is unsupported".into(),
+                )),
+            }
+        }
         if self.has_explicit_rootfs_source() {
             return Err(MicrosandboxError::InvalidConfig(
                 "from_snapshot is mutually exclusive with explicit rootfs configuration".into(),
@@ -2263,6 +2293,20 @@ pub(crate) fn prepare_local_snapshot_restore(
     config
         .restore_boot_overrides
         .validate_scope(snap.manifest().scope, config.snapshot_restore_mode)?;
+    if config.snapshot_root_growth_mib.is_some() {
+        if snap.manifest().scope == crate::snapshot::SnapshotScope::Full
+            && config.snapshot_restore_mode != SnapshotRestoreMode::DiskOnly
+        {
+            return Err(MicrosandboxError::InvalidConfig(
+                "root-disk growth requires disk-only mode for a full snapshot".into(),
+            ));
+        }
+        if matches!(snap.manifest().root_disk, SnapshotRootDisk::Tmpfs { .. }) {
+            return Err(MicrosandboxError::InvalidConfig(
+                "snapshot root-disk growth requires an ext4 disk".into(),
+            ));
+        }
+    }
     if config.spec.runtime.user.is_none() {
         config.spec.runtime.user = snap.manifest().restore_defaults()?.user;
     }
@@ -3180,6 +3224,48 @@ mod tests {
                 "{field} must remain transient"
             );
         }
+    }
+
+    #[test]
+    fn canonical_snapshot_root_capacity_is_transient_and_rejects_layout_changes() {
+        use crate::sandbox::RootDiskBuilder;
+
+        let builder = SandboxBuilder::new("grow-child")
+            .snapshot_launch_options(false, false)
+            .root_disk(512_u32);
+        assert_eq!(builder.config.snapshot_root_growth_mib, Some(512));
+        assert!(builder.config.spec.image.is_none());
+        assert!(builder.build_error.is_none());
+        for disk in [
+            RootDiskBuilder::default().tmpfs(),
+            RootDiskBuilder::default().flat(),
+            RootDiskBuilder::default().disk_image("/tmp/replacement.raw"),
+        ] {
+            let builder = SandboxBuilder::new("grow-child")
+                .snapshot_launch_options(false, false)
+                .root_disk_with(|_| disk);
+            assert!(
+                builder
+                    .build_error
+                    .unwrap()
+                    .to_string()
+                    .contains("only a root-disk capacity")
+            );
+        }
+        let config = SandboxConfig {
+            snapshot_root_growth_mib: Some(512),
+            ..Default::default()
+        };
+        assert!(
+            serde_json::to_value(&config)
+                .unwrap()
+                .get("snapshot_root_growth_mib")
+                .is_none()
+        );
+        assert_eq!(
+            SandboxConfigPatch::from_present_fields(config).snapshot_root_growth_mib,
+            Some(512)
+        );
     }
 
     #[test]

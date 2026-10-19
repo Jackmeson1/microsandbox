@@ -141,6 +141,8 @@ For a disk boot, explicit command environment, user, working directory, entrypoi
 
 Supply destination resources explicitly. For snapshot launches, `-v SOURCE:GUEST[:OPTIONS]` maps a destination resource and `-v /guest/path` selects a private copy of a captured additional disk. Explicit mappings at the same guest path replace earlier choices; explicit mount-kind flags are applied after `-v`. A captured-disk selector must identify a disk actually present in the checkpoint. Image-based create/run retains its existing volume grammar.
 
+Use a size-only `--root-disk 20G` to grow a snapshot child's root disk and ext4 filesystem before boot. The captured managed or flat layout is preserved, and source layers remain unchanged. Shrinking, switching layouts or formats, and replacing the captured root with a file or tmpfs are rejected. A full checkpoint requires `--disk-only` for growth. Unsupported ext4 layouts fail during private staging, before `--replace` stops the existing sandbox. The deprecated `--oci-upper-size` spelling has the same size-only behavior.
+
 An ordinary disk snapshot records external mount paths without saving those external disks' bytes; supply their destination backing explicitly. Full checkpoints can carry additional disk payloads for private restoration. Allowing missing resources does not make an absent captured-disk selection valid.
 
 | Flag | Effect on snapshot-backed create/run |

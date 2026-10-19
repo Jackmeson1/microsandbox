@@ -259,6 +259,11 @@ pub struct SandboxConfig {
     #[serde(skip)]
     pub(crate) snapshot_root_virtual_size: Option<u64>,
 
+    /// Explicit canonical launch capacity, applied only to the private child disk before boot.
+    /// Never sent to a runtime or persisted as an unfinished storage operation.
+    #[serde(skip)]
+    pub(crate) snapshot_root_growth_mib: Option<u32>,
+
     /// Archive to materialize directly into child staging during create.
     ///
     /// Transient and never persisted.
@@ -639,6 +644,7 @@ impl SandboxConfig {
             config.snapshot_owned_source = None;
         }
         config.snapshot_root_virtual_size = None;
+        config.snapshot_root_growth_mib = None;
         #[cfg(feature = "local")]
         {
             config.snapshot_upper_layers.clear();
@@ -1149,6 +1155,7 @@ impl Default for SandboxConfig {
             #[cfg(feature = "local")]
             snapshot_owned_source: None,
             snapshot_root_virtual_size: None,
+            snapshot_root_growth_mib: None,
             snapshot_archive_source: None,
             snapshot_parent: None,
             snapshot_base: None,

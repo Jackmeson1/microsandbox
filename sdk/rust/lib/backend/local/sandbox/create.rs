@@ -8,6 +8,7 @@
 #[cfg(all(test, unix))]
 mod archive_tests;
 mod cleanup;
+mod root_growth;
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -253,8 +254,8 @@ impl LocalBackend {
         // materialization below installs its checkpoint closure directly into child staging, so
         // feeding that result through the installed-snapshot copier would copy the closure onto
         // itself and destroy the eager restore source.
-        let installed_checkpoint_restore = config.checkpoint_restore.take();
-        let installed_file_sources = std::mem::take(&mut config.snapshot_root_layer_sources);
+        let mut installed_checkpoint_restore = config.checkpoint_restore.take();
+        let mut installed_file_sources = std::mem::take(&mut config.snapshot_root_layer_sources);
         let installed_file_virtual_size = config.snapshot_root_virtual_size.take();
         // Decode once into a unique sibling before touching the replacement target.
         // Archive metadata supplies effective runtime requirements; validating the
@@ -356,6 +357,24 @@ impl LocalBackend {
             // Keep launch-time restore intent in this check, not just cold-start state.
             launch_contract::validate_runtime_config(&config, self.config()).await?;
             archive_stage = Some(stage);
+        }
+
+        if config.snapshot_root_growth_mib.is_some() {
+            // The complete disk/filesystem rewrite must succeed before replacement can
+            // stop the old sandbox. The worker owns staging and source leases through
+            // caller cancellation; publication later moves the directory without copying.
+            let prepared = root_growth::prepare(
+                config,
+                std::mem::take(&mut installed_file_sources),
+                installed_file_virtual_size,
+                installed_checkpoint_restore.take(),
+                archive_stage.take(),
+                self.sandboxes_dir(),
+                self.config().fs_state_limit(),
+            )
+            .await?;
+            config = prepared.0;
+            archive_stage = Some(prepared.1);
         }
 
         // Transition ownership is deliberately separate from the runtime lifecycle lock: this

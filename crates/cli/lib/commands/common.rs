@@ -322,6 +322,7 @@ pub struct SandboxOpts {
 
     /// Root disk for OCI images (e.g. 8G, tmpfs:2G, flat:8G,
     /// ./scratch.img, ./scratch.qcow2:format=qcow2,fstype=ext4).
+    /// Snapshot launches accept a size only, growing the child disk and filesystem.
     #[arg(long = "root-disk", value_name = "SPEC")]
     pub root_disk: Option<String>,
 
