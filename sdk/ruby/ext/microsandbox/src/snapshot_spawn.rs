@@ -222,6 +222,8 @@ fn destination(ruby: &Ruby, args: &[Value], local: bool) -> Result<RestoreBuilde
             "dangerously_inherit_resources",
             "allow_missing_resources",
             "guest_clock",
+            "init",
+            "hostname",
         ],
     )?;
     let mut builder = Sandbox::restore_ref(microsandbox_core::SnapshotReference::auto(""));
@@ -233,6 +235,12 @@ fn destination(ruby: &Ruby, args: &[Value], local: bool) -> Result<RestoreBuilde
     }
     if let Some(v) = keyword::<u32>(options, "memory")? {
         builder = builder.memory(v);
+    }
+    if let Some(v) = keyword::<String>(options, "init")? {
+        builder = builder.init(v);
+    }
+    if let Some(v) = keyword::<String>(options, "hostname")? {
+        builder = builder.hostname(v);
     }
     if let Some(v) = keyword::<u64>(options, "max_duration")? {
         builder = builder.max_duration(v);

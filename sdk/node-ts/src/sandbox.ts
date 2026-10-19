@@ -273,6 +273,11 @@ export class Sandbox implements AsyncDisposable {
     if (typeof builder.guestClock !== "function") {
       builder.guestClock = () => { throw new UnsupportedError("guest clock selection requires an updated native SDK"); };
     }
+    for (const option of ["init", "initWith", "hostname"] as const) {
+      if (typeof builder[option] !== "function") {
+        builder[option] = () => { throw new UnsupportedError(`${option} selection requires an updated native SDK`); };
+      }
+    }
     const restore = builder.restore.bind(builder);
     const progress = builder.restoreWithProgress.bind(builder);
     let name = "";

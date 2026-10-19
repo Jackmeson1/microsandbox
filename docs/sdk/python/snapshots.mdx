@@ -912,6 +912,22 @@ child = await Sandbox.restore("api:baseline", name="api-restored", cow_memory=Tr
 | `Sandbox.restore()` | Return the restored sandbox. |
 | `Sandbox.restore_with_progress()` | Return a `PullSession`; await its result. |
 
+#### init
+
+```python
+init: str | InitConfig | Mapping[str, Any] | None = None
+```
+
+Select guest PID 1 for disk boot using an absolute guest executable path, `"auto"`, or the existing `InitConfig(cmd, args, env)` form. Available on group/checkpoint `spawn_sandbox`, progress variants, and `Sandbox.restore`. Full-memory resume rejects an explicit choice, including `"auto"`; select `disk_only=True` for a new boot.
+
+#### hostname
+
+```python
+hostname: str | None = None
+```
+
+Set a nonempty guest hostname of at most 64 UTF-8 bytes for disk boot. Full-memory resume refuses replacement even when the requested name matches the source. `None` leaves the choice unspecified.
+
 Image, replacement, and startup-command options are not accepted. Full restore requires matching CPU and memory settings, keeps captured network devices, and cannot apply a new guest security profile. Use disk-only restore to change these.
 
 Restore rejects missing external filesystems (and, for full restore, additional disks) by default. Use `allow_missing_resources=True` to resume with unavailable devices (full restore records warnings). This is separate from strict/relaxed validation of supplied mappings; inheritance does not waive missing backing. Root and owned storage remain required.

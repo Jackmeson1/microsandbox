@@ -23,6 +23,8 @@ pub(super) struct RestoreOptions {
     snapshot_reference_kind: Option<String>,
     cpus: Option<u8>,
     memory_mib: Option<u32>,
+    init: Option<super::InitOpts>,
+    hostname: Option<String>,
     #[serde(default, deserialize_with = "deserialize_network_policy")]
     network_policy: Option<CustomNetworkPolicy>,
     #[serde(alias = "max_connections")]
@@ -102,6 +104,14 @@ pub(super) fn builder(name: String, opts: &RestoreOptions) -> Result<RestoreBuil
     }
     if let Some(memory) = opts.memory_mib {
         builder = builder.memory(memory);
+    }
+    if let Some(init) = &opts.init {
+        builder = builder.init_with(&init.cmd, |options| {
+            options.args(init.args.clone()).envs(init.env.clone())
+        });
+    }
+    if let Some(hostname) = &opts.hostname {
+        builder = builder.hostname(hostname);
     }
     if let Some(policy) = &opts.network_policy {
         builder = builder.network_policy(parse_custom_network_policy(policy, Vec::new())?);

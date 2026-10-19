@@ -10,6 +10,8 @@ import (
 // startup command can cross the restore entry point. Optional pointers retain
 // explicit zero values so the native restore path can validate the user's intent.
 type RestoreOptions struct {
+	Init                        *InitOptions         `json:"init,omitempty"`
+	Hostname                    *string              `json:"hostname,omitempty"`
 	Snapshot                    string               `json:"snapshot"`
 	SnapshotReferenceKind       string               `json:"snapshot_reference_kind,omitempty"`
 	CPUs                        *uint8               `json:"cpus,omitempty"`
@@ -69,4 +71,50 @@ func CheckRestoreGuestClock(ctx context.Context, policy string) error {
 		}
 	}
 	return &Error{Kind: KindUnsupportedOperation, Message: "native SDK does not support requested guest clock policy " + policy}
+}
+
+// CheckRestoreBootOptions refuses explicit options an older native library cannot apply.
+// Ordinary restoration makes no capability call and retains its existing wire shape.
+func CheckRestoreBootOptions(ctx context.Context, options RestoreOptions) error {
+	var requested []string
+	if options.Init != nil {
+		requested = append(requested, "init")
+	}
+	if options.Hostname != nil {
+		requested = append(requested, "hostname")
+	}
+	if len(requested) == 0 {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	raw, err := SnapshotObjectCall(ctx, 0, map[string]any{"op": "restore_boot_options"})
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var native *Error
+		if !errors.As(err, &native) || (native.Kind != KindUnsupportedOperation && native.Kind != KindInvalidArgument) {
+			return err
+		}
+		return &Error{Kind: KindUnsupportedOperation, Message: "init/hostname selection requires an updated native SDK: " + err.Error()}
+	}
+	var supported []string
+	if err := json.Unmarshal(raw, &supported); err != nil {
+		return &Error{Kind: KindUnsupportedOperation, Message: "native SDK did not acknowledge restore boot options"}
+	}
+	for _, option := range requested {
+		found := false
+		for _, name := range supported {
+			if name == option {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return &Error{Kind: KindUnsupportedOperation, Message: "native SDK does not support restore option " + option}
+		}
+	}
+	return nil
 }

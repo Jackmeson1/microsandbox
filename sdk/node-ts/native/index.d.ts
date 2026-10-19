@@ -821,6 +821,12 @@ export declare class RestoreBuilder {
   cpus(count: number): this
   /** Set destination memory in MiB; full execution restore requires captured geometry. */
   memory(mib: number): this
+  /** Set guest PID 1 for disk boot. Full-memory resume rejects this request. */
+  init(cmd: string, args?: Array<string> | undefined | null): this
+  /** Set guest PID 1, arguments and environment for disk boot only. */
+  initWith(cmd: string, configure: (arg: InitOptionsBuilder) => InitOptionsBuilder): this
+  /** Set the guest hostname for disk boot; full-memory resume rejects replacement. */
+  hostname(hostname: string): this
   /** Set only host-side network policy, without DNS, TLS, or guest bootstrap changes. */
   networkPolicyJson(json: string): this
   /** Set host-side policy from the existing policy builder. */
@@ -1763,8 +1769,8 @@ export declare class Snapshot {
   static remove(pathOrName: string, opts?: SnapshotRemoveOptions | undefined | null): Promise<void>
   static load(archive: string, dest?: string | undefined | null, base?: string | undefined | null): Promise<SnapshotHandle>
   static loadWithOptions(archive: string, opts?: LoadOpts | undefined | null): Promise<SnapshotHandle>
-  /** Import archives together, resolving dependencies within the batch and destination group. */
-  static loadMany(archives: Array<string>, opts?: LoadOpts | undefined | null): Promise<Array<SnapshotHandle>>
+  /** Import archives together, retaining their call-time path interpretation. */
+  static loadMany(archives: Array<string>, opts?: LoadOpts | undefined | null): Promise<SnapshotHandle[]>
   /** Read a group's head, or select `group:member` as its head. */
   static groupHead(selector: string): Promise<HeadUpdate>
   /** Deprecated: use `reference`. Throws when no local filesystem path exists. */

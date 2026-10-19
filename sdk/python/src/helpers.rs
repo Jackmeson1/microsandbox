@@ -223,6 +223,8 @@ pub(crate) fn restore_builder_from_reference(
             "forked",
             "disk_only",
             "snapshot_base",
+            "init",
+            "hostname",
             "log_level",
             "user",
             "volumes",
@@ -247,6 +249,13 @@ pub(crate) fn restore_builder_from_reference(
     }
     if let Some(memory) = extract_opt::<u32>(kwargs, "memory")? {
         builder = builder.memory(memory);
+    }
+    if let Some(value) = kwargs.get_item("init")?.filter(|v| !v.is_none()) {
+        let (cmd, args, env) = parse_init_kwarg(&value)?;
+        builder = builder.init_with(cmd, |init| init.args(args).envs(env));
+    }
+    if let Some(hostname) = extract_opt::<String>(kwargs, "hostname")? {
+        builder = builder.hostname(hostname);
     }
     if let Some(value) = kwargs.get_item("network_policy")?.filter(|v| !v.is_none()) {
         // Accept only the existing policy value, not a Network config that could alter bootstrap.

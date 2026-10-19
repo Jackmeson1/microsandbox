@@ -19,3 +19,22 @@ describe("restore guest clock capability", () => {
     expect(setter).toHaveBeenCalledWith("off");
   });
 });
+
+
+describe("restore boot option capabilities", () => {
+  for (const option of ["init", "initWith", "hostname"] as const) {
+    it(`refuses unsupported ${option} without invoking native restore`, () => {
+      delete native[option];
+      const builder = Sandbox.restore("saved");
+      expect(() => builder[option]("auto", (init: any) => init)).toThrow(UnsupportedError);
+      expect(typeof builder.restore).toBe("function");
+    });
+    it(`retains the native ${option} setter`, () => {
+      const setter = vi.fn().mockReturnValue(native);
+      native[option] = setter;
+      const configure = (init: any) => init;
+      Sandbox.restore("saved")[option]("chosen", configure);
+      expect(setter).toHaveBeenCalledWith("chosen", configure);
+    });
+  }
+});

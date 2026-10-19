@@ -414,12 +414,14 @@ export const RootDiskBuilder = napi.RootDiskBuilder;
 export type RootDiskBuilder = NapiRootDiskBuilder;
 export const ExecOptionsBuilder = napi.ExecOptionsBuilder;
 export const InitOptionsBuilder = napi.InitOptionsBuilder;
+export type InitOptionsBuilder = NapiInitOptionsBuilder;
 export const AttachOptionsBuilder = napi.AttachOptionsBuilder;
 import type {
   NapiNetworkPolicyBuilder,
   NapiHttpConnectProxyBuilder,
   NapiOutboundProxyBuilder,
   NapiRootDiskBuilder,
+  NapiInitOptionsBuilder,
   NapiRuleBuilder,
   NapiRuleDestinationBuilder,
   NapiSocks4ProxyBuilder,

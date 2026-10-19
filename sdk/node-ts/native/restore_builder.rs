@@ -4,6 +4,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use crate::error::to_napi_error;
+use crate::init_options_builder::JsInitOptionsBuilder;
 use crate::mount_builder::JsMountBuilder;
 use crate::network_builder::accept_queue_size;
 use crate::network_policy_builder::JsNetworkPolicyBuilder;
@@ -69,6 +70,43 @@ impl JsRestoreBuilder {
     pub fn memory(&mut self, mib: f64) -> Result<&Self> {
         let mib = crate::numeric::uint32(mib, "mib")?;
         self.inner = Some(self.take_inner()?.memory(Mebibytes::from(mib)));
+        Ok(self)
+    }
+
+    /// Set guest PID 1 for disk boot. Full-memory resume rejects this request.
+    #[napi]
+    pub fn init(&mut self, cmd: String, args: Option<Vec<String>>) -> Result<&Self> {
+        self.inner = Some(
+            self.take_inner()?
+                .init_with(cmd, |init| init.args(args.unwrap_or_default())),
+        );
+        Ok(self)
+    }
+
+    /// Set guest PID 1, arguments and environment for disk boot only.
+    #[napi(js_name = "initWith")]
+    pub fn init_with(
+        &mut self,
+        env: &Env,
+        cmd: String,
+        configure: Function<
+            ClassInstance<JsInitOptionsBuilder>,
+            ClassInstance<JsInitOptionsBuilder>,
+        >,
+    ) -> Result<&Self> {
+        // Run the callback before consuming the destination builder so a thrown exception
+        // leaves it usable. The returned init builder is consumed exactly once.
+        let initial = JsInitOptionsBuilder::new().into_instance(env)?;
+        let mut returned = configure.call(initial)?;
+        let init = returned.take_inner_builder()?;
+        self.inner = Some(self.take_inner()?.init_with(cmd, |_| init));
+        Ok(self)
+    }
+
+    /// Set the guest hostname for disk boot; full-memory resume rejects replacement.
+    #[napi]
+    pub fn hostname(&mut self, hostname: String) -> Result<&Self> {
+        self.inner = Some(self.take_inner()?.hostname(hostname));
         Ok(self)
     }
 

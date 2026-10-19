@@ -1050,6 +1050,22 @@ child, err := m.RestoreSandbox(ctx, "api:baseline", "api-restored", m.WithCowMem
 | `RestoreSandbox` | Return the restored sandbox. |
 | `RestoreSandboxWithProgress` | Return event and result channels. |
 
+#### WithRestoreInit
+
+```go
+func WithRestoreInit(init InitConfig) RestoreOption
+```
+
+Select guest PID 1 for disk boot using the existing `Init.Auto()` or `Init.Cmd(path, InitOptions{Args: ..., Env: ...})` factories. Available on group/checkpoint spawn and restore, including progress variants. Full-memory resume rejects explicit init choices; use `WithSnapshotDiskOnly()` for a new boot. A native library lacking this option returns an unsupported-feature error.
+
+#### WithRestoreHostname
+
+```go
+func WithRestoreHostname(hostname string) RestoreOption
+```
+
+Set a nonempty guest hostname of at most 64 UTF-8 bytes for disk boot. Full-memory resume refuses replacement even when the name matches the source. In `RestoreConfig`, `Hostname` is a `*string`: nil leaves it unspecified; an explicit empty string is invalid. `Init` is an optional `*InitConfig`.
+
 Image, replacement, and startup-command options are not accepted. Full restore requires matching CPU and memory settings, keeps captured network devices, and cannot apply a new guest security profile. Use disk-only restore to change these.
 
 Restore rejects missing external filesystems (and, for full restore, additional disks) by default. Use `WithAllowMissingResources()` to resume with unavailable devices (full restore records warnings). This is separate from strict/relaxed validation of supplied mappings; inheritance does not waive missing backing. Root and owned storage remain required.

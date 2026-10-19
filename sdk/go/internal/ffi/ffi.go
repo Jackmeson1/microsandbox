@@ -2156,6 +2156,9 @@ func createSandbox(ctx context.Context, name string, opts CreateOptions, connect
 
 // RestoreSandbox uses the dedicated native restore entry point.
 func RestoreSandbox(ctx context.Context, name string, opts RestoreOptions) (*Sandbox, error) {
+	if err := CheckRestoreBootOptions(ctx, opts); err != nil {
+		return nil, err
+	}
 	if err := CheckRestoreGuestClock(ctx, opts.GuestClock); err != nil {
 		return nil, err
 	}

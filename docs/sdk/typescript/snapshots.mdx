@@ -1078,6 +1078,30 @@ const child = await Sandbox.restore("api:baseline")
 | `restore()` | Return the restored sandbox. |
 | `restoreWithProgress()` | Return progress events; await `awaitSandbox()` for the sandbox. |
 
+#### <span className="msb-recv">restore.</span><span className="msb-hn">init()</span>
+
+```typescript
+init(cmd: string, args?: string[]): this
+```
+
+Select guest PID 1 for disk boot using an absolute guest executable path or `"auto"`. Full-memory resume rejects an explicit choice, including `"auto"`; use `diskOnly()` for a new boot. Available on group and checkpoint spawn callbacks, including progress variants.
+
+#### <span className="msb-recv">restore.</span><span className="msb-hn">initWith()</span>
+
+```typescript
+initWith(cmd: string, configure: (init: InitOptionsBuilder) => InitOptionsBuilder): this
+```
+
+Set init arguments and environment using the same builder as ordinary creation. Replaces an earlier init choice. Older native SDKs refuse unsupported explicit init or hostname options before launch.
+
+#### <span className="msb-recv">restore.</span><span className="msb-hn">hostname()</span>
+
+```typescript
+hostname(name: string): this
+```
+
+Set a nonempty guest hostname of at most 64 UTF-8 bytes for disk boot. Full-memory resume refuses replacement even when the requested name matches the source.
+
 Image, replacement, and startup-command options are not accepted. Full restore requires matching CPU and memory settings, keeps captured network devices, and cannot apply a new guest security profile. Use disk-only restore to change these.
 
 Restore rejects missing external filesystems (and, for full restore, additional disks) by default. Use `allowMissingResources()` to resume with unavailable devices (full restore records warnings). This is separate from strict/relaxed validation of supplied mappings; inheritance does not waive missing backing. Root and owned storage remain required.

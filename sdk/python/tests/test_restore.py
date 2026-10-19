@@ -179,3 +179,26 @@ def test_fork_public_surface_and_outcome_alias():
 def test_restore_rejects_unknown_guest_clock(method):
     with pytest.raises(ValueError, match="guest_clock must be sync or off"):
         getattr(Sandbox, method)("missing", name="clock-invalid", guest_clock="unknown")
+
+
+@pytest.mark.parametrize("method", ["restore", "restore_with_progress"])
+@pytest.mark.parametrize("value", [42, {"cmd": "/sbin/init", "args": [42]}])
+def test_restore_init_reuses_create_validation(method, value):
+    with pytest.raises(TypeError):
+        getattr(Sandbox, method)("missing", name="init-validation", init=value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["restore", "restore_with_progress"])
+@pytest.mark.parametrize("init", [
+    "auto", {"cmd": "/sbin/init", "args": ["--flag"], "env": {"KEY": "value"}},
+])
+async def test_restore_boot_controls_reach_source_validation(tmp_path, method, init):
+    with pytest.raises(FileNotFoundError):
+        result = getattr(Sandbox, method)(
+            tmp_path / "missing", name="boot-controls", init=init, hostname="child", disk_only=True,
+        )
+        if method == "restore":
+            await result
+        else:
+            await result.result()

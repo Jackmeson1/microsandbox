@@ -274,6 +274,12 @@ export interface NapiRestoreBuilderSetters {
   /** Full execution restore requires captured CPU and memory geometry. */
   cpus(count: number): this;
   memory(mib: number): this;
+  /** Guest PID 1 for disk boot; full-memory resume rejects replacement. */
+  init(cmd: string, args?: string[]): this;
+  /** Guest PID 1 with arguments and environment, for disk boot only. */
+  initWith(cmd: string, configure: (b: NapiInitOptionsBuilder) => NapiInitOptionsBuilder): this;
+  /** Disk boot only; must be nonempty and fit within 64 UTF-8 bytes. */
+  hostname(name: string): this;
   /** Host policy only: does not configure DNS, TLS, or guest bootstrap. */
   networkPolicy(policy: NetworkPolicy | NapiNetworkPolicyBuilder): this;
   /** @deprecated Use maxTcpConnections instead. */

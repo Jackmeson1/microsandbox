@@ -40,10 +40,42 @@ func TestSnapshotObjectsRefuseOlderNativeLibrary(t *testing.T) {
 		}
 	}
 
+	hostname := "child"
+	for _, options := range []RestoreOptions{{Init: &InitOptions{Cmd: "auto"}}, {Hostname: &hostname}} {
+		var unsupported *Error
+		err := CheckRestoreBootOptions(context.Background(), options)
+		if !errors.As(err, &unsupported) || unsupported.Kind != KindUnsupportedOperation {
+			t.Fatalf("boot option was not refused before dispatch: %v", err)
+		}
+	}
+
 	var native *Error
 	err := CheckArchiveCompatibility(context.Background(), "0.7.8")
 	if !errors.As(err, &native) || native.Kind != KindUnsupportedOperation {
 		t.Fatalf("explicit archive target was not refused before an old decoder: %v", err)
 	}
 
+}
+
+// Supports libraries with group receivers as well as releases predating them.
+// The only requirement is that the selected library predates boot-option admission.
+func TestRestoreBootOptionsRefuseOlderNativeLibrary(t *testing.T) {
+	path := os.Getenv("MSB_OLD_SNAPSHOT_NATIVE")
+	if path == "" {
+		t.Skip("requires a pre-boot-option native library")
+	}
+	if err := Load(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckRestoreBootOptions(context.Background(), RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	hostname := "child"
+	for _, options := range []RestoreOptions{{Init: &InitOptions{Cmd: "auto"}}, {Hostname: &hostname}} {
+		var unsupported *Error
+		err := CheckRestoreBootOptions(context.Background(), options)
+		if !errors.As(err, &unsupported) || unsupported.Kind != KindUnsupportedOperation {
+			t.Fatalf("boot option was not refused before dispatch: %v", err)
+		}
+	}
 }

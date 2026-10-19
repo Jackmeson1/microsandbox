@@ -1658,6 +1658,34 @@ fn restore_with_progress(
 Return the progress receiver and result task.
 
 
+#### <span className="msb-recv">restore.</span><span className="msb-hn">init()</span>
+
+```rust
+fn init(self, cmd: impl Into<String>) -> Self
+```
+
+Select guest PID 1 for disk boot. Accepts an absolute guest executable path or `"auto"`. Full-memory resume rejects an explicit choice, including `"auto"`; use `disk_only()` to boot the captured disk with a new init.
+
+#### <span className="msb-recv">restore.</span><span className="msb-hn">init_with()</span>
+
+```rust
+fn init_with(
+    self,
+    cmd: impl Into<String>,
+    configure: impl FnOnce(InitOptionsBuilder) -> InitOptionsBuilder,
+) -> Self
+```
+
+Set init arguments and environment using the same builder as ordinary creation. Replaces an earlier init choice. Available on group and checkpoint spawn callbacks, including progress variants.
+
+#### <span className="msb-recv">restore.</span><span className="msb-hn">hostname()</span>
+
+```rust
+fn hostname(self, hostname: impl Into<String>) -> Self
+```
+
+Set a nonempty guest hostname of at most 64 UTF-8 bytes for disk boot. Full-memory resume refuses replacement even when the requested name matches the source.
+
 Image, replacement, and startup-command options are not accepted. Full restore requires matching CPU and memory settings, keeps captured network devices, and cannot apply a new guest security profile. Use disk-only restore to change these.
 
 Restore rejects missing external filesystems (and, for full restore, additional disks) by default. Use `allow_missing_resources()` to resume with unavailable devices (full restore records warnings). This is separate from strict/relaxed validation of supplied mappings; inheritance does not waive missing backing. Root and owned storage remain required.

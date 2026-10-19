@@ -83,6 +83,7 @@ enum Request {
     InspectGroup,
     ArchiveCompatibility,
     RestoreGuestClock,
+    RestoreBootOptions,
     RemoveGroup,
     Remove {
         force: bool,
@@ -388,6 +389,7 @@ async fn dispatch(id: u64, request: Request, pending: &PendingObjects) -> Result
         }
         Request::ArchiveCompatibility => Ok(json!(["current", "0.7.8"])),
         Request::RestoreGuestClock => Ok(json!(["sync", "off"])),
+        Request::RestoreBootOptions => Ok(json!(["init", "hostname"])),
         Request::InspectGroup => {
             let info = group(id)?.inspect().await?;
             serde_json::to_value(info).map_err(|error| FfiError::internal(error.to_string()))

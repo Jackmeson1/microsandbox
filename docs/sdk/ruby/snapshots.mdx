@@ -66,7 +66,23 @@ Both methods accept the same destination keywords. Progress returns a `PullSessi
 
 `ports` is an array of `{ host: 8080, guest: 80, bind: "127.0.0.1", protocol: :tcp }` hashes; bind is optional and protocol defaults to TCP. `vsock` is an array of `{ path: "/run/service.sock", port: 5000, datagram: false }`. `volumes` maps guest paths to hashes containing exactly one of `bind`, `named`, or `disk`, with optional `readonly: true`. For example: `volumes: { "/data" => { bind: "./data", readonly: true } }`. `captured_volumes` lists guest paths whose private captured disks should be selected. Explicit local host paths are captured when the method is called; remote backend paths are not resolved against the client directory.
 
-Unknown keywords are rejected. These methods accept destination restore controls, not source/image replacement or new init/entrypoint instructions. Full-memory restore preserves captured execution; changing its boot security profile is refused by the core before child execution. The separate snapshot-backed create/run work expands disk-start controls.
+Unknown keywords are rejected. Source/image replacement and new entrypoint instructions are not accepted. Full-memory restore preserves captured execution and refuses changes to boot security, init, or hostname before child execution.
+
+#### init
+
+```ruby
+init: "/sbin/init" # or "auto"
+```
+
+Select guest PID 1 for a disk checkpoint or `disk_only: true` boot. Uses the existing string init format. Available on group/checkpoint spawn and progress variants. Full-memory resume refuses an explicit choice, including `"auto"`.
+
+#### hostname
+
+```ruby
+hostname: "worker"
+```
+
+Set a nonempty guest hostname of at most 64 UTF-8 bytes for disk boot. Full-memory resume refuses replacement even when the requested name matches the source.
 
 A capture can publish successfully and then raise `SnapshotSourceRecoveryError` because the source failed to recover. Its `artifact` hash retains the published kind, path, snapshot identity, digest and `head_update` for an installed capture. This head outcome belongs to the capture even if another operation later changes the head. Archive-only capture and older producers omit it. Recovery locators do not prove that the source is running or safe to resume.
 

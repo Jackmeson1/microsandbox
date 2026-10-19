@@ -25,6 +25,10 @@ type RestoreConfig struct {
 	// CPU and memory overrides must match captured geometry for full execution restore.
 	CPUs      *uint8
 	MemoryMiB *uint32
+	// Init and Hostname apply only to disk boot. Full-memory resume refuses either override.
+	Init *InitConfig
+	// A pointer preserves an explicit empty hostname so validation can reject it.
+	Hostname *string
 	// NetworkPolicy accepts only Rules, DefaultEgress, and DefaultIngress.
 	NetworkPolicy *NetworkConfig
 	// MaxConnections caps TCP connections.
@@ -96,6 +100,17 @@ func WithRestoreCPUs(cpus uint8) RestoreOption {
 // WithRestoreMemory selects memory in MiB; full restore requires captured geometry.
 func WithRestoreMemory(mebibytes uint32) RestoreOption {
 	return func(o *RestoreConfig) { o.MemoryMiB = &mebibytes }
+}
+
+// WithRestoreInit selects guest PID 1, arguments and environment for disk boot.
+// Full-memory resume refuses replacement, including an explicit Init.Auto().
+func WithRestoreInit(init InitConfig) RestoreOption {
+	return func(o *RestoreConfig) { o.Init = &init }
+}
+
+// WithRestoreHostname selects the guest hostname for disk boot only.
+func WithRestoreHostname(hostname string) RestoreOption {
+	return func(o *RestoreConfig) { o.Hostname = &hostname }
 }
 
 // WithRestoreNetworkPolicy selects host-side policy only. Use the existing
@@ -194,9 +209,9 @@ func WithAllowMissingResources() RestoreOption {
 }
 
 func buildFFIRestoreOptions[T SnapshotSeed](snapshot T, config RestoreConfig) ffi.RestoreOptions {
-	// Reuse mount/route serialization only. Never pass a creation config to the
+	// Reuse mount and init serialization only. Never pass a creation config to the
 	// native restore operation or copy global creation defaults into it.
-	resources := buildFFICreateOptions(SandboxConfig{Volumes: config.Volumes})
+	resources := buildFFICreateOptions(SandboxConfig{Volumes: config.Volumes, Init: config.Init})
 	// Preserve a cloud ID versus a host-volume path instead of guessing from its spelling.
 	var reference, referenceKind string
 	switch value := any(snapshot).(type) {
@@ -228,6 +243,7 @@ func buildFFIRestoreOptions[T SnapshotSeed](snapshot T, config RestoreConfig) ff
 	return ffi.RestoreOptions{
 		Snapshot: reference, SnapshotReferenceKind: referenceKind,
 		CPUs: config.CPUs, MemoryMiB: config.MemoryMiB, NetworkPolicy: policy,
+		Init: resources.Init, Hostname: config.Hostname,
 		MaxConnections: config.MaxConnections, MaxTCPConnections: config.MaxTCPConnections,
 		MaxUDPConnections: config.MaxUDPConnections, DisableNetwork: config.DisableNetwork,
 		SecurityProfile: string(config.SecurityProfile),

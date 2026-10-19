@@ -4,7 +4,10 @@
 use microsandbox_network::policy::NetworkPolicy;
 
 use super::config::SnapshotRestoreMode;
-use super::{ExternalMountRestorePolicy, MountBuilder, Sandbox, SandboxBuilder, SecurityProfile};
+use super::{
+    ExternalMountRestorePolicy, InitOptionsBuilder, MountBuilder, Sandbox, SandboxBuilder,
+    SecurityProfile,
+};
 use crate::size::Mebibytes;
 use crate::snapshot::SnapshotReference;
 use crate::{MicrosandboxError, MicrosandboxResult, Operation, UnsupportedReason};
@@ -137,6 +140,41 @@ impl RestoreBuilder {
     /// Set guest memory for disk boot. Full restore accepts only the captured memory size.
     pub fn memory(mut self, size: impl Into<Mebibytes>) -> Self {
         self.inner = self.inner.memory(size);
+        self
+    }
+
+    /// Select the guest PID 1 for a disk snapshot or disk-only boot.
+    /// Full-memory resume rejects this request, including an explicit `auto`.
+    pub fn init(self, cmd: impl Into<String>) -> Self {
+        self.init_with(cmd, |init| init)
+    }
+
+    /// Select guest PID 1 with explicit arguments and environment for a disk boot.
+    /// This replaces any earlier init choice. It never changes captured processes on full resume.
+    pub fn init_with(
+        mut self,
+        cmd: impl Into<String>,
+        configure: impl FnOnce(InitOptionsBuilder) -> InitOptionsBuilder,
+    ) -> Self {
+        self.inner = self.inner.init_with(cmd, configure);
+        // Preserve intent before deferred metadata resolution, even for default-looking values.
+        self.inner
+            .config
+            .restore_boot_overrides
+            .get_or_insert_with(Default::default)
+            .init = true;
+        self
+    }
+
+    /// Set the guest hostname for disk boot; full-memory resume rejects replacement.
+    /// The name must be nonempty and fit within Linux's 64-byte hostname limit.
+    pub fn hostname(mut self, hostname: impl Into<String>) -> Self {
+        self.inner = self.inner.hostname(hostname);
+        self.inner
+            .config
+            .restore_boot_overrides
+            .get_or_insert_with(Default::default)
+            .hostname = true;
         self
     }
 
@@ -379,6 +417,41 @@ mod tests {
 
     fn config(builder: &RestoreBuilder) -> crate::SandboxConfig {
         builder.inner.config.clone().into_config()
+    }
+
+    #[test]
+    fn explicit_boot_controls_reject_full_resume_even_when_defaults_are_requested() {
+        use crate::snapshot::SnapshotScope;
+
+        for builder in [
+            Sandbox::restore("saved").init("auto"),
+            Sandbox::restore("saved").init_with("/sbin/init", |init| init.arg("--flag")),
+            Sandbox::restore("saved").hostname("child"),
+        ] {
+            let intent = config(&builder).restore_boot_overrides;
+            assert!(
+                intent
+                    .validate_scope(SnapshotScope::Full, SnapshotRestoreMode::Full)
+                    .is_err()
+            );
+            assert!(
+                intent
+                    .validate_scope(SnapshotScope::Full, SnapshotRestoreMode::DiskOnly)
+                    .is_ok()
+            );
+            assert!(
+                intent
+                    .validate_scope(SnapshotScope::Disk, SnapshotRestoreMode::Full)
+                    .is_ok()
+            );
+        }
+        let ordinary = config(&Sandbox::restore("saved"));
+        assert!(
+            ordinary
+                .restore_boot_overrides
+                .validate_scope(SnapshotScope::Full, SnapshotRestoreMode::Full)
+                .is_ok()
+        );
     }
 
     #[test]

@@ -16,3 +16,17 @@ func TestRestoreGuestClockCancellationDoesNotRequireNativeLibrary(t *testing.T) 
 		t.Fatal(err)
 	}
 }
+
+func TestRestoreBootOptionsPreserveOmissionAndCancellation(t *testing.T) {
+	if err := CheckRestoreBootOptions(context.Background(), RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	hostname := "child"
+	for _, options := range []RestoreOptions{{Init: &InitOptions{Cmd: "auto"}}, {Hostname: &hostname}} {
+		if err := CheckRestoreBootOptions(ctx, options); !errors.Is(err, context.Canceled) {
+			t.Fatalf("lost cancellation: %v", err)
+		}
+	}
+}

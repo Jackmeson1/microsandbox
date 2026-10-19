@@ -337,3 +337,21 @@ func TestRestoreGuestClockPresenceAndValidation(t *testing.T) {
 		t.Fatal("accepted invalid policy")
 	}
 }
+
+func TestRestoreBootOptionsRetainExplicitEmptyHostnameAndInit(t *testing.T) {
+	var config RestoreConfig
+	WithRestoreInit(Init.Cmd("/bin/sh", InitOptions{Args: []string{"-c", "exec sleep 300"}, Env: map[string]string{"KEY": "value"}}))(&config)
+	WithRestoreHostname("")(&config)
+	options := buildFFIRestoreOptions("saved", config)
+	if options.Hostname == nil || *options.Hostname != "" {
+		t.Fatal("explicit empty hostname was dropped")
+	}
+	if options.Init == nil || options.Init.Cmd != "/bin/sh" || len(options.Init.Args) != 2 || len(options.Init.Env) != 1 || options.Init.Env[0] != [2]string{"KEY", "value"} {
+		t.Fatalf("init changed: %+v", options.Init)
+	}
+	// Conversion owns argv; later caller edits cannot change the deferred native request.
+	config.Init.Args[0] = "changed"
+	if options.Init.Args[0] != "-c" {
+		t.Fatal("init argv retained caller backing")
+	}
+}

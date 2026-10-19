@@ -67,6 +67,23 @@ class SnapshotSpawnTest < Test::Unit::TestCase
     exact.stop
   end
 
+  def test_destination_hostname_and_init_boot_a_private_child
+    # Ruby keeps the existing string init shape; the supplied program is already in the disk.
+    child = @group.spawn_sandbox(name: child_name("prepare"))
+    assert_true child.shell("printf '#!/bin/sh\nexec sleep 300\n' > /root/child-init; chmod 755 /root/child-init; sync").success?
+    created = child.snapshot("ruby-boot-#{SecureRandom.hex(5)}", record_integrity: true)
+    @extra_groups = [created.snapshot]
+    child.stop
+    session = created.checkpoint.spawn_sandbox_with_progress(
+      name: child_name("boot"), init: "/root/child-init", hostname: "ruby-child"
+    )
+    booted = session.result
+    check_guest(booted)
+    assert_equal "sleep", booted.shell("cat /proc/1/comm").stdout.strip
+    assert_equal "ruby-child", booted.shell("hostname").stdout.strip
+    booted.kill # The test PID 1 is sleep, which has no shutdown handler.
+  end
+
   def test_imported_unbound_history_can_spawn_but_cannot_capture
     archive = File.join(@temporary, "standalone.msb")
     @checkpoint.save(archive)
@@ -90,6 +107,11 @@ class SnapshotSpawnTest < Test::Unit::TestCase
     @names.delete(source_name)
     assert_raise(Microsandbox::UnsupportedError) do
       created.checkpoint.spawn_sandbox(name: child_name("full-security"), security: :restricted)
+    end
+    [{ init: "auto" }, { hostname: "full-child" }].each do |options|
+      assert_raise(Microsandbox::InvalidConfigError) do
+        created.checkpoint.spawn_sandbox(name: child_name("full-boot"), **options)
+      end
     end
     session = created.checkpoint.spawn_sandbox_with_progress(name: child_name("full"))
     child = session.result
@@ -150,7 +172,7 @@ class SnapshotSpawnTest < Test::Unit::TestCase
 
   def test_destination_options_refuse_unknown_or_invalid_controls
     [
-      { image: "other" }, { snapshot: "other" }, { init: "auto" },
+      { image: "other" }, { snapshot: "other" },
       { security: :unknown }, { guest_clock: :unknown },
       { ports: [{ host: 0, guest: 80, protocol: :unknown }] },
       { vsock: [{ path: ".", port: 1, unknown: true }] },
