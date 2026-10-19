@@ -2,6 +2,9 @@
 //!
 //! No launch path calls this module until complete policy and deferred-exec enforcement land.
 
+mod demand;
+#[cfg(test)]
+mod demand_tests;
 mod execution;
 #[cfg(test)]
 mod execution_tests;
@@ -23,6 +26,9 @@ mod types;
 // Re-Exports
 //--------------------------------------------------------------------------------------------------
 
+pub use demand::{
+    BindingDemand, BindingDemandContext, BindingDemandPlan, BindingSupplyGaps, plan_binding_demand,
+};
 pub use execution::{
     DestinationGuestSecurity, ExecutionDefaultClear, ExecutionDefaultSelection,
     ExecutionRestoreMode, LifetimeDefaultSelection, select_execution_defaults,

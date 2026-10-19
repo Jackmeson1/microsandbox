@@ -17,6 +17,13 @@ use super::validation::{
 // Methods
 //--------------------------------------------------------------------------------------------------
 
+impl SavedBindingReference {
+    /// Validate one logical reference without accepting host paths or endpoint syntax.
+    pub fn validate(&self) -> SnapshotManifestResult<()> {
+        binding(&self.id, "bindings")
+    }
+}
+
 impl SavedNetworkConfig {
     /// Decode and validate one strict network section, without resolving any host bindings.
     pub fn from_bytes(bytes: &[u8]) -> SnapshotManifestResult<Self> {
