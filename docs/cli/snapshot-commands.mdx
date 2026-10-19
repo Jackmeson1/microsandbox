@@ -18,9 +18,11 @@ Group management takes a group name. Inspect, export, verify and remove select a
 
 Create a new group bound to a source sandbox and capture its first checkpoint, or capture directly to an archive with `--output`. Add `--full` to include memory and running processes. Use `checkpoint` to append to an existing group.
 
-```bash
+<CodeGroup>
+```bash Shell
 msb snap create history --sandbox worker --name ready
 ```
+</CodeGroup>
 
 | Argument / flag | Description |
 | --- | --- |
@@ -43,11 +45,13 @@ New local groups bind to the source sandbox's database identity and row ID. Recr
 
 <Accordion title="Examples">
 
-```bash
+<CodeGroup>
+```bash Shell
 msb snap create full-history --sandbox worker --name ready --full
 msb snap create disk-history --sandbox worker --name ready --integrity
 msb snap create --sandbox worker --name ready -o ready.msb
 ```
+</CodeGroup>
 
 </Accordion>
 
@@ -83,9 +87,11 @@ With only a group, the command resolves its original sandbox. With only `--sandb
 
 This deprecated 0.7.x interface retains its existing grammar and options. It restores a saved snapshot into a new sandbox: disk snapshots boot fresh; full snapshots resume captured execution. The group-management restructure does not extend restore.
 
-```bash
+<CodeGroup>
+```bash Shell
 msb snap restore worker:ready --name restored
 ```
+</CodeGroup>
 
 `--name` is required. See [restore options](/cli/sandbox-commands#msb-snap-restore) for memory sharing, disk-only restore, and resource bindings. Existing top-level `restore` commands remain supported.
 
@@ -95,10 +101,12 @@ msb snap restore worker:ready --name restored
 
 List local groups, or pass a group name to list its checkpoints.
 
-```bash
+<CodeGroup>
+```bash Shell
 msb snap ls
 msb snap ls worker
 ```
+</CodeGroup>
 
 | Flag | Description |
 | --- | --- |
@@ -112,11 +120,13 @@ msb snap ls worker
 
 Inspect a group, its saved source association and selected head, or select one immutable checkpoint explicitly.
 
-```bash
+<CodeGroup>
+```bash Shell
 msb snap inspect worker
 msb snap inspect worker --checkpoint ready
 msb snap inspect worker --checkpoint ready --verify
 ```
+</CodeGroup>
 
 Group output includes the member count and source status: available, missing sandbox, different catalog, or unbound. A renamed source shows its recorded and current names. A new sandbox with the old name does not become the source. Availability describes the observed association, not whether a future capture will succeed. Headless groups remain inspectable.
 
@@ -128,11 +138,13 @@ Group output includes the member count and source status: available, missing san
 
 Check recorded content integrity. Local-only; capture with `--integrity` to record disk hashes.
 
-```bash
+<CodeGroup>
+```bash Shell
 msb snap verify worker
 msb snap verify worker --checkpoint ready
 msb snap verify worker --all
 ```
+</CodeGroup>
 
 Without disk hashes, size and structure checks cannot detect same-size corruption. Full snapshots also validate their memory and execution objects. See [integrity](/sandboxes/snapshots#verify-integrity).
 
@@ -148,15 +160,17 @@ Migration: replace `msb snap verify worker:ready` with `msb snap verify worker -
 
 Delete one selected checkpoint, or explicitly remove its entire group. Bare group removal refuses with guidance. `remove` and `rm` accept the same arguments.
 
-```bash
+<CodeGroup>
+```bash Shell
 msb snap rm worker --checkpoint ready
 msb snap rm worker --all
 ```
+</CodeGroup>
 
 | Flag | Description |
 | --- | --- |
 | `--checkpoint <name-or-id>` | Remove exactly one member of the selected group |
-| `--all` | Remove the entire group and its members; conflicts with `--checkpoint` and `--force` |
+| `-a`, `--all` | Remove the entire group and its members; conflicts with `--checkpoint` and `--force` |
 | `-f`, `--force` | Permit indexed children for exact-member removal; never bypass active readers |
 | `-q`, `--quiet` | Suppress output |
 
@@ -168,9 +182,13 @@ Whole-group removal refuses surviving external dependents and active readers. It
 
 The canonical CLI no longer accepts `GROUP:MEMBER`, multiple removal arguments, or a standalone indexed artifact path here. Use `GROUP --checkpoint MEMBER` or `GROUP --all`. Legacy SDK reference-removal methods retain their indexed-missing-artifact behavior.
 
+<Accordion title="Reader protection, stale entries, and interrupted cleanup">
+
 Removal also refuses an installed copy held by an active restore, export, verification, or import dependency read. `--force` does not bypass active readers. Independent copies of the same snapshot have independent leases. On Unix, copies sharing a hardlinked descriptor conservatively share reader protection; Windows normally protects each installed directory entry independently. Metadata handles alone do not keep snapshots busy. Saving or removing through a retained SDK handle rejects a replacement artifact at the same path.
 
 Deletion atomically retires the artifact directory before removing its contents. A later snapshot listing or removal can recover interrupted cleanup without deleting a new artifact at the original path. Unix readers lock the existing descriptor. Windows readers normally lock an entry-side coordination file outside the removable directory and fall back to the descriptor when an external parent is read-only. Publication and deletion require writable destinations for their coordination records. Concurrent cleanup requires participating SDKs and CLIs; coordinate maintenance when older clients share the storage.
+
+</Accordion>
 
 <span id="msb-snapshot-head" />
 
@@ -178,10 +196,12 @@ Deletion atomically retires the artifact directory before removing its contents.
 
 Read a local group’s selected head without changing it. A headless group reports no selected checkpoint.
 
-```bash
+<CodeGroup>
+```bash Shell
 msb snap head worker
 msb snap head worker --format json
 ```
+</CodeGroup>
 
 Use `--format json` for structured output. The first capture sets the head; later captures advance it only when ancestry proves they descend from it. See [snapshot groups](/sandboxes/snapshots#snapshot-groups).
 
@@ -203,9 +223,11 @@ Exactly one of `--set-head MEMBER` or `--clear-head` is required. Replace the fo
 
 Export a group’s head or an explicit checkpoint to a compressed `.msb` archive. The `save` alias remains supported. A headless group requires `--checkpoint`.
 
-```bash
+<CodeGroup>
+```bash Shell
 msb snap export worker --checkpoint ready --output ready.msb --with-image
 ```
+</CodeGroup>
 
 | Flag | Description |
 | --- | --- |
@@ -241,9 +263,11 @@ When older SDKs or CLIs share the storage, the operator must control the mainten
 3. If the import is interrupted or reports an unknown outcome, retry the same archives and destination with the updated CLI. Keep maintenance in effect until publication and recovery complete successfully, or the reported failure establishes that nothing was committed and pending recovery has been completed. Do not manually delete recovery journals.
 4. Resume the older writers only after that interval. This is operator-controlled exclusion; the new admission lock cannot restrain binaries that do not participate in its protocol.
 
-```bash
+<CodeGroup>
+```bash Shell
 msb snap import received --file ready.msb
 ```
+</CodeGroup>
 
 | Flag | Description |
 | --- | --- |
@@ -257,13 +281,21 @@ The command prints `Added: ID` or `Reused: ID` for each unique supplied member o
 
 Dependencies come from the batch, matching members in the named group, or `--base`. Import preserves recorded hashes; run `verify` to check them.
 
+<Accordion title="Publication and recovery">
+
+Snapshot publication records image ownership before exposing the installed artifact and reports catalog failures. Pending publication and deletion recovery runs during snapshot listing; image pruning also reconciles pending publication.
+
+</Accordion>
+
 <Accordion title="Examples">
 
-```bash
+<CodeGroup>
+```bash Shell
 msb snap import received --file changes.msb base.msb
 msb snap import received --file changes.msb --base worker:ready
 msb snap import worker --file experiment.msb --set-head
 ```
+</CodeGroup>
 
 </Accordion>
 
@@ -273,10 +305,12 @@ msb snap import worker --file experiment.msb --set-head
 
 Rebuild the local snapshot index from artifacts on disk. An omitted directory uses the configured snapshot store.
 
-```bash
+<CodeGroup>
+```bash Shell
 msb snap reindex
 msb snap reindex /mnt/snapshots
 ```
+</CodeGroup>
 
 ## Related commands
 
