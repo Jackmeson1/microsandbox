@@ -4,7 +4,7 @@ title: Snapshots
 description: Capture and manage snapshots with the Ruby SDK.
 ---
 
-See [Snapshots](/sandboxes/snapshots) for capture behavior and compatibility. Ruby exposes disk/full group capture and management; sandbox restore and forking are not exposed.
+See [Snapshots](/sandboxes/snapshots) for capture behavior and compatibility. Ruby exposes disk/full group capture, management, and sandbox creation from a group or exact checkpoint.
 
 Export methods `save` and `save_to` accept the keyword `compatibility` (`"current"` by default, or `"0.7.8"`). The historical target writes archive extension names understood by 0.7.8 and refuses required behavior it cannot preserve. It does not convert checkpoint identity or VM state. See [archive targets](/cli/snapshot-commands#msb-snap-export).
 
@@ -31,7 +31,34 @@ The initial result is `SnapshotCreateResult` with the group, exact first checkpo
 
 Artifact helpers formerly owned by `Snapshot` are now accessed through `Checkpoint`. Existing `SnapshotHandle`, builder, archive, ID, and verification type names remain; this public object rename does not rewrite persisted artifact IDs. Retained artifact helpers below also cover supported cloud workflows, where local group operations return unsupported.
 
-Ruby supports group capture, management, archives and verification here. It does not currently expose the sandbox-spawn methods available in the Rust, TypeScript, Python and Go bindings.
+## Spawn a sandbox
+
+```ruby
+child = group.spawn_sandbox(name: "worker", cpus: 2, memory: 512)
+exact_child = checkpoint.spawn_sandbox(name: "exact-worker")
+
+session = checkpoint.spawn_sandbox_with_progress(name: "observed-worker")
+session.progress.each { |event| puts event.inspect }
+child = session.result
+```
+
+The group selects its head once; an exact checkpoint stays fixed even if the group head changes. A headless group refuses spawning, while its exact members remain usable. Imported or orphaned groups can spawn; they cannot capture a new checkpoint. The receiver retains its owning backend even when the default backend changes.
+
+Both methods accept the same destination keywords. Progress returns a `PullSession`; its `progress` enumerator (or `next_event`) produces best-effort event hashes with `kind` (`pull` or `startup`) and `progress`. End of the stream is not success. `result` returns the persistent sandbox or raises the authoritative failure and can be consumed once. Progress may be ignored without blocking creation. `cancel` requests cancellation; consume `result` to learn whether cancellation or completion won. Cancellation after success does not stop the returned sandbox. Sessions cannot be used from a forked child process. Native waits release the Ruby interpreter lock. They do not have a built-in timeout; request cancellation from another Ruby thread when needed, then consume the result. Ruby’s `Timeout.timeout` does not reliably interrupt a native wait.
+
+| Destination controls | Keywords |
+| --- | --- |
+| Identity and capacity | `name`, `cpus`, `memory` (MiB) |
+| Lifetime | `max_duration`, `idle_timeout` (whole seconds) |
+| Restore policy | `disk_only`, `cow_memory`, `snapshot_base`, `guest_clock` (`sync` or `off`) |
+| Guest execution | `user`, `security` (`default` or `restricted`), `log_level` |
+| Egress | `disable_network`, `network` (`:none` or the existing `allowed_hosts`/`allowed_ports` policy hash), `max_tcp_connections`, `max_udp_connections` |
+| Ingress | `ports`, `max_inbound_tcp_connections`, `tcp_accept_queue_size` |
+| Resources | `volumes`, `captured_volumes`, `vsock`, `external_mount_policy` (`strict` or `relaxed`), `allow_missing_resources`, `dangerously_inherit_resources` |
+
+`ports` is an array of `{ host: 8080, guest: 80, bind: "127.0.0.1", protocol: :tcp }` hashes; bind is optional and protocol defaults to TCP. `vsock` is an array of `{ path: "/run/service.sock", port: 5000, datagram: false }`. `volumes` maps guest paths to hashes containing exactly one of `bind`, `named`, or `disk`, with optional `readonly: true`. For example: `volumes: { "/data" => { bind: "./data", readonly: true } }`. `captured_volumes` lists guest paths whose private captured disks should be selected. Explicit local host paths are captured when the method is called; remote backend paths are not resolved against the client directory.
+
+Unknown keywords are rejected. These methods accept destination restore controls, not source/image replacement or new init/entrypoint instructions. Full-memory restore preserves captured execution; changing its boot security profile is refused by the core before child execution. The separate snapshot-backed create/run work expands disk-start controls.
 
 A capture can publish successfully and then raise `SnapshotSourceRecoveryError` because the source failed to recover. Its `artifact` hash retains the published kind, path, snapshot identity, digest and `head_update` for an installed capture. This head outcome belongs to the capture even if another operation later changes the head. Archive-only capture and older producers omit it. Recovery locators do not prove that the source is running or safe to resume.
 

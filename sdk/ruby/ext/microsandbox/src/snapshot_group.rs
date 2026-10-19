@@ -20,7 +20,7 @@ use super::{
 
 #[magnus::wrap(class = "Microsandbox::Snapshot", free_immediately, size)]
 pub(super) struct RubyGroup {
-    inner: Snapshot,
+    pub(super) inner: Snapshot,
 }
 
 #[magnus::wrap(class = "Microsandbox::SnapshotCreateResult", free_immediately, size)]

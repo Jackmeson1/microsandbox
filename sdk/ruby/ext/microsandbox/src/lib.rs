@@ -1,5 +1,6 @@
 mod jobs;
 mod snapshot_group;
+mod snapshot_spawn;
 
 use std::{
     ffi::c_void,
@@ -3098,6 +3099,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     // -- Snapshot ------------------------------------------------------------
     let snapshot = module.define_class("Checkpoint", ruby.class_object())?;
     snapshot_group::register(ruby, module)?;
+    snapshot_spawn::register(ruby, module)?;
     snapshot.define_singleton_method("open", function!(snapshot_open, -1))?;
     snapshot.define_singleton_method("get", function!(snapshot_get, -1))?;
     snapshot.define_singleton_method("list", function!(snapshot_list, -1))?;
