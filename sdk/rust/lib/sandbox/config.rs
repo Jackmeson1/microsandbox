@@ -147,6 +147,12 @@ pub struct SandboxConfig {
     #[cfg(feature = "local")]
     #[serde(skip)]
     pub(crate) snapshot_expected_digest: Option<String>,
+    /// Private archive staging and image leases for one canonical path-set launch.
+    /// Retained through child materialization, never written to persisted/runtime state.
+    #[cfg(feature = "local")]
+    #[serde(skip)]
+    pub(crate) snapshot_prepared_sources:
+        Option<std::sync::Arc<crate::backend::local::snapshot::PreparedLaunchSource>>,
     /// Operation-local observer; never persisted or retained as a stream owner.
     #[cfg(feature = "local")]
     #[serde(skip)]
@@ -1127,6 +1133,8 @@ impl Default for SandboxConfig {
             snapshot_lease: None,
             #[cfg(feature = "local")]
             snapshot_expected_digest: None,
+            #[cfg(feature = "local")]
+            snapshot_prepared_sources: None,
             insecure: false,
             ca_certs: Vec::new(),
             replace_existing: false,

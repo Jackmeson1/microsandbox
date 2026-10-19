@@ -12,6 +12,7 @@
 mod batch;
 mod delta;
 mod extensions;
+pub(super) mod launch;
 mod owned;
 #[cfg(test)]
 mod writer_tests;

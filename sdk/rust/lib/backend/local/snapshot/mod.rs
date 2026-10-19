@@ -27,6 +27,7 @@ use crate::snapshot::{
     HeadUpdate, Manifest, SnapshotArchive, SnapshotConfig, SnapshotFormat, SnapshotId,
     SnapshotScope, UpperIntegrity,
 };
+pub(crate) use archive::launch::{PreparedLaunchSource, prepare as prepare_snapshot_sources};
 pub(crate) use archive::materialize_archive_for_child_with_overrides as materialize_archive_for_child;
 use artifact::{Snapshot, SnapshotHandle};
 pub(crate) use create::{

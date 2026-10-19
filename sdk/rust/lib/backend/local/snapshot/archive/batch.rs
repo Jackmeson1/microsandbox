@@ -14,11 +14,11 @@ use crate::{SnapshotImportError, SnapshotImportOutcome};
 // Types
 //--------------------------------------------------------------------------------------------------
 
-struct StagedArchive {
-    source: PathBuf,
-    snapshots: tempfile::TempDir,
-    cache: tempfile::TempDir,
-    unpacked: UnpackedArchive,
+pub(super) struct StagedArchive {
+    pub(super) source: PathBuf,
+    pub(super) snapshots: tempfile::TempDir,
+    pub(super) cache: tempfile::TempDir,
+    pub(super) unpacked: UnpackedArchive,
 }
 
 struct ImportProgress {
@@ -402,7 +402,7 @@ async fn load_inner(
     })
 }
 
-async fn unpack(
+pub(super) async fn unpack(
     archive: &Path,
     root: &Path,
     cache_tmp: &Path,
@@ -437,7 +437,7 @@ async fn unpack(
     })
 }
 
-async fn read_manifest(directory: &Path) -> MicrosandboxResult<Manifest> {
+pub(super) async fn read_manifest(directory: &Path) -> MicrosandboxResult<Manifest> {
     let bytes = tokio::fs::read(directory.join(DESCRIPTOR_FILENAME)).await?;
     Manifest::from_bytes(&bytes)
         .map_err(|error| MicrosandboxError::SnapshotIntegrity(error.to_string()))

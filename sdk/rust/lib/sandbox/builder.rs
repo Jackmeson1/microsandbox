@@ -41,6 +41,8 @@ use crate::backend::default_backend;
 use crate::config::layers::BackendConfig;
 #[cfg(feature = "local")]
 use crate::runtime::SpawnMode;
+#[cfg(feature = "local")]
+use crate::snapshot::SnapshotId;
 use crate::snapshot::SnapshotReference;
 use crate::{LogLevel, MicrosandboxError, MicrosandboxResult, Operation, size::Mebibytes};
 
@@ -59,6 +61,9 @@ pub struct SandboxBuilder {
     config_scripts: BTreeMap<String, String>,
     /// Pending backend-scoped snapshot reference, resolved during async `build()`.
     pending_snapshot: Option<SnapshotReference>,
+    /// Explicit local sources for canonical launch, kept separate from legacy selectors.
+    #[cfg(feature = "local")]
+    pending_snapshot_paths: Option<(Vec<PathBuf>, Option<SnapshotId>)>,
     /// Distinguishes a sparse-patch snapshot, which later builder calls may override, from an
     /// explicit restore call that retains the established mutual-exclusion validation.
     pending_snapshot_from_config: bool,
@@ -126,6 +131,8 @@ impl SandboxBuilder {
             build_error: None,
             config_scripts: BTreeMap::new(),
             pending_snapshot: None,
+            #[cfg(feature = "local")]
+            pending_snapshot_paths: None,
             pending_snapshot_from_config: false,
         }
     }
@@ -206,6 +213,10 @@ impl SandboxBuilder {
     /// Apply a CLI-selected image after discarding a lower-precedence configured snapshot.
     #[doc(hidden)]
     pub fn override_image(mut self, image: impl IntoImage) -> Self {
+        #[cfg(feature = "local")]
+        {
+            self.pending_snapshot_paths = None;
+        }
         self.pending_snapshot = None;
         self.pending_snapshot_from_config = false;
         self.image(image)
@@ -217,6 +228,10 @@ impl SandboxBuilder {
         mut self,
         configure: impl FnOnce(ImageBuilder) -> ImageBuilder,
     ) -> Self {
+        #[cfg(feature = "local")]
+        {
+            self.pending_snapshot_paths = None;
+        }
         self.pending_snapshot = None;
         self.pending_snapshot_from_config = false;
         self.image_with(configure)
@@ -225,10 +240,39 @@ impl SandboxBuilder {
     /// Apply a CLI-selected snapshot after discarding a lower-precedence configured image.
     #[doc(hidden)]
     pub fn override_snapshot(mut self, snapshot: impl Into<String>) -> Self {
+        #[cfg(feature = "local")]
+        {
+            self.pending_snapshot_paths = None;
+        }
         self.config.spec.image = Some(RootfsSource::oci(""));
         self.config.local_restore_paths_resolved = Some(false);
         self.pending_snapshot = Some(SnapshotReference::auto(snapshot));
         self.pending_snapshot_from_config = false;
+        self
+    }
+
+    /// Apply already-classified explicit snapshot paths for canonical CLI launch.
+    /// This internal adapter does not extend legacy restore's selector grammar.
+    #[doc(hidden)]
+    #[cfg(feature = "local")]
+    pub fn override_snapshot_paths(
+        mut self,
+        paths: Vec<PathBuf>,
+        checkpoint: Option<SnapshotId>,
+    ) -> Self {
+        self.config.spec.image = Some(RootfsSource::oci(""));
+        self.config.local_restore_paths_resolved = Some(false);
+        self.pending_snapshot = None;
+        self.pending_snapshot_from_config = false;
+        self.pending_snapshot_paths = Some((paths, checkpoint));
+        // Match explicit restore resource admission; ambient defaults must not grant
+        // host access merely because a new source grammar was used.
+        self.config.spec.mounts.get_or_insert_default();
+        self.config.spec.network.ports.get_or_insert_default();
+        self.config
+            .restore_resources
+            .get_or_insert_with(Default::default)
+            .require_complete = true;
         self
     }
 
@@ -1247,6 +1291,10 @@ impl SandboxBuilder {
         reference: impl Into<SnapshotReference>,
     ) -> Self {
         self.config.local_restore_paths_resolved = Some(false);
+        #[cfg(feature = "local")]
+        {
+            self.pending_snapshot_paths = None;
+        }
         self.pending_snapshot = Some(reference.into());
         self.pending_snapshot_from_config = false;
         self
@@ -1410,6 +1458,19 @@ impl SandboxBuilder {
         backend: &dyn crate::Backend,
     ) -> MicrosandboxResult<()> {
         if backend.as_local().is_some() {
+            if let Some((paths, _)) = &mut self.pending_snapshot_paths {
+                let base = std::env::current_dir()?;
+                for path in paths {
+                    if path.as_os_str().is_empty() {
+                        return Err(MicrosandboxError::InvalidConfig(
+                            "snapshot path must not be empty".into(),
+                        ));
+                    }
+                    if !path.is_absolute() {
+                        *path = base.join(&*path);
+                    }
+                }
+            }
             let captured = self.config.local_restore_paths_resolved == Some(true);
             crate::backend::local::host_paths::resolve_patch_paths(&mut self.config)?;
             if !captured && let Some(reference) = &mut self.pending_snapshot {
@@ -1444,9 +1505,16 @@ impl SandboxBuilder {
         &mut self,
         backend: std::sync::Arc<dyn crate::Backend>,
     ) -> MicrosandboxResult<()> {
-        let Some(snapshot_ref) = self.pending_snapshot.take() else {
+        let snapshot_ref = self.pending_snapshot.take();
+        #[cfg(feature = "local")]
+        let snapshot_paths = self.pending_snapshot_paths.take();
+        #[cfg(feature = "local")]
+        let has_paths = snapshot_paths.is_some();
+        #[cfg(not(feature = "local"))]
+        let has_paths = false;
+        if snapshot_ref.is_none() && !has_paths {
             return Ok(());
-        };
+        }
         self.pending_snapshot_from_config = false;
         if self.has_explicit_rootfs_source() {
             return Err(MicrosandboxError::InvalidConfig(
@@ -1476,10 +1544,22 @@ impl SandboxBuilder {
         if backend.as_local().is_some() {
             crate::backend::local::host_paths::resolve_host_paths(&mut config)?;
         }
-        backend
-            .snapshots()
-            .prepare_restore(backend.clone(), &mut config, snapshot_ref)
+        #[cfg(feature = "local")]
+        if let Some((paths, target)) = snapshot_paths {
+            crate::backend::local::snapshot::prepare_snapshot_sources(
+                backend.clone(),
+                &mut config,
+                paths,
+                target,
+            )
             .await?;
+        }
+        if let Some(snapshot_ref) = snapshot_ref {
+            backend
+                .snapshots()
+                .prepare_restore(backend.clone(), &mut config, snapshot_ref)
+                .await?;
+        }
         self.config = SandboxConfigPatch::from_present_fields(config);
         Ok(())
     }
@@ -1574,7 +1654,7 @@ impl SandboxBuilder {
         let (handle, sender) = crate::progress::channel();
         self.config.creation_progress = Some(sender.downgrade());
         let task = tokio::spawn(crate::backend::with_backend(backend, async move {
-            if self.pending_snapshot.is_some() {
+            if self.pending_snapshot.is_some() || self.pending_snapshot_paths.is_some() {
                 let _ = sender.try_send(crate::CreationProgress::Startup(
                     crate::StartupProgress::phase(crate::StartupPhase::PreparingSnapshot),
                 ));
@@ -2427,6 +2507,8 @@ impl From<SandboxConfig> for SandboxBuilder {
             build_error: None,
             config_scripts: BTreeMap::new(),
             pending_snapshot: None,
+            #[cfg(feature = "local")]
+            pending_snapshot_paths: None,
             pending_snapshot_from_config: false,
         }
     }

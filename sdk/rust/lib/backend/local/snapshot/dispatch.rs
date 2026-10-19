@@ -541,7 +541,7 @@ pub(super) fn anchor_archive_selector(value: String) -> MicrosandboxResult<Strin
     }
 }
 
-fn from_artifact(backend: Arc<dyn Backend>, artifact: artifact::Snapshot) -> Snapshot {
+pub(super) fn from_artifact(backend: Arc<dyn Backend>, artifact: artifact::Snapshot) -> Snapshot {
     Snapshot {
         backend,
         reference: SnapshotReference::path(artifact.path.to_string_lossy()),

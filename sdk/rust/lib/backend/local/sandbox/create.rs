@@ -483,6 +483,9 @@ impl LocalBackend {
         }
         // All source payloads are now child-owned; runtime handles must not retain the source.
         config.snapshot_lease = None;
+        // Keep private archive staging and bundled-image leases through image resolution,
+        // but do not transfer them to the returned sandbox's long-lived configuration.
+        let _prepared_snapshot_sources = config.snapshot_prepared_sources.take();
         // Archive descriptors are intentionally inspected only while streaming into child
         // staging, after outer builder dispatch has selected its provisional mode. Re-evaluate
         // ownership here, before process creation, so a discovered full restore never receives an
