@@ -288,6 +288,7 @@ export interface NapiRestoreBuilderSetters {
   security(profile: "default" | "restricted"): this;
   maxDuration(secs: number): this;
   idleTimeout(secs: number): this;
+  guestClock(policy: "sync" | "off"): this;
   cowMemory(): this;
   /** @deprecated Use cowMemory() instead. */
   forked(): this;

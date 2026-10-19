@@ -19,7 +19,7 @@ func TestSnapshotObjectsRefuseOlderNativeLibrary(t *testing.T) {
 	if err := Load(path); err != nil {
 		t.Fatal(err)
 	}
-	for _, op := range []string{"get", "list", "head", "capture", "archive_compatibility"} {
+	for _, op := range []string{"get", "list", "head", "capture", "archive_compatibility", "restore_guest_clock"} {
 		_, err := SnapshotObjectCall(context.Background(), 0, map[string]any{"op": op})
 		var native *Error
 		if !errors.As(err, &native) || native.Kind != KindUnsupportedOperation {
@@ -29,6 +29,17 @@ func TestSnapshotObjectsRefuseOlderNativeLibrary(t *testing.T) {
 	if err := CheckArchiveCompatibility(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
+	if err := CheckRestoreGuestClock(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, policy := range []string{"sync", "off"} {
+		var unsupported *Error
+		err := CheckRestoreGuestClock(context.Background(), policy)
+		if !errors.As(err, &unsupported) || unsupported.Kind != KindUnsupportedOperation {
+			t.Fatalf("guest clock %s was not refused: %v", policy, err)
+		}
+	}
+
 	var native *Error
 	err := CheckArchiveCompatibility(context.Background(), "0.7.8")
 	if !errors.As(err, &native) || native.Kind != KindUnsupportedOperation {

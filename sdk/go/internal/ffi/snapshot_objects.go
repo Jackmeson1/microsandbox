@@ -29,6 +29,9 @@ func (object *SnapshotObject) Call(ctx context.Context, request any) ([]byte, er
 
 // Spawn uses the retained source; native code pins a group's head before launch.
 func (object *SnapshotObject) Spawn(ctx context.Context, name string, options RestoreOptions) (*Sandbox, error) {
+	if err := CheckRestoreGuestClock(ctx, options.GuestClock); err != nil {
+		return nil, err
+	}
 	raw, err := object.Call(ctx, map[string]any{"op": "spawn", "name": name, "options": options})
 	if err != nil {
 		return nil, err

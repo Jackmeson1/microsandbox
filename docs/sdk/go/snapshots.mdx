@@ -978,6 +978,7 @@ Restore rejects missing external filesystems (and, for full restore, additional 
 | `WithRestoreDisableNetwork` | Remove the NIC. Rejected for full snapshots that captured one. |
 | `WithRestoreSecurityProfile` | Guest security profile. Disk boot only, including an explicit default profile. |
 | `WithRestoreMaxDuration, WithRestoreIdleTimeout` | Lifetime and idle limits. Omitted means unlimited; zero expires immediately. |
+| `WithRestoreGuestClock` | `GuestClockSync` or `GuestClockOff`; omission preserves a recorded policy, defaulting to sync when absent. |
 | `Ports` | Bind destination TCP or UDP ports. |
 | `Vsock` | Bind destination vsock endpoints. |
 | `User, LogLevel` | Default user for new execs and host runtime log level. |
@@ -985,6 +986,8 @@ Restore rejects missing external filesystems (and, for full restore, additional 
 | `WithExternalMountPolicy` | Validate supplied filesystem mappings: strict (default) or relaxed. Does not grant access. |
 
 Omitted controls retain destination defaults. Durations use `time.Duration`, rounded up to seconds. Binding fields belong in `WithRestoreConfig(RestoreConfig{...})`; nil pointers mean omitted. Network policy accepts factory results or `NetworkConfig` with only `Rules`, `DefaultEgress`, and `DefaultIngress`.
+
+Full capture records the source clock policy; current disk capture does not. An explicit sync policy overrides a saved off policy. The same option is available on group and checkpoint spawn, including progress variants. Clock selection controls guest wall-clock synchronization. Unsupported native SDKs or runtimes refuse unsupported explicit selection before launching the destination.
 
 </Accordion>
 

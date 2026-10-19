@@ -835,6 +835,8 @@ export declare class RestoreBuilder {
   disableNetwork(): this
   /** Set guest security for disk boot; explicit changes are rejected by full restore. */
   security(profile: 'default' | 'restricted'): this
+  /** Explicit wall-clock policy; omission preserves the snapshot/default policy. */
+  guestClock(policy: string): this
   /** Apply the destination host's maximum runtime in seconds; zero expires immediately. */
   maxDuration(secs: number): this
   /** Apply the destination host's idle timeout in seconds; zero expires immediately. */

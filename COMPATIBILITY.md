@@ -566,3 +566,7 @@ Readers continue to accept both archive dialects without normalizing input metad
 ### Published capture recovery outcomes
 
 `PublishedSnapshotArtifact.head_update` retains the head decision made by the installed capture when publication succeeds but source recovery fails. Archive-only captures omit it; older producers without this optional field remain readable, and bindings must not infer an outcome from a later mutable head read. Existing artifact identity, digest, recovery locators, error classification and nonzero failure behavior are unchanged. Rust callers constructing `PublishedSnapshotArtifact` literals must add `head_update: None` (or the recorded outcome) as part of the approved 0.8 SDK source migration. Snapshot descriptors and runtime protocols are unchanged.
+
+## Snapshot spawn guest-clock parity
+
+Python `guest_clock`, TypeScript `guestClock`, and Go `WithRestoreGuestClock` now project the existing restore clock policy through both group and checkpoint spawn, including progress variants. Omission remains distinct from explicit `sync`: it retains a recorded `off` policy, whereas explicit `sync` overrides it. The existing descriptor extension and runtime capability contract are unchanged. Go probes native support only for explicit selection; TypeScript reports unsupported when an older addon lacks the setter. Existing calls that omit the option retain their prior native path. The runtime must advertise support before an off policy can launch; no unsupported policy is silently dropped.

@@ -218,6 +218,7 @@ pub(crate) fn restore_builder_from_reference(
             "security",
             "max_duration",
             "idle_timeout",
+            "guest_clock",
             "cow_memory",
             "forked",
             "disk_only",
@@ -302,6 +303,17 @@ pub(crate) fn restore_builder_from_reference(
     }
     if let Some(seconds) = lifetime_duration(kwargs, "idle_timeout")? {
         builder = builder.idle_timeout(seconds);
+    }
+    if let Some(policy) = extract_opt::<String>(kwargs, "guest_clock")? {
+        builder = builder.guest_clock(match policy.as_str() {
+            "sync" => microsandbox::sandbox::GuestClockPolicy::Sync,
+            "off" => microsandbox::sandbox::GuestClockPolicy::Off,
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "guest_clock must be sync or off",
+                ));
+            }
+        });
     }
     let legacy_cow = extract_opt::<bool>(kwargs, "forked")?;
     if legacy_cow.is_some() {

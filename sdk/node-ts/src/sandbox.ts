@@ -1,3 +1,4 @@
+import { UnsupportedError } from "./errors.js";
 import { snapshotCreateResult, type SnapshotCreateResult, SnapshotCaptureOptions } from "./snapshot-group.js";
 import { Job, JobListBuilder, jobCall, jobPageFromJson, type JobPage } from "./jobs.js";
 import { remapKeysToCamel } from "./internal/config.js";
@@ -267,6 +268,11 @@ export class Sandbox implements AsyncDisposable {
     const builder = typeof snapshot === "string"
       ? new napi.RestoreBuilder(snapshot)
       : new napi.RestoreBuilder(snapshot.reference, snapshot.referenceKind);
+    // A new JS package can load an older native addon. Reject explicit unsupported policy
+    // instead of dropping it; ordinary restores still use the old supported entry points.
+    if (typeof builder.guestClock !== "function") {
+      builder.guestClock = () => { throw new UnsupportedError("guest clock selection requires an updated native SDK"); };
+    }
     const restore = builder.restore.bind(builder);
     const progress = builder.restoreWithProgress.bind(builder);
     let name = "";

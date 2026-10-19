@@ -135,6 +135,7 @@ class Sandbox:
         security: SecurityProfile | None = None,
         max_duration: float | None = None,
         idle_timeout: float | None = None,
+        guest_clock: Literal["sync", "off"] | None = None,
         cow_memory: bool = False,
         forked: bool = False,  # Deprecated: use cow_memory.
         disk_only: bool = False,
@@ -166,6 +167,7 @@ class Sandbox:
         security: SecurityProfile | None = None,
         max_duration: float | None = None,
         idle_timeout: float | None = None,
+        guest_clock: Literal["sync", "off"] | None = None,
         cow_memory: bool = False,
         forked: bool = False,  # Deprecated: use cow_memory.
         disk_only: bool = False,

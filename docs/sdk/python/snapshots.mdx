@@ -850,6 +850,7 @@ Restore rejects missing external filesystems (and, for full restore, additional 
 | `disable_network` | Remove the NIC. Rejected for full snapshots that captured one. |
 | `security` | Guest security profile. Disk boot only, including an explicit default profile. |
 | `max_duration, idle_timeout` | Lifetime and idle limits. Omitted means unlimited; zero expires immediately. |
+| `guest_clock` | `"sync"` or `"off"`; omission preserves a recorded policy, defaulting to sync when absent. |
 | `ports` | Bind destination TCP or UDP ports. |
 | `vsock` | Bind destination vsock endpoints. |
 | `user, log_level` | Default user for new execs and host runtime log level. |
@@ -857,6 +858,8 @@ Restore rejects missing external filesystems (and, for full restore, additional 
 | `external_mount_policy` | Validate supplied filesystem mappings: strict (default) or relaxed. Does not grant access. |
 
 Omitted controls retain destination defaults. Durations are non-negative finite seconds, rounded up. Network policy accepts `NetworkPolicy`, not `Network`. `captured_volumes` contains guest paths.
+
+Full capture records the source clock policy; current disk capture does not. An explicit sync policy overrides a saved off policy. The same option is available on group and checkpoint spawn, including progress variants. Clock selection controls guest wall-clock synchronization. Unsupported native SDKs or runtimes refuse unsupported explicit selection before launching the destination.
 
 </Accordion>
 
