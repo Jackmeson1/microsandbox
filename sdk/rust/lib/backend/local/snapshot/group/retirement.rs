@@ -304,6 +304,32 @@ fn identity(path: &Path) -> MicrosandboxResult<DirectoryIdentity> {
 mod tests {
     use super::*;
 
+    // These tests model owners that have exited and closed every descriptor.
+    // Sibling fork/exec tests must not extend the active.lock lifetime beyond drop.
+    fn isolated(test: &str) -> bool {
+        const CHILD: &str = "MSB_TEST_RETIREMENT_CHILD";
+        if std::env::var(CHILD).as_deref() == Ok(test) {
+            return false;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg(format!(
+                "backend::local::snapshot::group::retirement::tests::{test}"
+            ))
+            .arg("--nocapture")
+            .env(CHILD, test)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        true
+    }
+
     fn group(root: &Path) -> PathBuf {
         let group = root.join("history");
         fs::create_dir(&group).unwrap();
@@ -313,6 +339,9 @@ mod tests {
 
     #[test]
     fn active_retirement_is_not_recovered_and_recreated_group_is_untouched() {
+        if isolated("active_retirement_is_not_recovered_and_recreated_group_is_untouched") {
+            return;
+        }
         let root = tempfile::tempdir().unwrap();
         let source = group(root.path());
         let retirement = Retirement::prepare(&source).unwrap();
@@ -332,17 +361,26 @@ mod tests {
 
     #[test]
     fn interrupted_preparation_preserves_the_live_group() {
+        if isolated("interrupted_preparation_preserves_the_live_group") {
+            return;
+        }
         let root = tempfile::tempdir().unwrap();
         let source = group(root.path());
         drop(Retirement::prepare(&source).unwrap());
-        for record in pending(root.path()).unwrap() {
+        let records = pending(root.path()).unwrap();
+        assert_eq!(records.len(), 1, "released preparation must be recoverable");
+        for record in records {
             record.finish().unwrap();
         }
         assert!(source.join(super::super::GROUP_FILENAME).exists());
+        assert!(pending(root.path()).unwrap().is_empty());
     }
 
     #[test]
     fn replaced_quarantine_directory_is_never_removed() {
+        if isolated("replaced_quarantine_directory_is_never_removed") {
+            return;
+        }
         let root = tempfile::tempdir().unwrap();
         let source = group(root.path());
         let retirement = Retirement::prepare(&source).unwrap();
