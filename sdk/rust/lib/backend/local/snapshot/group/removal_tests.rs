@@ -146,7 +146,10 @@ async fn failed_private_staging_changes_neither_head_nor_members() {
     // head fallback was already calculated. Do not rewrite any immutable descriptor.
     std::os::unix::fs::symlink("absent", first.join("unacceptable-link")).unwrap();
     let before = fs::read(directory.join(group::GROUP_FILENAME)).unwrap();
-    let error = group::remove_member(&second).await.unwrap_err();
+    // Wait for setup readers inherited by unrelated fork/exec tests, then retain
+    // ownership through the staging attempt. A release probe alone would race.
+    let pin = released_deletion(&second).await;
+    let error = group::remove_member_leased(&second, pin).await.unwrap_err();
     assert!(error.to_string().contains("regular files"), "{error}");
     assert_eq!(
         fs::read(directory.join(group::GROUP_FILENAME)).unwrap(),
