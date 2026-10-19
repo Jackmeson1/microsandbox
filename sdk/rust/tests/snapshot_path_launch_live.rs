@@ -90,6 +90,29 @@ async fn scenario(home: &Path, full: bool) {
     group.remove().await.unwrap();
     assert!(Snapshot::list().await.unwrap().is_empty());
 
+    if full {
+        for option in ["command", "init", "hostname", "thp", "security"] {
+            let builder = Sandbox::builder("path-child")
+                .override_snapshot_paths(vec![tip_archive.clone(), base_archive.clone()], None)
+                .snapshot_launch_options(false, false);
+            let builder = match option {
+                "command" => builder.foreground_command(["echo", "must-not-run"]),
+                "init" => builder.init("auto"),
+                "hostname" => builder.hostname("replacement"),
+                "thp" => builder.thp(microsandbox::sandbox::TransparentHugePagePolicy::Never),
+                "security" => builder.security(microsandbox::sandbox::SecurityProfile::Default),
+                _ => unreachable!(),
+            };
+            let error = builder
+                .create()
+                .boxed()
+                .await
+                .err()
+                .expect("full resume must refuse boot overrides");
+            assert!(error.to_string().contains("disk-only"), "{option}: {error}");
+            assert!(Sandbox::list().await.unwrap().sandboxes.is_empty());
+        }
+    }
     eprintln!("launch qualification: source removed, launching archive sets");
     for paths in [
         vec![tip_archive.clone(), base_archive.clone()],
@@ -98,6 +121,7 @@ async fn scenario(home: &Path, full: bool) {
         let child = Sandbox::builder("path-child")
             .memory(256)
             .override_snapshot_paths(paths, None)
+            .snapshot_launch_options(false, false)
             .create()
             .boxed()
             .await

@@ -1001,8 +1001,7 @@ mod command_tests {
             vec!["snaps"],
         ] {
             let cli =
-                Cli::try_parse_from(["msb"].into_iter().chain(prefix).chain(["--group", "app"]))
-                    .unwrap();
+                Cli::try_parse_from(["msb"].into_iter().chain(prefix).chain(["app"])).unwrap();
             let args = match cli.command {
                 Commands::Snapshots(args) => args,
                 Commands::Snapshot(snapshot::SnapshotArgs {
@@ -1472,7 +1471,7 @@ mod sandbox_command_tests {
                     "accepted {prefix:?} restore {extra:?}"
                 );
             }
-            // The old create/run route must fail, not parse as an ordinary fresh boot.
+            // Canonical create/run accepts a source without extending deprecated restore.
             for verb in ["create", "run"] {
                 let argv = ["msb"].into_iter().chain(prefix.iter().copied()).chain([
                     verb,
@@ -1481,7 +1480,7 @@ mod sandbox_command_tests {
                     "--name",
                     "child",
                 ]);
-                assert!(Cli::try_parse_from(argv).is_err());
+                assert!(Cli::try_parse_from(argv).is_ok());
             }
         }
     }

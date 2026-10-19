@@ -24,6 +24,14 @@ pub struct SnapshotSourceArgs {
     /// Select one member in the group, or an exact checkpoint ID in the path set.
     #[arg(long, value_name = "MEMBER_OR_ID")]
     pub checkpoint: Option<String>,
+
+    /// Cold-boot the disk of a full checkpoint instead of resuming its processes.
+    #[arg(long, conflicts_with_all = ["image", "cow_memory"])]
+    pub disk_only: bool,
+
+    /// Restore full checkpoint memory with private copy-on-write mappings.
+    #[arg(long = "cow-mem", alias = "forked", conflicts_with = "image")]
+    pub cow_memory: bool,
 }
 
 /// An unambiguous source interpretation, before any filesystem or catalog work.
@@ -50,6 +58,45 @@ pub enum SnapshotLaunchSource {
 //--------------------------------------------------------------------------------------------------
 
 impl SnapshotSourceArgs {
+    /// Apply one shared source path after configuration and before launch options.
+    pub async fn apply(
+        &self,
+        configured: &crate::sandbox_config::ResolvedSandboxConfig,
+        image: Option<&str>,
+        builder: microsandbox::sandbox::SandboxBuilder,
+    ) -> anyhow::Result<(microsandbox::sandbox::SandboxBuilder, String)> {
+        let Some(source) = self.resolve(configured.snapshot_source(), image.is_some())? else {
+            let image = configured.image(image, None)?;
+            return Ok((image.apply(builder)?, image.display()));
+        };
+        let (builder, label) = match source {
+            SnapshotLaunchSource::Group { name, checkpoint } => {
+                let member = open_group_checkpoint(&name, checkpoint.as_deref()).await?;
+                (builder.override_snapshot_member(&member), name)
+            }
+            source @ SnapshotLaunchSource::Paths { .. } => {
+                let SnapshotLaunchSource::Paths { paths, checkpoint } =
+                    source.anchor_paths(&std::env::current_dir()?)?
+                else {
+                    unreachable!()
+                };
+                let label = paths
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let checkpoint = checkpoint
+                    .map(microsandbox::snapshot::SnapshotId::new)
+                    .transpose()?;
+                (builder.override_snapshot_paths(paths, checkpoint), label)
+            }
+        };
+        Ok((
+            builder.snapshot_launch_options(self.disk_only, self.cow_memory),
+            label,
+        ))
+    }
+
     /// Resolve CLI precedence over a configured source without inspecting host files.
     ///
     /// A positional image conflicts with an explicit snapshot source in clap. A
@@ -72,8 +119,8 @@ impl SnapshotSourceArgs {
         };
         if inputs.is_empty() {
             anyhow::ensure!(
-                self.checkpoint.is_none(),
-                "--checkpoint requires a snapshot source from --from-snapshot or configuration"
+                self.checkpoint.is_none() && !self.disk_only && !self.cow_memory,
+                "--checkpoint, --disk-only and --cow-mem require a snapshot source from --from-snapshot or configuration"
             );
             return Ok(None);
         }
@@ -207,22 +254,19 @@ mod tests {
     struct CreateLaunch {
         #[command(flatten)]
         args: CreateArgs,
-        #[command(flatten)]
-        source: SnapshotSourceArgs,
     }
 
     #[derive(Debug, Args)]
     struct RunLaunch {
         #[command(flatten)]
         args: RunArgs,
-        #[command(flatten)]
-        source: SnapshotSourceArgs,
     }
 
     fn resolve(values: &[&str]) -> anyhow::Result<SnapshotLaunchSource> {
         SnapshotSourceArgs {
             sources: values.iter().map(|value| (*value).into()).collect(),
             checkpoint: None,
+            ..Default::default()
         }
         .resolve(None, false)
         .map(Option::unwrap)
@@ -330,13 +374,13 @@ mod tests {
                 }
                 let parsed = Cli::try_parse_from(input).unwrap();
                 let (source, name) = match parsed.command {
-                    Command::Create(launch) => (launch.source, launch.args.sandbox.name),
+                    Command::Create(launch) => (launch.args.snapshot, launch.args.sandbox.name),
                     Command::Run(launch) => {
                         assert_eq!(
                             launch.args.command,
                             ["echo", "--from-snapshot", "guest-value"]
                         );
-                        (launch.source, launch.args.sandbox.name)
+                        (launch.args.snapshot, launch.args.sandbox.name)
                     }
                 };
                 assert_eq!(source.sources, ["./base.msb", "./tip.msb"]);

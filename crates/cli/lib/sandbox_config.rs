@@ -537,6 +537,14 @@ impl ResolvedSandboxConfig {
         Ok(self.registry_auth.clone())
     }
 
+    /// Configured snapshot spelling before explicit CLI source precedence.
+    pub fn snapshot_source(&self) -> Option<&str> {
+        match &self.image {
+            Some(ResolvedImage::Snapshot(source)) => Some(source),
+            _ => None,
+        }
+    }
+
     /// Resolve the final image after positional arguments override file fields.
     pub fn image(
         &self,

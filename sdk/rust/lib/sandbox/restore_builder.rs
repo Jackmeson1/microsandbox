@@ -33,6 +33,10 @@ pub struct RestoreBuilder {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct RestoreBootOverrides {
     pub(crate) security: bool,
+    pub(crate) init: bool,
+    pub(crate) hostname: bool,
+    pub(crate) thp: bool,
+    pub(crate) new_command: bool,
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -48,6 +52,18 @@ impl RestoreBootOverrides {
     ) -> MicrosandboxResult<()> {
         if scope != crate::snapshot::SnapshotScope::Full || mode == SnapshotRestoreMode::DiskOnly {
             return Ok(());
+        }
+        for (requested, label) in [
+            (self.new_command, "starting a new command"),
+            (self.init, "init replacement"),
+            (self.hostname, "hostname replacement"),
+            (self.thp, "guest THP policy replacement"),
+        ] {
+            if requested {
+                return Err(MicrosandboxError::InvalidConfig(format!(
+                    "{label} requires a disk snapshot or --disk-only; full restore resumes captured execution"
+                )));
+            }
         }
         if self.security {
             return Err(MicrosandboxError::unsupported(
@@ -423,7 +439,10 @@ mod tests {
         use crate::snapshot::SnapshotScope;
 
         for security in [false, true] {
-            let overrides = RestoreBootOverrides { security };
+            let overrides = RestoreBootOverrides {
+                security,
+                ..Default::default()
+            };
             assert!(
                 overrides
                     .validate_scope(SnapshotScope::Disk, SnapshotRestoreMode::Full)

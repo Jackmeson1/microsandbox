@@ -67,6 +67,8 @@ pub struct SandboxBuilder {
     /// Distinguishes a sparse-patch snapshot, which later builder calls may override, from an
     /// explicit restore call that retains the established mutual-exclusion validation.
     pending_snapshot_from_config: bool,
+    /// Canonical launch admits boot options separately from the frozen legacy restore API.
+    canonical_snapshot_launch: bool,
 }
 
 /// Sub-builder for registry connection settings.
@@ -134,11 +136,18 @@ impl SandboxBuilder {
             #[cfg(feature = "local")]
             pending_snapshot_paths: None,
             pending_snapshot_from_config: false,
+            canonical_snapshot_launch: false,
         }
     }
 
     /// Overlay sparse sandbox configuration on the hardcoded and global defaults.
     pub fn overlay(mut self, patch: SandboxConfigPatch) -> Self {
+        self.record_prepared_boot_override(|boot| {
+            boot.security |= patch.spec.security_profile.is_some();
+            boot.init |= patch.spec.init.is_some();
+            boot.hostname |= patch.spec.runtime.hostname.is_some();
+            boot.thp |= patch.spec.resources.thp.is_some();
+        });
         self.config.overlay_mut(patch);
         self
     }
@@ -273,6 +282,35 @@ impl SandboxBuilder {
             .restore_resources
             .get_or_insert_with(Default::default)
             .require_complete = true;
+        self
+    }
+
+    /// Apply canonical create/run mode controls without extending deprecated restore.
+    #[doc(hidden)]
+    pub fn snapshot_launch_options(mut self, disk_only: bool, cow_memory: bool) -> Self {
+        self.canonical_snapshot_launch = true;
+        if disk_only {
+            self = self.disk_only();
+        }
+        if cow_memory {
+            self = self.forked();
+        }
+        self.config.spec.mounts.get_or_insert_default();
+        self.config.spec.network.ports.get_or_insert_default();
+        self.config
+            .restore_resources
+            .get_or_insert_with(Default::default)
+            .require_complete = true;
+        self
+    }
+
+    /// Bind the CLI's selected member to its descriptor before deferred preparation.
+    #[doc(hidden)]
+    #[cfg(feature = "local")]
+    pub fn override_snapshot_member(mut self, checkpoint: &crate::snapshot::Checkpoint) -> Self {
+        self.config.spec.image = Some(RootfsSource::oci(""));
+        self = self.with_snapshot_reference(checkpoint.reference());
+        self.config.snapshot_expected_digest = Some(checkpoint.digest().to_owned());
         self
     }
 
@@ -414,6 +452,7 @@ impl SandboxBuilder {
     /// request them. `Always` can improve large anonymous-memory workloads at
     /// the cost of coarser memory allocation, while `Never` disables THP.
     pub fn thp(mut self, policy: super::TransparentHugePagePolicy) -> Self {
+        self.record_prepared_boot_override(|boot| boot.thp = true);
         self.config.spec.resources.thp = Some(policy);
         self
     }
@@ -633,6 +672,7 @@ impl SandboxBuilder {
     /// PID 1; `entrypoint` is the user workload that agentd exec's
     /// per request. They can be combined freely.
     pub fn init(mut self, cmd: impl Into<String>) -> Self {
+        self.record_prepared_boot_override(|boot| boot.init = true);
         self.config.spec.init = Some(HandoffInit {
             cmd: cmd.into(),
             args: Vec::new(),
@@ -660,6 +700,7 @@ impl SandboxBuilder {
         cmd: impl Into<String>,
         f: impl FnOnce(InitOptionsBuilder) -> InitOptionsBuilder,
     ) -> Self {
+        self.record_prepared_boot_override(|boot| boot.init = true);
         let (args, env) = f(InitOptionsBuilder::default()).build();
         self.config.spec.init = Some(HandoffInit {
             cmd: cmd.into(),
@@ -672,6 +713,7 @@ impl SandboxBuilder {
     /// Set the guest hostname. Limited to 64 UTF-8 bytes (the Linux UTS
     /// limit). Defaults to a sandbox-name-derived form when unset.
     pub fn hostname(mut self, hostname: impl Into<String>) -> Self {
+        self.record_prepared_boot_override(|boot| boot.hostname = true);
         self.config.spec.runtime.hostname = Some(hostname.into());
         self
     }
@@ -1189,6 +1231,7 @@ impl SandboxBuilder {
 
     /// Set the in-guest security profile.
     pub fn security(mut self, profile: SecurityProfile) -> Self {
+        self.record_prepared_boot_override(|boot| boot.security = true);
         self.config.spec.security_profile = Some(profile);
         self
     }
@@ -1532,6 +1575,23 @@ impl SandboxBuilder {
                 "patches cannot be combined with from_snapshot".into(),
             ));
         }
+        if self.canonical_snapshot_launch {
+            // Inspect the sparse request before merging ambient defaults: even explicit
+            // builtin/default boot choices cannot be silently discarded on full resume.
+            let boot = self
+                .config
+                .restore_boot_overrides
+                .get_or_insert_with(Default::default);
+            boot.security |= self.config.spec.security_profile.is_some();
+            boot.init |= self.config.spec.init.is_some();
+            boot.hostname |= self.config.spec.runtime.hostname.is_some();
+            boot.thp |= self.config.spec.resources.thp.is_some();
+            boot.new_command |= self
+                .config
+                .launch_intent
+                .as_ref()
+                .is_some_and(|intent| !matches!(intent, super::config::LaunchIntent::None));
+        }
         let overrides = self.restore_override_intent();
         let mut config = SandboxConfig::default();
         config.apply_layers(
@@ -1562,6 +1622,21 @@ impl SandboxBuilder {
         }
         self.config = SandboxConfigPatch::from_present_fields(config);
         Ok(())
+    }
+
+    /// A prepared config may be rebuilt before activation. Preserve explicit
+    /// follow-up requests without mistaking all its concrete defaults for requests.
+    fn record_prepared_boot_override(
+        &mut self,
+        update: impl FnOnce(&mut super::restore_builder::RestoreBootOverrides),
+    ) {
+        if self.config.resumed_from_full_snapshot == Some(true) {
+            update(
+                self.config
+                    .restore_boot_overrides
+                    .get_or_insert_with(Default::default),
+            );
+        }
     }
 
     fn restore_override_intent(&self) -> RestoreOverrideIntent {
@@ -1769,6 +1844,15 @@ impl SandboxBuilder {
     fn validate(&mut self, sandbox: &mut SandboxConfig) -> MicrosandboxResult<()> {
         if let Some(err) = self.build_error.take() {
             return Err(err);
+        }
+
+        if sandbox.resumed_from_full_snapshot {
+            let mut boot = sandbox.restore_boot_overrides;
+            boot.new_command |= !matches!(sandbox.launch_intent, super::config::LaunchIntent::None);
+            boot.validate_scope(
+                crate::snapshot::SnapshotScope::Full,
+                sandbox.snapshot_restore_mode,
+            )?;
         }
 
         if sandbox.spec.name.is_empty() {
@@ -2510,6 +2594,7 @@ impl From<SandboxConfig> for SandboxBuilder {
             #[cfg(feature = "local")]
             pending_snapshot_paths: None,
             pending_snapshot_from_config: false,
+            canonical_snapshot_launch: false,
         }
     }
 }
@@ -2521,8 +2606,8 @@ impl From<SandboxConfig> for SandboxBuilder {
 #[cfg(all(test, feature = "local"))]
 mod tests {
     use super::{
-        BackendConfig, SandboxBuilder, SandboxConfigPatch, apply_checkpoint_resources,
-        checkpoint_network_override_conflicts,
+        BackendConfig, RootfsSource, SandboxBuilder, SandboxConfig, SandboxConfigPatch,
+        SecurityProfile, apply_checkpoint_resources, checkpoint_network_override_conflicts,
     };
     use crate::config::GlobalConfigPatch;
     use crate::sandbox::config::RestoreOverrideIntent;
@@ -3021,6 +3106,41 @@ mod tests {
                 "{field} must remain transient"
             );
         }
+    }
+
+    #[test]
+    fn prepared_full_restore_cannot_gain_boot_overrides_or_a_new_command() {
+        let mut config = SandboxConfig::default();
+        config.spec.name = "prepared-full".into();
+        config.spec.image = RootfsSource::oci("alpine");
+        config.resumed_from_full_snapshot = true;
+        let builders = [
+            SandboxBuilder::from(config.clone()).hostname("replacement"),
+            SandboxBuilder::from(config.clone()).init("auto"),
+            SandboxBuilder::from(config.clone()).init_with("auto", |init| init),
+            SandboxBuilder::from(config.clone()).security(SecurityProfile::Default),
+            SandboxBuilder::from(config.clone())
+                .thp(super::super::TransparentHugePagePolicy::Never),
+            SandboxBuilder::from(config.clone()).foreground_command(["echo", "new"]),
+            SandboxBuilder::from(config.clone()).background_command(["echo", "new"]),
+            SandboxBuilder::from(config.clone()).overlay(
+                SandboxConfigPatch::new().spec(
+                    microsandbox_types::SandboxSpecPatch::new().runtime(
+                        microsandbox_types::SandboxRuntimeOptionsPatch::new()
+                            .hostname("replacement".into()),
+                    ),
+                ),
+            ),
+        ];
+        for builder in builders {
+            let error = builder.finish(None, None).unwrap_err();
+            assert!(error.to_string().contains("disk-only"), "{error}");
+        }
+        // Existing/new-exec defaults remain applicable without replaying captured processes.
+        SandboxBuilder::from(config)
+            .user("1000")
+            .finish(None, None)
+            .unwrap();
     }
 
     #[test]

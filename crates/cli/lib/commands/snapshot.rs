@@ -213,7 +213,7 @@ pub struct SnapshotVerifyArgs {
     pub checkpoint: Option<String>,
 
     /// Verify all members, including when the group has no selected head.
-    #[arg(long)]
+    #[arg(short = 'a', long)]
     pub all: bool,
 }
 
@@ -229,7 +229,7 @@ pub struct SnapshotRemoveArgs {
     pub checkpoint: Option<String>,
 
     /// Remove the entire group, refusing surviving external dependents and active readers.
-    #[arg(long, conflicts_with = "force")]
+    #[arg(short = 'a', long, conflicts_with = "force")]
     pub all: bool,
 
     /// Allow indexed children when removing one checkpoint; never bypass reader protection.
