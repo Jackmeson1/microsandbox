@@ -100,14 +100,14 @@ pub use sandbox::{
     VsockSpecPatch, validate_sandbox_name,
 };
 pub use snapshot::{
-    Checkpoint, CheckpointCaptureResult, CheckpointRemoveOptions, CheckpointRemoveResult,
-    CheckpointSnapshotState, FileSnapshotState, HeadUpdate, HeadUpdateReason, LoadOpts, SaveOpts,
-    Snapshot, SnapshotArchive, SnapshotBuilder, SnapshotCaptureOptions, SnapshotConfig,
-    SnapshotCopyBuilder, SnapshotCreateResult, SnapshotDescriptor, SnapshotFormat,
-    SnapshotGroupInfo, SnapshotHandle, SnapshotImportResult, SnapshotReference,
-    SnapshotRemoveResult, SnapshotRootDisk, SnapshotScope, SnapshotSourceBinding,
-    SnapshotSourceStatus, SnapshotSpec, SnapshotState, SnapshotVerifyReport, UpperIntegrity,
-    UpperVerifyStatus,
+    ArchiveCompatibility, Checkpoint, CheckpointCaptureResult, CheckpointRemoveOptions,
+    CheckpointRemoveResult, CheckpointSnapshotState, FileSnapshotState, HeadUpdate,
+    HeadUpdateReason, LoadOpts, SaveOpts, Snapshot, SnapshotArchive, SnapshotBuilder,
+    SnapshotCaptureOptions, SnapshotConfig, SnapshotCopyBuilder, SnapshotCreateResult,
+    SnapshotDescriptor, SnapshotFormat, SnapshotGroupInfo, SnapshotHandle, SnapshotImportResult,
+    SnapshotReference, SnapshotRemoveResult, SnapshotRootDisk, SnapshotScope,
+    SnapshotSourceBinding, SnapshotSourceStatus, SnapshotSpec, SnapshotState, SnapshotVerifyReport,
+    UpperIntegrity, UpperVerifyStatus,
 };
 pub use storage::{Storage, StorageCategoryUsage, StorageItemUsage, StorageUsage};
 pub use volume::{Volume, VolumeConfig, VolumeHandle, VolumeKind, VolumeSpec};

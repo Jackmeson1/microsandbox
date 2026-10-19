@@ -39,6 +39,7 @@ export interface NativeBindings {
   ) => number;
   readonly popDefaultBackend?: (token: number) => void;
   readonly defaultBackendKind?: () => "local" | "cloud";
+  readonly snapshotArchiveCompatibilityTargets?: () => string[];
   readonly defaultBackendInfo?: () => NapiBackendInfo;
   readonly Sandbox: NapiSandboxStatic;
   readonly SandboxBuilder: NapiSandboxBuilderCtor;
@@ -815,6 +816,7 @@ export interface NapiSnapshotInfo {
 }
 
 export interface NapiSaveOpts {
+  compatibility?: "current" | "0.7.8";
   since?: string;
   lastLayers?: number;
   withParents?: boolean;

@@ -1309,6 +1309,7 @@ Options for [`Snapshot::save()`](#snapshotsave) and instance `save_to()` methods
 
 | Field | Type | Description |
 |-------|------|-------------|
+| compatibility | `ArchiveCompatibility` | `Current` (default) or `V0_7_8`; selects archive metadata and required-capability compatibility, without rewriting checkpoint identity |
 | with_parents | `bool` | Walk the parent chain and include each ancestor in the archive |
 | with_image | `bool` | Bundle the OCI image artifacts (EROFS layers, fsmeta, VMDK descriptor) from the global cache so the archive boots offline |
 | plain_tar | `bool` | Skip zstd compression and write a plain `.tar`. Default: zstd |

@@ -62,6 +62,8 @@ export type SnapshotState =
  * Bundle options for `Snapshot.save` and instance `saveTo` methods.
  */
 export interface SaveOpts {
+  /** Explicit recipient; unsupported required capabilities are refused, never removed. */
+  compatibility?: "current" | "0.7.8";
   /** Omit disk layers and RAM objects supplied by this base; mutually exclusive with lastLayers/withParents. */
   since?: string;
   /** Newest N sealed disk layers. Full snapshots still include all memory/device state. */
@@ -77,6 +79,7 @@ export interface SaveOpts {
 /** Archive controls for the receiver-based saveWith callback. */
 export class SnapshotSaveOptions {
   private options: SaveOpts = {};
+  compatibility(target: "current" | "0.7.8"): this { this.options.compatibility = target; return this; }
   withParents(): this { this.options.withParents = true; return this; }
   withImage(): this { this.options.withImage = true; return this; }
   plainTar(): this { this.options.plainTar = true; return this; }
@@ -274,6 +277,7 @@ export class Snapshot {
     out: string,
     opts?: SaveOpts,
   ): Promise<void> {
+    requireArchiveCompatibility(opts);
     await withMappedErrors(() => napi.Snapshot.save(nameOrPath, out, opts));
   }
 
@@ -524,6 +528,7 @@ export class Snapshot {
   }
 
   async saveTo(out: string, opts?: SaveOpts): Promise<void> {
+    requireArchiveCompatibility(opts);
     await withMappedErrors(() => this.inner.saveTo(out, opts));
   }
 
@@ -643,4 +648,12 @@ export function _napiSnapshotInfoIsHandle(
   info: NapiSnapshotInfo,
 ): info is NapiSnapshotInfo {
   return typeof info?.digest === "string";
+}
+
+/** @internal Never let an older native option decoder silently ignore an explicit target. */
+export function requireArchiveCompatibility(opts?: SaveOpts): void {
+  if (opts?.compatibility !== undefined &&
+      !napi.snapshotArchiveCompatibilityTargets?.().includes(opts.compatibility)) {
+    throw new UnsupportedError("The requested archive compatibility target requires an updated native library");
+  }
 }

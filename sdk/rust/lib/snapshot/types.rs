@@ -219,6 +219,8 @@ pub struct LoadOpts {
 /// Options for [`super::Checkpoint::save`].
 #[derive(Debug, Clone, Default)]
 pub struct SaveOpts {
+    /// Recipient archive dialect; unsupported required behavior is refused, never stripped.
+    pub compatibility: super::ArchiveCompatibility,
     /// Walk parent chain and include each ancestor in the archive.
     pub with_parents: bool,
     /// Include the OCI image artifacts (EROFS layers, VMDK descriptor)
@@ -299,6 +301,12 @@ impl LoadOpts {
 }
 
 impl SaveOpts {
+    /// Target an archive reader without changing immutable checkpoint descriptors.
+    pub fn compatibility(mut self, target: super::ArchiveCompatibility) -> Self {
+        self.compatibility = target;
+        self
+    }
+
     /// Include the recorded parent chain.
     pub fn with_parents(mut self) -> Self {
         self.with_parents = true;

@@ -19,11 +19,20 @@ func TestSnapshotObjectsRefuseOlderNativeLibrary(t *testing.T) {
 	if err := Load(path); err != nil {
 		t.Fatal(err)
 	}
-	for _, op := range []string{"get", "list", "head", "capture"} {
+	for _, op := range []string{"get", "list", "head", "capture", "archive_compatibility"} {
 		_, err := SnapshotObjectCall(context.Background(), 0, map[string]any{"op": op})
 		var native *Error
 		if !errors.As(err, &native) || native.Kind != KindUnsupportedOperation {
 			t.Fatalf("%s: expected unsupported before dispatch, got %v", op, err)
 		}
 	}
+	if err := CheckArchiveCompatibility(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	var native *Error
+	err := CheckArchiveCompatibility(context.Background(), "0.7.8")
+	if !errors.As(err, &native) || native.Kind != KindUnsupportedOperation {
+		t.Fatalf("explicit archive target was not refused before an old decoder: %v", err)
+	}
+
 }

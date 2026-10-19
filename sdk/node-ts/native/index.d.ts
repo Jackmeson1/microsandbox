@@ -2709,6 +2709,8 @@ export interface SandboxTouchResult {
 
 /** Options for `Snapshot.save()` and instance `saveTo()` methods. */
 export interface SaveOpts {
+  /** Explicit archive reader target: current or 0.7.8. */
+  compatibility?: string
   /** Walk the parent chain and include each ancestor in the archive. */
   withParents?: boolean
   /** Bundle the OCI image cache for offline transport. */
@@ -2814,6 +2816,9 @@ export declare function setRuntimeLibkrunfwPath(path: string): void
  * This avoids using `process.env` as an internal JS-to-native config channel.
  */
 export declare function setRuntimeMsbPath(path: string): void
+
+/** Explicit export options must not be silently ignored by an older native library. */
+export declare function snapshotArchiveCompatibilityTargets(): Array<string>
 
 /** Initial or subsequent capture controls. Source selection belongs to the receiver. */
 export interface SnapshotCaptureOptions {

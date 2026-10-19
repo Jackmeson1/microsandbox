@@ -1030,6 +1030,7 @@ Bundle options for [`Snapshot.save()`](#snapshot-save) and instance `saveTo()` m
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `compatibility` | `"current" \| "0.7.8"` | Defaults to `"current"`; explicit targets require a native library advertising support |
 | `since` | `string` | Omit disk layers and RAM objects supplied by an exact base; incompatible with `lastLayers` and `withParents`. |
 | `lastLayers` | `number` | Include the newest N sealed root-disk layers; owned disks and full execution state remain complete. |
 | `withParents` | `boolean` | Walk the parent chain and include each ancestor in the archive. |

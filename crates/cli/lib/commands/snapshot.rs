@@ -251,6 +251,9 @@ pub struct SnapshotReindexArgs {
 /// Arguments for `msb snapshot export` (also available as `save`).
 #[derive(Debug, Args)]
 pub struct SnapshotSaveArgs {
+    /// Archive reader target: current or 0.7.8; unsupported required behavior is refused.
+    #[arg(long, default_value = "current")]
+    pub compatibility: microsandbox::ArchiveCompatibility,
     /// Group whose selected head to export.
     #[arg(value_name = "GROUP")]
     pub snapshot: String,
@@ -931,6 +934,7 @@ async fn select_checkpoint(group: &str, member: Option<&str>) -> anyhow::Result<
 async fn save(args: SnapshotSaveArgs) -> anyhow::Result<()> {
     let out = args.archive_path().to_owned();
     let opts = microsandbox::snapshot::SaveOpts {
+        compatibility: args.compatibility,
         with_parents: args.with_parents,
         with_image: args.with_image,
         plain_tar: args.plain_tar,
@@ -1627,5 +1631,34 @@ mod tests {
             .is_ok()
         );
         assert!(TestCli::try_parse_from(["msb", "inspect", "history", "extra"]).is_err());
+    }
+    #[test]
+    fn export_compatibility_requires_an_exact_supported_target() {
+        for target in ["current", "0.7.8"] {
+            assert!(
+                TestCli::try_parse_from([
+                    "msb",
+                    "export",
+                    "history",
+                    "--output",
+                    "saved.msb",
+                    "--compatibility",
+                    target
+                ])
+                .is_ok()
+            );
+        }
+        assert!(
+            TestCli::try_parse_from([
+                "msb",
+                "export",
+                "history",
+                "--output",
+                "saved.msb",
+                "--compatibility",
+                "0.7"
+            ])
+            .is_err()
+        );
     }
 }

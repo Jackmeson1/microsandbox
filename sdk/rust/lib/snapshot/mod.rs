@@ -5,6 +5,7 @@
 //! its own wire contract and reports unsupported local artifact operations explicitly.
 
 mod api;
+mod archive_compatibility;
 mod copy;
 mod group;
 mod types;
@@ -14,6 +15,7 @@ mod types;
 //--------------------------------------------------------------------------------------------------
 
 pub use api::{Checkpoint, SnapshotArchive, SnapshotBuilder, SnapshotHandle, SnapshotReference};
+pub use archive_compatibility::ArchiveCompatibility;
 pub use copy::SnapshotCopyBuilder;
 pub use group::{
     CheckpointCaptureResult, Snapshot, SnapshotCaptureOptions, SnapshotCreateResult,

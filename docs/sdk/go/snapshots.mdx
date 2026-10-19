@@ -1153,6 +1153,7 @@ Configures [`Snapshot.Save`](#snapshot-save) and instance `SaveTo()` methods.
 
 | Field | Type | Description |
 |-------|------|-------------|
+| Compatibility | `string` | Empty selects the native default; `"current"` and `"0.7.8"` explicitly select a supported archive target |
 | Since | `string` | Omit disk layers and RAM objects supplied by an exact base; incompatible with `LastLayers` and `WithParents` |
 | LastLayers | `*uint32` | Include the newest N sealed root-disk layers; owned disks and full execution state remain complete |
 | WithParents | `bool` | Include the snapshot's parent chain in the archive |

@@ -1301,6 +1301,8 @@ struct SnapshotCreateOpts {
 
 #[derive(serde::Deserialize, Default)]
 struct SnapshotSaveOptsJson {
+    #[serde(default)]
+    compatibility: microsandbox::ArchiveCompatibility,
     since: Option<String>,
     last_layers: Option<usize>,
     #[serde(default)]
@@ -6938,6 +6940,7 @@ pub unsafe extern "C" fn msb_snapshot_export(
                     reference,
                     &PathBuf::from(out),
                     SaveOpts {
+                        compatibility: opts.compatibility,
                         with_parents: opts.with_parents,
                         with_image: opts.with_image,
                         plain_tar: opts.plain_tar,

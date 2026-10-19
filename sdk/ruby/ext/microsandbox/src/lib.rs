@@ -2533,11 +2533,12 @@ fn snapshot_save(ruby: &Ruby, args: &[Value]) -> Result<(), Error> {
             "plain_tar",
             "since",
             "last_layers",
+            "compatibility",
         ],
     )?;
     let reference = parsed.required.0;
     let out = PathBuf::from(parsed.required.1);
-    let opts = snapshot_save_opts(parsed.keywords)?;
+    let opts = snapshot_save_opts(ruby, parsed.keywords)?;
     run(ruby, async move {
         Snapshot::save_by_reference(&reference, &out, opts).await
     })
@@ -2792,16 +2793,28 @@ fn parse_snapshot_save_args(ruby: &Ruby, args: &[Value]) -> Result<(PathBuf, Sav
     reject_unknown_keywords(
         ruby,
         parsed.keywords,
-        &["with_parents", "with_image", "plain_tar"],
+        &[
+            "with_parents",
+            "with_image",
+            "plain_tar",
+            "since",
+            "last_layers",
+            "compatibility",
+        ],
     )?;
     Ok((
         PathBuf::from(parsed.required.0),
-        snapshot_save_opts(parsed.keywords)?,
+        snapshot_save_opts(ruby, parsed.keywords)?,
     ))
 }
 
-fn snapshot_save_opts(keywords: RHash) -> Result<SaveOpts, Error> {
+fn snapshot_save_opts(ruby: &Ruby, keywords: RHash) -> Result<SaveOpts, Error> {
     Ok(SaveOpts {
+        compatibility: keyword::<String>(keywords, "compatibility")?
+            .as_deref()
+            .unwrap_or("current")
+            .parse()
+            .map_err(|error: MicrosandboxError| argument_error(ruby, error.to_string()))?,
         with_parents: keyword::<bool>(keywords, "with_parents")?.unwrap_or(false),
         with_image: keyword::<bool>(keywords, "with_image")?.unwrap_or(false),
         plain_tar: keyword::<bool>(keywords, "plain_tar")?.unwrap_or(false),

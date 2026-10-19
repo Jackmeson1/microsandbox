@@ -216,6 +216,9 @@ msb snap export worker --checkpoint ready --output ready.msb --with-image
 | `--plain-tar` | Write uncompressed tar |
 | `--since BASE` | Omit disk layers and RAM objects supplied by an exact base |
 | `--last-layers N` | Export the newest N sealed root-disk layers; the omitted base is needed on import |
+| `--compatibility current\|0.7.8` | Archive metadata target; defaults to `current` |
+
+Fresh exports use `microsandbox.member-names` and `microsandbox.dependencies`, with exact required-extension bindings. To send an archive to a 0.7.8 reader, pass `--compatibility 0.7.8`; this uses historical archive extension names and refuses required behavior that reader cannot preserve. It does not convert checkpoint descriptors, CPU/device state, or architecture. Import continues to accept historical names. File suffixes and the source archive’s age never choose the target.
 
 `--since`, `--last-layers`, and `--with-parents` are mutually exclusive. Export preserves recorded hashes but does not verify them. See [incremental exports](/sandboxes/snapshots#export-changes) for base requirements.
 

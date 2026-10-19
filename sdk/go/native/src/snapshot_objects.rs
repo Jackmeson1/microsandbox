@@ -72,6 +72,7 @@ enum Request {
     },
     Verify,
     InspectGroup,
+    ArchiveCompatibility,
     RemoveGroup,
     Remove {
         force: bool,
@@ -344,6 +345,7 @@ async fn dispatch(id: u64, request: Request, pending: &PendingObjects) -> Result
                 .save_to(
                     std::path::Path::new(&path),
                     microsandbox::snapshot::SaveOpts {
+                        compatibility: options.compatibility,
                         since: options.since,
                         last_layers: options.last_layers,
                         with_parents: options.with_parents,
@@ -354,6 +356,7 @@ async fn dispatch(id: u64, request: Request, pending: &PendingObjects) -> Result
                 .await?;
             Ok(json!({"ok": true}))
         }
+        Request::ArchiveCompatibility => Ok(json!(["current", "0.7.8"])),
         Request::InspectGroup => {
             let info = group(id)?.inspect().await?;
             serde_json::to_value(info).map_err(|error| FfiError::internal(error.to_string()))

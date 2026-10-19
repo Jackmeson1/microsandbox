@@ -71,6 +71,96 @@ impl Extension {
 }
 
 //--------------------------------------------------------------------------------------------------
+// Functions
+//--------------------------------------------------------------------------------------------------
+
+/// Check every packaged descriptor before opening an output file. The frozen list is the
+/// v0.7.8 reader's contract, not the current reader's expanding capability set.
+pub(super) fn validate_export(
+    snapshots: &[super::Snapshot],
+    target: crate::ArchiveCompatibility,
+) -> MicrosandboxResult<()> {
+    if target == crate::ArchiveCompatibility::Current {
+        return Ok(());
+    }
+    for snapshot in snapshots {
+        let manifest = snapshot.manifest();
+        for requirement in &manifest.requires {
+            if ![
+                "microsandbox.guest-clock",
+                "microsandbox.restore-defaults",
+                "microsandbox.owned-volumes",
+            ]
+            .contains(&requirement.as_str())
+            {
+                return Err(MicrosandboxError::InvalidConfig(format!(
+                    "checkpoint {} requires '{requirement}', which archive target 0.7.8 cannot preserve",
+                    snapshot.id()
+                )));
+            }
+        }
+        // Its descriptor decoder knows the clock policy, but its archive admission rejects
+        // the lifted non-default clock requirement. Do not export an archive it must refuse.
+        if !manifest.guest_clock()?.is_sync() {
+            return Err(MicrosandboxError::InvalidConfig(format!(
+                "checkpoint {} uses a non-default guest clock unsupported by archive target 0.7.8",
+                snapshot.id()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Only fresh inventories pass here. Readers retain input spelling; import never invokes this
+/// function to normalize existing metadata. Checkpoint descriptors are not part of the rewrite.
+pub(super) fn write_dialect(
+    inventory: &mut super::ArchiveInventory,
+    target: crate::ArchiveCompatibility,
+) -> MicrosandboxResult<()> {
+    for extension in [Extension::MemberNames, Extension::Dependencies] {
+        let Some(payload) = extension
+            .resolve(&inventory.extensions, &inventory.requires)?
+            .cloned()
+        else {
+            continue;
+        };
+        let required = inventory
+            .requires
+            .iter()
+            .any(|key| extension.recognizes(key));
+        inventory.extensions.remove(extension.canonical());
+        inventory.extensions.remove(extension.historical());
+        inventory.requires.retain(|key| !extension.recognizes(key));
+        let key = match target {
+            crate::ArchiveCompatibility::Current => extension.canonical(),
+            crate::ArchiveCompatibility::V0_7_8 => extension.historical(),
+        };
+        inventory.extensions.insert(key.into(), payload);
+        // A released reader would silently discard canonical member names if optional.
+        // Require recognition for new inventories; historical names retain their old contract.
+        if required || target == crate::ArchiveCompatibility::Current {
+            inventory.requires.push(key.into());
+        }
+    }
+    inventory.requires.sort();
+    if target == crate::ArchiveCompatibility::V0_7_8 {
+        for requirement in &inventory.requires {
+            if ![
+                super::ARCHIVE_MEMBER_TRANSPORT_ALGORITHM,
+                Extension::Dependencies.historical(),
+            ]
+            .contains(&requirement.as_str())
+            {
+                return Err(MicrosandboxError::InvalidConfig(format!(
+                    "archive target 0.7.8 cannot preserve required capability '{requirement}'"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+//--------------------------------------------------------------------------------------------------
 // Tests
 //--------------------------------------------------------------------------------------------------
 

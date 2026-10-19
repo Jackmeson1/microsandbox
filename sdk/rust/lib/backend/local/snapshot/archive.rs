@@ -13,6 +13,8 @@ mod batch;
 mod delta;
 mod extensions;
 mod owned;
+#[cfg(test)]
+mod writer_tests;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 #[cfg(windows)]
@@ -337,6 +339,7 @@ pub(crate) async fn save_snapshot_expected(
 
     let mut snapshots = parents;
     snapshots.push(head.clone());
+    extensions::validate_export(&snapshots, opts.compatibility)?;
 
     // Optional image cache bundling.
     let mut cache_files: Vec<(PathBuf, String)> = Vec::new();
@@ -1425,6 +1428,7 @@ where
     if let Some(dependencies) = dependencies {
         delta::apply(&mut inventory, dependencies)?;
     }
+    extensions::write_dialect(&mut inventory, opts.compatibility)?;
 
     // The inventory is also the write allowlist. Never sweep artifact
     // directories: migration backups, locks, journals and unknown files are
@@ -4702,7 +4706,7 @@ mod tests {
         );
     }
 
-    fn grouped_archive_manifest(id: u128, parent: Option<&Manifest>) -> Manifest {
+    pub(super) fn grouped_archive_manifest(id: u128, parent: Option<&Manifest>) -> Manifest {
         let layer_id = DiskLayerId::new(format!("layer_{id:032x}")).unwrap();
         Manifest {
             schema: SCHEMA.into(),
@@ -4741,7 +4745,7 @@ mod tests {
         }
     }
 
-    fn write_grouped_archive_fixture(path: &Path, manifest: &Manifest) {
+    pub(super) fn write_grouped_archive_fixture(path: &Path, manifest: &Manifest) {
         std::fs::create_dir_all(path).unwrap();
         std::fs::write(
             path.join(DESCRIPTOR_FILENAME),

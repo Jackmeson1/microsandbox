@@ -11,6 +11,8 @@ See the [snapshot guide](/sandboxes/snapshots) for workflows and examples.
 
 Use snapshot objects or references on cloud. Local operations also accept a group head, `group:member`, or artifact path.
 
+Export methods `save` and `save_to` accept the keyword `compatibility` (`"current"` by default, or `"0.7.8"`). The historical target writes archive extension names understood by 0.7.8 and refuses required behavior it cannot preserve. It does not convert checkpoint identity or VM state. See [archive targets](/cli/snapshot-commands#msb-snap-export).
+
 ## Group archive import
 
 ```python
@@ -400,6 +402,7 @@ async def save(
     with_parents: bool = False,
     with_image: bool = False,
     plain_tar: bool = False,
+    compatibility: Literal["current", "0.7.8"] = "current",
     since: str | None = None,
     last_layers: int | None = None,
 ) -> None
@@ -562,6 +565,7 @@ async def save_to(
     with_parents: bool = False,
     with_image: bool = False,
     plain_tar: bool = False,
+    compatibility: Literal["current", "0.7.8"] = "current",
     since: str | None = None,
     last_layers: int | None = None,
 ) -> None
@@ -709,6 +713,7 @@ async def save_to(
     with_parents: bool = False,
     with_image: bool = False,
     plain_tar: bool = False,
+    compatibility: Literal["current", "0.7.8"] = "current",
     since: str | None = None,
     last_layers: int | None = None,
 ) -> None

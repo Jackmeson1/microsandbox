@@ -294,6 +294,7 @@ impl PySnapshot {
         plain_tar = false,
         since = None,
         last_layers = None,
+        compatibility = "current".to_owned(),
     ))]
     fn save_by_reference<'py>(
         py: Python<'py>,
@@ -304,9 +305,11 @@ impl PySnapshot {
         plain_tar: bool,
         since: Option<String>,
         last_layers: Option<usize>,
+        compatibility: String,
     ) -> PyResult<Bound<'py, PyAny>> {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let opts = RustSaveOpts {
+                compatibility: compatibility.parse().map_err(to_py_err)?,
                 with_parents,
                 with_image,
                 plain_tar,
@@ -627,6 +630,7 @@ impl PySnapshot {
         plain_tar = false,
         since = None,
         last_layers = None,
+        compatibility = "current".to_owned(),
     ))]
     fn save<'py>(
         &self,
@@ -637,6 +641,7 @@ impl PySnapshot {
         plain_tar: bool,
         since: Option<String>,
         last_layers: Option<usize>,
+        compatibility: String,
     ) -> PyResult<Bound<'py, PyAny>> {
         let snapshot = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -644,6 +649,7 @@ impl PySnapshot {
                 .save_to(
                     &out,
                     RustSaveOpts {
+                        compatibility: compatibility.parse().map_err(to_py_err)?,
                         with_parents,
                         with_image,
                         plain_tar,
@@ -666,6 +672,7 @@ impl PySnapshot {
         plain_tar = false,
         since = None,
         last_layers = None,
+        compatibility = "current".to_owned(),
     ))]
     fn save_to<'py>(
         &self,
@@ -676,6 +683,7 @@ impl PySnapshot {
         plain_tar: bool,
         since: Option<String>,
         last_layers: Option<usize>,
+        compatibility: String,
     ) -> PyResult<Bound<'py, PyAny>> {
         let snapshot = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -683,6 +691,7 @@ impl PySnapshot {
                 .save_to(
                     &out,
                     RustSaveOpts {
+                        compatibility: compatibility.parse().map_err(to_py_err)?,
                         with_parents,
                         with_image,
                         plain_tar,
@@ -996,6 +1005,7 @@ impl PySnapshotHandle {
         plain_tar = false,
         since = None,
         last_layers = None,
+        compatibility = "current".to_owned(),
     ))]
     fn save_to<'py>(
         &self,
@@ -1006,6 +1016,7 @@ impl PySnapshotHandle {
         plain_tar: bool,
         since: Option<String>,
         last_layers: Option<usize>,
+        compatibility: String,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = self.inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -1013,6 +1024,7 @@ impl PySnapshotHandle {
                 .save_to(
                     &out,
                     RustSaveOpts {
+                        compatibility: compatibility.parse().map_err(to_py_err)?,
                         with_parents,
                         with_image,
                         plain_tar,

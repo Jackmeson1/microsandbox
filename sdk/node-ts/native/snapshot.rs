@@ -43,6 +43,8 @@ pub struct JsSnapshotHandle {
 #[derive(Default)]
 #[napi(object, js_name = "SaveOpts")]
 pub struct JsSaveOpts {
+    /// Explicit archive reader target: current or 0.7.8.
+    pub compatibility: Option<String>,
     /// Walk the parent chain and include each ancestor in the archive.
     pub with_parents: Option<bool>,
     /// Bundle the OCI image cache for offline transport.
@@ -739,6 +741,12 @@ impl JsSnapshotHandle {
 // Functions: Helpers
 //--------------------------------------------------------------------------------------------------
 
+/// Explicit export options must not be silently ignored by an older native library.
+#[napi]
+pub fn snapshot_archive_compatibility_targets() -> Vec<String> {
+    vec!["current".into(), "0.7.8".into()]
+}
+
 fn format_str(f: RustSnapshotFormat) -> &'static str {
     match f {
         RustSnapshotFormat::Raw => "raw",
@@ -749,6 +757,12 @@ fn format_str(f: RustSnapshotFormat) -> &'static str {
 fn save_opts_to_rust(opts: Option<JsSaveOpts>) -> Result<RustSaveOpts> {
     let opts = opts.unwrap_or_default();
     Ok(RustSaveOpts {
+        compatibility: opts
+            .compatibility
+            .as_deref()
+            .unwrap_or("current")
+            .parse()
+            .map_err(to_napi_error)?,
         with_parents: opts.with_parents.unwrap_or(false),
         with_image: opts.with_image.unwrap_or(false),
         plain_tar: opts.plain_tar.unwrap_or(false),

@@ -1200,6 +1200,7 @@ class Snapshot:
         plain_tar: bool = False,
         since: str | None = None,
         last_layers: int | None = None,
+        compatibility: Literal["current", "0.7.8"] = "current",
     ) -> None: ...
     async def storage_usage(self) -> StorageItemUsage: ...
     @staticmethod
@@ -1250,6 +1251,7 @@ class Snapshot:
         plain_tar: bool = False,
         since: str | None = None,
         last_layers: int | None = None,
+        compatibility: Literal["current", "0.7.8"] = "current",
     ) -> None: ...
     @staticmethod
     async def load(
@@ -1322,6 +1324,7 @@ class Snapshot:
         plain_tar: bool = False,
         since: str | None = None,
         last_layers: int | None = None,
+        compatibility: Literal["current", "0.7.8"] = "current",
     ) -> None: ...
     def copy_to(self, output_archive_path: str | os.PathLike[str]) -> SnapshotCopyBuilder: ...
     async def verify(self) -> dict[str, Any]: ...
@@ -1396,6 +1399,7 @@ class SnapshotHandle:
         plain_tar: bool = False,
         since: str | None = None,
         last_layers: int | None = None,
+        compatibility: Literal["current", "0.7.8"] = "current",
     ) -> None: ...
 
 class PullSession:

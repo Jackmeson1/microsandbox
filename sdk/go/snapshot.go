@@ -39,6 +39,8 @@ type SnapshotCreateOptions struct {
 
 // SnapshotSaveOptions configures Snapshot.Save and instance SaveTo methods.
 type SnapshotSaveOptions struct {
+	// Compatibility selects current or 0.7.8; empty preserves the native default.
+	Compatibility string
 	// Since omits disk layers and RAM objects supplied by a base snapshot or standalone archive.
 	Since string
 	// LastLayers includes the newest N sealed root-disk layers; owned disks remain complete.
@@ -267,6 +269,9 @@ func (s *SnapshotArtifact) Verify(ctx context.Context) (*SnapshotVerifyReport, e
 // Backends that do not expose artifact archives return ErrUnsupportedOperation.
 func (s *SnapshotArtifact) SaveTo(ctx context.Context, outPath string, opts SnapshotSaveOptions) error {
 	if s.object != nil {
+		if err := ffi.CheckArchiveCompatibility(ctx, opts.Compatibility); err != nil {
+			return wrapFFI(err)
+		}
 		return snapshotObjectRequest(ctx, s.object, map[string]any{"op": "save", "path": outPath, "options": snapshotSaveOptionsWire(opts)}, nil)
 	}
 	return saveSnapshotReference(ctx, s.reference, s.referenceKind, outPath, opts)
@@ -536,11 +541,12 @@ func (checkpointFactory) Save(ctx context.Context, nameOrPath, outPath string, o
 
 func saveSnapshotReference(ctx context.Context, reference, referenceKind, outPath string, opts SnapshotSaveOptions) error {
 	return wrapFFI(ffi.SnapshotSave(ctx, reference, referenceKind, outPath, ffi.SnapshotSaveOptions{
-		WithParents: opts.WithParents,
-		WithImage:   opts.WithImage,
-		PlainTar:    opts.PlainTar,
-		Since:       opts.Since,
-		LastLayers:  opts.LastLayers,
+		Compatibility: opts.Compatibility,
+		WithParents:   opts.WithParents,
+		WithImage:     opts.WithImage,
+		PlainTar:      opts.PlainTar,
+		Since:         opts.Since,
+		LastLayers:    opts.LastLayers,
 	}))
 }
 

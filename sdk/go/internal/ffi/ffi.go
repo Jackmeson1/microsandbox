@@ -5614,11 +5614,12 @@ type SnapshotCreateOptions struct {
 }
 
 type SnapshotSaveOptions struct {
-	Since       string  `json:"since,omitempty"`
-	LastLayers  *uint32 `json:"last_layers,omitempty"`
-	WithParents bool    `json:"with_parents,omitempty"`
-	WithImage   bool    `json:"with_image,omitempty"`
-	PlainTar    bool    `json:"plain_tar,omitempty"`
+	Compatibility string  `json:"compatibility,omitempty"`
+	Since         string  `json:"since,omitempty"`
+	LastLayers    *uint32 `json:"last_layers,omitempty"`
+	WithParents   bool    `json:"with_parents,omitempty"`
+	WithImage     bool    `json:"with_image,omitempty"`
+	PlainTar      bool    `json:"plain_tar,omitempty"`
 }
 
 type SnapshotLoadOptions struct {
@@ -5870,6 +5871,9 @@ func SnapshotReindex(ctx context.Context, dir string) (uint32, error) {
 }
 
 func SnapshotSave(ctx context.Context, reference, referenceKind, outPath string, opts SnapshotSaveOptions) error {
+	if err := CheckArchiveCompatibility(ctx, opts.Compatibility); err != nil {
+		return err
+	}
 	if err := ensureLoaded(); err != nil {
 		return err
 	}
@@ -6129,3 +6133,25 @@ func SnapshotObjectCall(ctx context.Context, handle uint64, request any) ([]byte
 }
 
 func releaseSnapshotObject(handle uint64) { C.call_msb_snapshot_object_close(C.uint64_t(handle)) }
+
+// CheckArchiveCompatibility requires explicit acknowledgement before serializing a new option.
+// Old native JSON decoders can ignore unknown fields, so sending the option alone is unsafe.
+func CheckArchiveCompatibility(ctx context.Context, target string) error {
+	if target == "" {
+		return nil
+	}
+	raw, err := SnapshotObjectCall(ctx, 0, map[string]any{"op": "archive_compatibility"})
+	if err != nil {
+		return fmt.Errorf("archive compatibility requires an updated native library: %w", err)
+	}
+	var targets []string
+	if err := json.Unmarshal(raw, &targets); err != nil {
+		return err
+	}
+	for _, supported := range targets {
+		if supported == target {
+			return nil
+		}
+	}
+	return fmt.Errorf("unsupported archive compatibility target %q", target)
+}

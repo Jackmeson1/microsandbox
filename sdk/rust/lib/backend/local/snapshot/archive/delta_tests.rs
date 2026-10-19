@@ -1956,6 +1956,8 @@ async fn memory_dependency_validation_rejects_incomplete_and_misbound_inventorie
         target.path().to_str().unwrap(),
         &archive,
         SaveOpts {
+            // These fixtures intentionally begin in the released dialect before alias mutation.
+            compatibility: crate::ArchiveCompatibility::V0_7_8,
             since: Some(base.path().to_string_lossy().into_owned()),
             plain_tar: true,
             ..Default::default()
@@ -2188,6 +2190,8 @@ async fn archive_extension_aliases_import_payloads_without_rewriting_descriptors
         target.path().to_str().unwrap(),
         &archive,
         SaveOpts {
+            // These fixtures intentionally begin in the released dialect before alias mutation.
+            compatibility: crate::ArchiveCompatibility::V0_7_8,
             since: Some(base.path().to_string_lossy().into_owned()),
             plain_tar: true,
             ..Default::default()

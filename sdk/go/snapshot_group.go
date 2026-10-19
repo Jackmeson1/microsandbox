@@ -332,6 +332,9 @@ func (checkpoint *SnapshotArtifact) Save(ctx context.Context, path string, opts 
 
 func snapshotSaveOptionsWire(options SnapshotSaveOptions) map[string]any {
 	result := map[string]any{"with_parents": options.WithParents, "with_image": options.WithImage, "plain_tar": options.PlainTar}
+	if options.Compatibility != "" {
+		result["compatibility"] = options.Compatibility
+	}
 	if options.Since != "" {
 		result["since"] = options.Since
 	}
