@@ -206,19 +206,26 @@ async fn create_snapshot_inner(
     .await?;
     let (group_dir, reservation) = match mode {
         CaptureGroupMode::Existing => (
-            super::group::ensure_checkpoint(&root, &group_name, source).await?,
+            super::group::ensure_checkpoint(&root, &group_name, source.clone()).await?,
             None,
         ),
         CaptureGroupMode::New(_) => {
-            let reservation = super::group::ensure_new_capture(&root, &group_name, source).await?;
+            let reservation =
+                super::group::ensure_new_capture(&root, &group_name, source.clone()).await?;
             (reservation.directory().to_path_buf(), Some(reservation))
         }
         CaptureGroupMode::Legacy => (
-            super::group::ensure_capture(&root, &group_name, source).await?,
+            super::group::ensure_capture(&root, &group_name, source.clone()).await?,
             None,
         ),
     };
     super::publication::complete_batch(local.db().await?.write(), &group_dir).await?;
+    let target = if reservation.is_none() {
+        Some(super::group::CaptureTarget::admit(&group_dir, source).await?)
+    } else {
+        // Initial group reservation already retains writer ownership through capture.
+        None
+    };
     // Capture may continue while a group generation is exchanged. Its private staging
     // must therefore live beside the group, never inside the directory being replaced.
     let staging = tempfile::Builder::new()
@@ -232,7 +239,7 @@ async fn create_snapshot_inner(
         local,
         captured,
         staging,
-        (group_dir, reservation),
+        (group_dir, reservation, target),
         lineage,
         (name, generated_name),
         &source_sandbox,
@@ -246,7 +253,11 @@ async fn publish_snapshot_group(
     local: &LocalBackend,
     captured: StagedSnapshot,
     staging: tempfile::TempDir,
-    (group_dir, reservation): (PathBuf, Option<super::group::CaptureReservation>),
+    (group_dir, reservation, target): (
+        PathBuf,
+        Option<super::group::CaptureReservation>,
+        Option<super::group::CaptureTarget>,
+    ),
     lineage: super::lineage::CaptureLineage,
     (name, generated_name): (String, bool),
     source_sandbox: &str,
@@ -279,6 +290,9 @@ async fn publish_snapshot_group(
             Some(reservation) => reservation.writer(),
             None => super::writer::WriterLease::acquire(&group_dir).await?,
         };
+        if let Some(target) = target {
+            target.validate(&group_dir).await?;
+        }
         let destination = group_dir.join(captured.id().as_str());
         let _publication = microsandbox_image::storage_lease::StorageLease::shared_async(destination.clone()).await?;
         super::publication::prepare(&publication_db, &destination, captured.digest(), captured.manifest()).await?;
@@ -2559,6 +2573,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn captured_checkpoint_is_not_published_into_a_recreated_group() {
+        for detail in [None, Some("source resume failed")] {
+            let temp = tempfile::tempdir().unwrap();
+            let local = crate::test_support::local_backend_builder(temp.path().join("home"))
+                .build()
+                .await
+                .unwrap();
+            fixture_source(&local).await;
+            let lineage = super::super::lineage::begin(&local, "box").await.unwrap();
+            let source = super::super::source::Source::capture(
+                local.db().await.unwrap().write(),
+                lineage.sandbox_id(),
+                "box",
+            )
+            .await
+            .unwrap();
+            let group =
+                super::super::group::ensure_capture(&local.snapshots_dir(), "box", source.clone())
+                    .await
+                    .unwrap();
+            let target = super::super::group::CaptureTarget::admit(&group, source.clone())
+                .await
+                .unwrap();
+            let staging = tempfile::Builder::new()
+                .prefix(".capture-")
+                .tempdir_in(local.snapshots_dir())
+                .unwrap();
+            let staged_path = staging.path().join("snapshot");
+            let captured = captured_fixture(&temp.path().join("checkpoint"), detail);
+            let staged = stage_full_snapshot(
+                SnapshotDestination {
+                    name: "snapshot",
+                    path: &staged_path,
+                    force: false,
+                },
+                "box",
+                captured,
+                staging.path().to_path_buf(),
+                Instant::now(),
+                0,
+            )
+            .await
+            .unwrap();
+            // Reuse the source binding too: comparing only the sandbox ID cannot detect
+            // that this name now denotes a different checkpoint history.
+            std::fs::remove_dir_all(&group).unwrap();
+            super::super::group::ensure_capture(&local.snapshots_dir(), "box", source)
+                .await
+                .unwrap();
+            let group_before = std::fs::read(group.join("group.json")).unwrap();
+            let error = publish_snapshot_group(
+                &local,
+                staged,
+                staging,
+                (group.clone(), None, Some(target)),
+                lineage,
+                ("snapshot".into(), false),
+                "box",
+            )
+            .await
+            .unwrap_err();
+            let publication_error = match (detail, error) {
+                (Some(detail), MicrosandboxError::SnapshotSourceRecovery(failure)) => {
+                    assert_eq!(failure.detail, detail);
+                    assert!(failure.artifact.is_none());
+                    failure
+                        .publication_error
+                        .expect("group publication failure")
+                }
+                (None, error) => error.to_string(),
+                (_, error) => panic!("source recovery details were lost: {error}"),
+            };
+            assert!(
+                publication_error.contains("removed or replaced during capture"),
+                "{publication_error}"
+            );
+            assert_eq!(
+                std::fs::read(group.join("group.json")).unwrap(),
+                group_before
+            );
+            assert!(
+                super::super::store::list_indexed(&local)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(!staged_path.exists());
+            assert!(!std::fs::read_dir(&group).unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("snap_")
+            }));
+        }
+    }
+
+    #[tokio::test]
     async fn recovery_failure_preserves_published_installed_snapshot() {
         for detail in [
             "source resume failed",
@@ -2617,7 +2729,7 @@ mod tests {
                 &local,
                 staged,
                 staging,
-                (group.clone(), Some(reservation)),
+                (group.clone(), Some(reservation), None),
                 lineage,
                 ("snapshot".into(), false),
                 "box",

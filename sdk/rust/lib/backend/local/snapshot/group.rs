@@ -1608,7 +1608,7 @@ mod tests;
 // Re-Exports
 //--------------------------------------------------------------------------------------------------
 
-pub(super) use capture::CaptureReservation;
+pub(super) use capture::{CaptureReservation, CaptureTarget};
 pub(super) use inspection::inspect as inspect_history;
 
 //--------------------------------------------------------------------------------------------------

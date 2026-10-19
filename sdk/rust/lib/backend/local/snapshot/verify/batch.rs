@@ -17,6 +17,8 @@ use sha2::{Digest, Sha256};
 
 use crate::snapshot::UpperVerifyStatus;
 
+use super::super::file_identity::{Key as FileKey, key as file_key};
+
 use super::{
     ensure_verification_source_unchanged, legacy_sparse_integrity_from_file,
     merkle_integrity_from_file, open_verification_source, verification_source_identity,
@@ -46,8 +48,6 @@ pub(super) struct BatchVerification {
     /// Actual hash passes, counted once per physical file and required algorithm.
     pub hashes: usize,
 }
-
-type FileKey = (u64, u64);
 
 //--------------------------------------------------------------------------------------------------
 // Functions
@@ -279,38 +279,6 @@ fn io_failure(error: io::Error) -> PayloadCheckFailure {
         },
         detail: error.to_string(),
     }
-}
-
-#[cfg(unix)]
-fn file_key(file: &File) -> io::Result<FileKey> {
-    use std::os::unix::fs::MetadataExt;
-    let metadata = file.metadata()?;
-    Ok((metadata.dev(), metadata.ino()))
-}
-
-#[cfg(windows)]
-fn file_key(file: &File) -> io::Result<FileKey> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
-    };
-    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-    // The live File owns the handle; this API fills the complete fixed-size structure.
-    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok((
-        u64::from(info.dwVolumeSerialNumber),
-        u64::from(info.nFileIndexHigh) << 32 | u64::from(info.nFileIndexLow),
-    ))
-}
-
-#[cfg(not(any(unix, windows)))]
-fn file_key(_file: &File) -> io::Result<FileKey> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "physical file identity is unavailable",
-    ))
 }
 
 //--------------------------------------------------------------------------------------------------
