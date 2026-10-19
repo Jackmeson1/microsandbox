@@ -11,9 +11,19 @@ See the [snapshot guide](/sandboxes/snapshots) for workflows and examples.
 
 Use snapshot objects or references on cloud. Local operations also accept a group head, `group:member`, or artifact path.
 
-## Group lifecycle and 0.8 migration
+<span id="group-lifecycle-and-08-migration" />
 
-`Snapshot.Get` returns a named `SnapshotGroup`; `Checkpoint.Open` returns an immutable `SnapshotArtifact`. Create a new group through a sandbox or sandbox handle, then capture later checkpoints through that group. The initial call refuses an existing group; an append uses its saved source identity. Imported or orphaned groups cannot capture, and recreating a sandbox with the same name does not rebind them.
+## Sandbox capture
+
+<span id="sandbox-group-capture" />
+
+#### <span className="msb-recv">sandbox.</span><span className="msb-hn">Snapshot()</span>
+
+```go
+func (sandbox *Sandbox) Snapshot(ctx context.Context, name string, opts ...SnapshotCaptureOption) (*SnapshotCreateResult, error)
+```
+
+Available on `Sandbox` and `SandboxHandle`. `name` selects a new group. Configure its first member through [SnapshotCaptureConfig](#snapshot-capture-config); an existing group is refused.
 
 <Accordion title="Example">
 
@@ -40,13 +50,121 @@ if err != nil { return err }
 
 </Accordion>
 
-The initial result is `SnapshotCreateResult` with the group, exact first checkpoint, and operation-owned head outcome. A later capture returns `CheckpointCaptureResult` with its exact checkpoint and head outcome. Read the checkpoint from that result when you need the artifact created by your call; another caller may already have moved group head. An omitted member name is generated. Capture is disk-only by default; full capture and integrity recording are explicit options.
-
-`head` returns no checkpoint after explicit clearing. Listing members and exact member lookup still work. Selecting or clearing the current value is a reported no-op. New groups are bound to one sandbox instance, while one sandbox may have several groups. Existing group destinations cannot be changed by capture options.
-
 Artifact helpers formerly owned by `Snapshot` are now accessed through `Checkpoint`. Existing `SnapshotHandle`, builder, archive, ID, and verification type names remain; this public object rename does not rewrite persisted artifact IDs. Retained artifact helpers below also cover supported cloud workflows, where local group operations return unsupported.
 
-Group spawn selects head once and retains that member while preparing the destination. Checkpoint spawn uses its exact receiver, even if group head later changes. Default full checkpoints resume execution; disk checkpoints boot fresh. The destination configuration and progress APIs use the existing restore preparation; source selectors cannot be changed by a destination callback.
+## Snapshot group methods
+
+<span id="group-get" />
+
+#### <span className="msb-recv">Snapshot.</span><span className="msb-hn">Get()</span>
+
+```go
+func (snapshotFactory) Get(ctx context.Context, name string) (*SnapshotGroup, error)
+```
+
+Open a named local history, including a headless group. Group operations on cloud return unsupported.
+
+<span id="group-list" />
+
+#### <span className="msb-recv">Snapshot.</span><span className="msb-hn">List()</span>
+
+```go
+func (snapshotFactory) List(ctx context.Context) ([]*SnapshotGroup, error)
+```
+
+List installed groups. Standalone artifacts are not treated as groups.
+
+<span id="group-name" />
+
+#### <span className="msb-recv">group.</span><span className="msb-hn">Name()</span>
+
+```go
+func (group *SnapshotGroup) Name() string
+```
+
+Read the retained group name without changing selection.
+
+<span id="group-head" />
+
+#### <span className="msb-recv">group.</span><span className="msb-hn">Head()</span>
+
+```go
+func (group *SnapshotGroup) Head(ctx context.Context) (*SnapshotArtifact, error)
+```
+
+Read the selected checkpoint once. The returned checkpoint retains that identity if head changes later. Returns `(nil, nil)` after explicit clearing.
+
+<span id="group-checkpoints" />
+
+#### <span className="msb-recv">group.</span><span className="msb-hn">Checkpoints()</span>
+
+```go
+func (group *SnapshotGroup) Checkpoints(ctx context.Context) ([]*SnapshotHandle, error)
+```
+
+List member handles in stable ID order, including when no head is selected.
+
+<span id="group-get-checkpoint" />
+
+#### <span className="msb-recv">group.</span><span className="msb-hn">GetCheckpoint()</span>
+
+```go
+func (group *SnapshotGroup) GetCheckpoint(ctx context.Context, name string) (*SnapshotArtifact, error)
+```
+
+Open one member by group-local name or stable checkpoint ID without changing head.
+
+<span id="group-set-head" />
+
+#### <span className="msb-recv">group.</span><span className="msb-hn">SetHead()</span>
+
+```go
+func (group *SnapshotGroup) SetHead(ctx context.Context, member string) (*SnapshotHeadUpdate, error)
+```
+
+Select an existing member by group-local name or stable ID. Selecting the current head reports a no-op.
+
+<span id="group-clear-head" />
+
+#### <span className="msb-recv">group.</span><span className="msb-hn">ClearHead()</span>
+
+```go
+func (group *SnapshotGroup) ClearHead(ctx context.Context) (*SnapshotHeadUpdate, error)
+```
+
+Clear selection while preserving every member. Clearing an already headless group reports a no-op.
+
+<span id="group-checkpoint" />
+
+#### <span className="msb-recv">group.</span><span className="msb-hn">Checkpoint()</span>
+
+```go
+func (group *SnapshotGroup) Checkpoint(ctx context.Context, opts ...SnapshotCaptureOption) (*CheckpointCaptureResult, error)
+```
+
+Capture the bound sandbox and return the exact checkpoint and this operation’s head outcome. Imported or orphaned groups refuse capture; a same-name replacement sandbox never becomes the source. Supply [SnapshotCaptureConfig](#snapshot-capture-config) with `WithSnapshotCaptureConfig`. Empty `Name` is generated; `Destination` is only valid for initial group creation.
+
+<span id="group-spawn" />
+
+#### <span className="msb-recv">group.</span><span className="msb-hn">SpawnSandbox()</span>
+
+```go
+func (group *SnapshotGroup) SpawnSandbox(ctx context.Context, name string, opts ...RestoreOption) (*Sandbox, error)
+```
+
+Select the group head once and retain it throughout destination preparation. A headless group refuses spawning. The same methods on an exact checkpoint retain that checkpoint instead. Full checkpoints resume execution by default; disk checkpoints boot fresh. Destination options cannot change the source selector or backend. Empty `name` requests a generated destination name. See [Restore](#restore) for destination options.
+
+<span id="group-spawn-progress" />
+
+#### <span className="msb-recv">group.</span><span className="msb-hn">SpawnSandboxWithProgress()</span>
+
+```go
+func (group *SnapshotGroup) SpawnSandboxWithProgress(
+    ctx context.Context, name string, opts ...RestoreOption,
+) (<-chan CreationProgress, <-chan CreationResult)
+```
+
+Local-only. The first channel carries best-effort progress; the second delivers the authoritative `CreationResult`. Consume the result even when progress is ignored. Cancel the context to request cancellation; a closed progress channel alone does not establish success.
 
 ## Save an exact checkpoint
 
@@ -62,6 +180,16 @@ if err := checkpoint.Save(ctx, "portable.msb", m.SnapshotSaveOptions{WithParents
 The receiver selects one immutable checkpoint. Use the group’s optional head or exact-member lookup first; saving a group’s whole history is not implied. The no-options call writes a compressed `.msb` archive. `SaveTo` retains its explicit options form for compatibility. See the archive compatibility option below before sending output to an older reader.
 
 ## Group archive import
+
+<span id="group-load" />
+
+#### <span className="msb-recv">Snapshot.</span><span className="msb-hn">Load()</span>
+
+```go
+func (snapshotFactory) Load(ctx context.Context, group string, files []string, options ...SnapshotImportOptions) (*SnapshotImportResult, error)
+```
+
+Import a batch atomically. Accepts zero or one [SnapshotImportOptions](#group-load-options) value.
 
 <Accordion title="Example">
 
@@ -80,6 +208,10 @@ A successful return confirms publication and catalog completion. Warnings descri
 
 ## Group inspection
 
+<span id="group-inspect" />
+
+#### <span className="msb-recv">group.</span><span className="msb-hn">Inspect()</span>
+
 ```go
 func (g *SnapshotGroup) Inspect(ctx context.Context) (*SnapshotGroupInfo, error)
 ```
@@ -90,11 +222,25 @@ Source availability is observed separately from group metadata and is not a guar
 
 ## Group verification
 
+<span id="group-verify" />
+
+#### <span className="msb-recv">group.</span><span className="msb-hn">Verify()</span>
+
+```go
+func (g *SnapshotGroup) Verify(ctx context.Context) (*SnapshotGroupVerifyReport, error)
+```
+
 `group.Verify(ctx)` checks every pinned member and returns `(*SnapshotGroupVerifyReport, error)`. `State` distinguishes `complete`, `incomplete`, `invalid`, and `empty` (zero checked). `Checkpoints` contains each member's `ID`, `Path`, `State`, optional existing `SnapshotVerifyReport`, and `Findings`; `PayloadHashes` counts physical hash passes. Headless groups are valid verification targets. To verify only head, obtain the optional checkpoint and call its `Verify(ctx)` method.
 
 Unrecorded checksums return incomplete coverage. Corruption, missing files, unsupported requirements, and operational failures return a `*SnapshotVerificationError`; use `errors.As` and inspect its `Report` for every selected member. Errors before meaningful selection retain the ordinary error type. Shared physical payloads are hashed once per algorithm; independent copies are checked separately. Cancellation retains reader protection until the hashing worker finishes.
 
+Selected members remain protected through hashing, including cancellation. Same-group captures, imports and head changes wait until verification finishes. Concurrent older removers must be stopped or upgraded; reads and sandbox execution can continue.
+
 ## Whole-group removal
+
+<span id="group-remove" />
+
+#### <span className="msb-recv">group.</span><span className="msb-hn">Remove()</span>
 
 ```go
 func (g *SnapshotGroup) Remove(ctx context.Context) (*SnapshotRemoveResult, error)
@@ -102,7 +248,7 @@ func (g *SnapshotGroup) Remove(ctx context.Context) (*SnapshotRemoveResult, erro
 
 Removes the selected history and returns `SnapshotRemoveResult` with `Group`, `Removed`, `HeadUpdate`, and `Warnings`. The member IDs and cleared-head outcome belong to this operation. Empty groups can be removed. Active readers and surviving external dependents refuse removal; there is no force bypass for an entire group.
 
-If publication commits but catalog cleanup fails, the call raises or returns `SnapshotGroupRemovalRecoveryError` with `Result` and `Detail`. The attached result means removal already happened. Cleanup warnings after successful catalog reconciliation are returned in the result. An uncertain durability outcome is an error requiring recovery rather than a claimed successful removal. Later listing recovers pending cleanup without deleting a replacement group.
+If publication commits but catalog cleanup fails, the call returns a `*SnapshotGroupRemovalRecoveryError` with `Result` and `Detail`. The attached result means removal already happened. Cleanup warnings after successful catalog reconciliation are returned in the result. An uncertain durability outcome is an error requiring recovery rather than a claimed successful removal. Later listing recovers pending cleanup without deleting a replacement group.
 
 ## Exact checkpoint removal
 
@@ -120,6 +266,164 @@ These are alternative calls, not successive removals of the same checkpoint. The
 Force permits removal despite indexed children, but never bypasses reader protection. A repeated removal reports a missing checkpoint rather than fabricating another successful result. Backends or native libraries without exact-removal reporting return unsupported instead of falling back to deletion by name.
 
 If removal commits but catalog cleanup fails, the call returns `*SnapshotRemovalRecoveryError`, with `Result` and `Detail`. Its result is authoritative: removal already happened. Recover the affected storage before retrying cleanup; do not assume an error means the checkpoint still exists.
+
+## Group options and results
+
+<span id="snapshot-capture-config" />
+
+### SnapshotCaptureConfig
+
+<div className="msb-params">
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Name</code><span className="msb-type">string</span></div>
+    <div className="msb-param-desc">Member name; empty generates a name.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Destination</code><span className="msb-type">string</span></div>
+    <div className="msb-param-desc">Parent storage directory for initial group creation only; empty uses default storage.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Labels</code><span className="msb-type">map[string]string</span></div>
+    <div className="msb-param-desc">Checkpoint labels; omitted by default.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Full</code><span className="msb-type">bool</span></div>
+    <div className="msb-param-desc">Include memory and device state; false by default.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>RecordIntegrity</code><span className="msb-type">bool</span></div>
+    <div className="msb-param-desc">Record payload integrity checksums; false by default.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>GuestFlush</code><span className="msb-type">GuestFlush</span></div>
+    <div className="msb-param-desc">Guest writeback policy; the zero value uses Auto.</div>
+  </div>
+</div>
+
+<span id="with-snapshot-capture-config" />
+
+#### <span className="msb-recv"></span><span className="msb-hn">WithSnapshotCaptureConfig()</span>
+
+```go
+func WithSnapshotCaptureConfig(config SnapshotCaptureConfig) SnapshotCaptureOption
+```
+
+Pass the returned option to initial capture or group append. This option replaces the capture configuration rather than merging it with earlier options.
+
+<span id="group-load-options" />
+
+### SnapshotImportOptions
+
+<div className="msb-params">
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Dest</code><span className="msb-type">string</span></div>
+    <div className="msb-param-desc">Parent storage directory; empty uses default storage.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Base</code><span className="msb-type">string</span></div>
+    <div className="msb-param-desc">External dependency snapshot or archive; empty supplies none.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>SetHead</code><span className="msb-type">bool</span></div>
+    <div className="msb-param-desc">Select the unique imported tip even when it is not a fast-forward. False by default; ambiguous explicit selection is refused.</div>
+  </div>
+</div>
+
+<span id="group-create-result" />
+
+### SnapshotCreateResult
+
+<div className="msb-params">
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Snapshot</code><span className="msb-type">*SnapshotGroup</span></div>
+    <div className="msb-param-desc">The newly created group.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Checkpoint</code><span className="msb-type">*SnapshotArtifact</span></div>
+    <div className="msb-param-desc">The exact first checkpoint created by this call.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>HeadUpdate</code><span className="msb-type">*SnapshotHeadUpdate</span></div>
+    <div className="msb-param-desc">Head outcome from this operation; later selection changes do not alter it. See <a href="#group-head-outcome">head outcomes</a>.</div>
+  </div>
+</div>
+
+<span id="group-capture-result" />
+
+### CheckpointCaptureResult
+
+<div className="msb-params">
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Checkpoint</code><span className="msb-type">*SnapshotArtifact</span></div>
+    <div className="msb-param-desc">The exact checkpoint created by this append.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>HeadUpdate</code><span className="msb-type">*SnapshotHeadUpdate</span></div>
+    <div className="msb-param-desc">Head outcome from this operation; later selection changes do not alter it. See <a href="#group-head-outcome">head outcomes</a>.</div>
+  </div>
+</div>
+
+<span id="group-import-result" />
+
+### SnapshotImportResult
+
+<div className="msb-params">
+  <div className="msb-param">
+    <div className="msb-param-key"><code>OperationID</code><span className="msb-type">string</span></div>
+    <div className="msb-param-desc">Identifier of this import attempt.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Snapshot</code><span className="msb-type">*SnapshotGroup</span></div>
+    <div className="msb-param-desc">The destination group.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Checkpoints</code><span className="msb-type">[]*SnapshotHandle</span></div>
+    <div className="msb-param-desc">All unique supplied members, including bundled dependencies, in stable ID order.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Added</code><span className="msb-type">[]string</span></div>
+    <div className="msb-param-desc">Stable IDs newly installed by this operation.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Reused</code><span className="msb-type">[]string</span></div>
+    <div className="msb-param-desc">Stable IDs already installed at publication.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>HeadUpdate</code><span className="msb-type">*SnapshotHeadUpdate</span></div>
+    <div className="msb-param-desc">Head outcome from this operation; later selection changes do not alter it. See <a href="#group-head-outcome">head outcomes</a>.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Warnings</code><span className="msb-type">[]string</span></div>
+    <div className="msb-param-desc">Cleanup warnings after confirmed publication and catalog completion; empty when none.</div>
+  </div>
+</div>
+
+<span id="group-head-outcome" />
+
+### SnapshotHeadUpdate
+
+<div className="msb-params">
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Group</code><span className="msb-type">string</span></div>
+    <div className="msb-param-desc">Group name.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Previous</code><span className="msb-type">*string</span></div>
+    <div className="msb-param-desc">Previous selected member ID; absent when headless.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Head</code><span className="msb-type">*string</span></div>
+    <div className="msb-param-desc">Resulting selected member ID; absent after clearing or a headless import.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Reason</code><span className="msb-type">string</span></div>
+    <div className="msb-param-desc">Selection reason: initialized, fast_forwarded, selected, unchanged, diverged, unknown_ancestry, ambiguous_candidates, cleared or parent_selected.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Changed</code><span className="msb-type">bool</span></div>
+    <div className="msb-param-desc">Whether this operation changed the selected head.</div>
+  </div>
+</div>
 
 ## Capture recovery
 
