@@ -1712,6 +1712,7 @@ impl SandboxBuilder {
                 .prepare_restore(backend.clone(), &mut config, snapshot_ref)
                 .await?;
         }
+        #[cfg(feature = "local")]
         if self.canonical_snapshot_launch
             && config.checkpoint_restore.is_none()
             && !config.restore_resources.captured.is_empty()
