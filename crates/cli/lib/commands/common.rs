@@ -1882,6 +1882,10 @@ fn validate_guest_path(context: &str, path: &str) -> anyhow::Result<()> {
 ///
 /// Accepts: `SRC:DST[:ro|rw][,noexec][,nosuid][,nodev][,follow-root-symlinks][,stat-virt=...][,host-perms=...][,uid=...,gid=...]`.
 pub fn apply_volume(builder: SandboxBuilder, spec: &str) -> anyhow::Result<SandboxBuilder> {
+    if builder.is_snapshot_launch() {
+        let (guest, mount) = parse_restore_volume(spec)?;
+        return Ok(builder.snapshot_volume(guest, |_| mount));
+    }
     let parsed = parse_volume_mount_spec(spec)?;
     let is_path = microsandbox_utils::looks_like_local_path_text(parsed.source);
     let source = parsed.source.to_string();

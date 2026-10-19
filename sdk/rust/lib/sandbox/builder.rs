@@ -304,6 +304,63 @@ impl SandboxBuilder {
         self
     }
 
+    /// Whether the shared CLI mount adapter should accept captured-disk selectors.
+    #[doc(hidden)]
+    pub fn is_snapshot_launch(&self) -> bool {
+        self.canonical_snapshot_launch
+    }
+
+    /// Apply explicit resource authorization to canonical create/run preparation.
+    #[doc(hidden)]
+    pub fn snapshot_resource_options(
+        mut self,
+        allow_missing: bool,
+        inherit: bool,
+        policy: Option<super::ExternalMountRestorePolicy>,
+    ) -> Self {
+        let resources = self
+            .config
+            .restore_resources
+            .get_or_insert_with(Default::default);
+        resources.allow_missing = allow_missing;
+        resources.require_complete = !allow_missing;
+        resources.inherit = inherit;
+        if let Some(policy) = policy {
+            self = self.external_mount_policy(policy);
+        }
+        self
+    }
+
+    /// Share restore's explicit binding/private captured-disk selection semantics.
+    #[doc(hidden)]
+    pub fn snapshot_volume(
+        mut self,
+        guest: impl Into<String>,
+        configure: impl FnOnce(MountBuilder) -> MountBuilder,
+    ) -> Self {
+        let resources = self
+            .config
+            .restore_resources
+            .get_or_insert_with(Default::default);
+        let mounts = self.config.spec.mounts.get_or_insert_with(Vec::new);
+        match configure(MountBuilder::new(guest)).build_restore() {
+            Ok(Ok(mount)) => {
+                let guest = mount.guest();
+                resources.captured.remove(guest);
+                resources.mapped.insert(guest.into());
+                mounts.retain(|existing| existing.guest() != guest);
+                mounts.push(mount);
+            }
+            Ok(Err(guest)) => {
+                resources.mapped.remove(&guest);
+                mounts.retain(|existing| existing.guest() != guest);
+                resources.captured.insert(guest);
+            }
+            Err(error) => self.build_error = Some(error),
+        }
+        self
+    }
+
     /// Bind the CLI's selected member to its descriptor before deferred preparation.
     #[doc(hidden)]
     #[cfg(feature = "local")]
@@ -1258,6 +1315,11 @@ impl SandboxBuilder {
         guest_path: impl Into<String>,
         f: impl FnOnce(MountBuilder) -> MountBuilder,
     ) -> Self {
+        // Snapshot destinations replace a binding at the same guest path. Fresh
+        // image creation retains its existing append-and-validate behavior.
+        if self.canonical_snapshot_launch {
+            return self.snapshot_volume(guest_path, f);
+        }
         match f(MountBuilder::new(guest_path)).build() {
             Ok(mount) => {
                 self.config.spec.mounts.get_or_insert_default().push(mount);
@@ -1619,6 +1681,18 @@ impl SandboxBuilder {
                 .snapshots()
                 .prepare_restore(backend.clone(), &mut config, snapshot_ref)
                 .await?;
+        }
+        if self.canonical_snapshot_launch
+            && config.checkpoint_restore.is_none()
+            && !config.restore_resources.captured.is_empty()
+        {
+            // File snapshots record external mount paths, not their disk bytes.
+            // An explicit missing-resource waiver must not silently discard a
+            // request to materialize a captured disk that the source never saved.
+            return Err(MicrosandboxError::InvalidConfig(format!(
+                "snapshot has no captured additional disks for {:?}; provide explicit destination bindings",
+                config.restore_resources.captured
+            )));
         }
         self.config = SandboxConfigPatch::from_present_fields(config);
         Ok(())
@@ -3106,6 +3180,49 @@ mod tests {
                 "{field} must remain transient"
             );
         }
+    }
+
+    #[test]
+    fn canonical_snapshot_resources_keep_authorizations_independent() {
+        let builder = SandboxBuilder::new("resource-child")
+            .snapshot_launch_options(false, false)
+            .snapshot_resource_options(
+                true,
+                true,
+                Some(super::super::ExternalMountRestorePolicy::Relaxed),
+            )
+            .volume("/data", |mount| mount.captured())
+            .volume("/data", |mount| mount.bind("/destination").readonly());
+        let resources = builder.config.restore_resources.as_ref().unwrap();
+        assert!(resources.allow_missing && resources.inherit);
+        assert!(!resources.require_complete);
+        assert!(resources.mapped.contains("/data"));
+        assert!(!resources.captured.contains("/data"));
+        assert_eq!(builder.config.spec.mounts.as_ref().unwrap().len(), 1);
+
+        let builder = builder.volume("/data", |mount| mount.captured());
+        let resources = builder.config.restore_resources.as_ref().unwrap();
+        assert!(resources.captured.contains("/data"));
+        assert!(!resources.mapped.contains("/data"));
+        assert!(builder.config.spec.mounts.as_ref().unwrap().is_empty());
+
+        // Relaxed object matching alone must not permit missing backing or
+        // authorize access through a surviving source's host bindings.
+        let strict = SandboxBuilder::new("strict-child")
+            .snapshot_launch_options(false, false)
+            .snapshot_resource_options(
+                false,
+                false,
+                Some(super::super::ExternalMountRestorePolicy::Relaxed),
+            );
+        let resources = strict.config.restore_resources.as_ref().unwrap();
+        assert!(resources.require_complete);
+        assert!(!resources.allow_missing && !resources.inherit);
+        assert!(strict.config.spec.mounts.as_ref().unwrap().is_empty());
+
+        // The captured-only shorthand remains invalid for ordinary image creation.
+        let fresh = SandboxBuilder::new("fresh").volume("/data", |mount| mount.captured());
+        assert!(fresh.build_error.is_some());
     }
 
     #[test]

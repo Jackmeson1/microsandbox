@@ -139,6 +139,17 @@ Prefix local paths with `./`, `../`, or an absolute path so they cannot be mista
 
 For a disk boot, explicit command environment, user, working directory, entrypoint, hostname, and init options apply to the child. An unnamed run is ephemeral; a named run persists. A snapshot-backed run refuses an existing destination unless `--replace` is specified. The deprecated restore interfaces retain their existing options; they do not accept the new path-set grammar.
 
+Supply destination resources explicitly. For snapshot launches, `-v SOURCE:GUEST[:OPTIONS]` maps a destination resource and `-v /guest/path` selects a private copy of a captured additional disk. Explicit mappings at the same guest path replace earlier choices; explicit mount-kind flags are applied after `-v`. A captured-disk selector must identify a disk actually present in the checkpoint. Image-based create/run retains its existing volume grammar.
+
+An ordinary disk snapshot records external mount paths without saving those external disks' bytes; supply their destination backing explicitly. Full checkpoints can carry additional disk payloads for private restoration. Allowing missing resources does not make an absent captured-disk selection valid.
+
+| Flag | Effect on snapshot-backed create/run |
+| --- | --- |
+| `--allow-missing-resources` | Permit unavailable captured external filesystems or additional disks. Full resume reports warnings even with `--quiet`; guest access can fail. Required root and owned snapshot data must remain complete. |
+| `--dangerously-inherit-resources` | Fill unspecified bindings from validated source-local records where available. This is explicit permission to share host resources, not permission to recover credentials or look up a replacement source by name. |
+| `--external-mount-policy strict\|relaxed` | Select object-compatibility validation. Relaxed mode does not authorize inheritance or waive missing backing. |
+| `--forked` | Deprecated alias for `--cow-mem`; emits a warning. |
+
 ### Flat OCI rootfs
 
 <Tooltip tip="Flat OCI roots use host-local image artifacts and are not available on microsandbox cloud."><span className="msb-badge-local">Local-only <Icon icon="circle-info" size={11} /></span></Tooltip>

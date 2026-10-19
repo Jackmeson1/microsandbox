@@ -61,7 +61,7 @@ impl RestoreBootOverrides {
         ] {
             if requested {
                 return Err(MicrosandboxError::InvalidConfig(format!(
-                    "{label} requires a disk snapshot or --disk-only; full restore resumes captured execution"
+                    "{label} requires a disk snapshot or disk-only mode; full restore resumes captured execution"
                 )));
             }
         }
@@ -282,29 +282,7 @@ macro_rules! resource_methods {
                 guest: impl Into<String>,
                 configure: impl FnOnce(MountBuilder) -> MountBuilder,
             ) -> Self {
-                let resources = self
-                    .inner
-                    .config
-                    .restore_resources
-                    .get_or_insert_with(Default::default);
-                let mounts = self.inner.config.spec.mounts.get_or_insert_with(Vec::new);
-                match configure(MountBuilder::new(guest)).build_restore() {
-                    Ok(Ok(mount)) => {
-                        let guest = mount.guest();
-                        resources.captured.remove(guest);
-                        resources.mapped.insert(guest.into());
-                        mounts.retain(|existing| existing.guest() != guest);
-                        mounts.push(mount);
-                    }
-                    Ok(Err(guest)) => {
-                        resources.mapped.remove(&guest);
-                        mounts.retain(|existing| existing.guest() != guest);
-                        resources.captured.insert(guest);
-                    }
-                    Err(error) => {
-                        self.inner.build_error = Some(error);
-                    }
-                }
+                self.inner = self.inner.snapshot_volume(guest, configure);
                 self
             }
 

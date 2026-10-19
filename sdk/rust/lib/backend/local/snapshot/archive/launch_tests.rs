@@ -233,6 +233,39 @@ async fn reversed_incremental_paths_prepare_without_installing_a_group() {
 }
 
 #[tokio::test]
+async fn missing_resource_waiver_cannot_discard_an_explicit_captured_disk() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = Arc::new(
+        crate::test_support::local_backend_builder(temp.path().join("home"))
+            .build()
+            .await
+            .unwrap(),
+    );
+    let source = temp.path().join("disk-source");
+    raw_source(&source, 27, 4);
+    let backend: Arc<dyn Backend> = local.clone();
+    crate::with_backend(backend, async {
+        for allow_missing in [false, true] {
+            let error = Sandbox::builder("child")
+                .override_snapshot_paths(vec![source.clone()], None)
+                .snapshot_launch_options(false, false)
+                .snapshot_resource_options(allow_missing, false, None)
+                .volume("/data", |mount| mount.captured())
+                .build()
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("no captured additional disks"),
+                "{error}"
+            );
+            assert!(!local.sandboxes_dir().join("child").exists());
+        }
+        assert!(Snapshot::list().await.unwrap().is_empty());
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn unrelated_tips_require_an_exact_target_and_conflicts_never_pick_input_order() {
     let temp = tempfile::tempdir().unwrap();
     let local = Arc::new(

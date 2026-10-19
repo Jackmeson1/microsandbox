@@ -763,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn external_mount_policy_is_explicit_and_requires_full_restore() {
+    fn external_mount_policy_is_validated_and_requires_a_snapshot_source() {
         for args in [
             vec!["msb", "alpine", "--external-mount-policy", "relaxed"],
             vec![
@@ -773,17 +773,21 @@ mod tests {
                 "--external-mount-policy",
                 "unknown",
             ],
-            vec![
-                "msb",
-                "--from-snapshot",
-                "saved",
-                "--external-mount-policy",
-                "relaxed",
-                "--disk-only",
-            ],
         ] {
             assert!(TestCli::try_parse_from(&args).is_err(), "accepted {args:?}");
         }
+        let args = parse_run_args(&[
+            "--from-snapshot",
+            "saved",
+            "--external-mount-policy",
+            "relaxed",
+            "--disk-only",
+        ]);
+        assert_eq!(
+            args.snapshot.external_mount_policy.as_deref(),
+            Some("relaxed")
+        );
+        assert!(args.snapshot.disk_only);
     }
 
     #[test]

@@ -26,12 +26,28 @@ pub struct SnapshotSourceArgs {
     pub checkpoint: Option<String>,
 
     /// Cold-boot the disk of a full checkpoint instead of resuming its processes.
-    #[arg(long, conflicts_with_all = ["image", "cow_memory"])]
+    #[arg(long, conflicts_with_all = ["image", "cow_memory", "forked"])]
     pub disk_only: bool,
 
     /// Restore full checkpoint memory with private copy-on-write mappings.
-    #[arg(long = "cow-mem", alias = "forked", conflicts_with = "image")]
+    #[arg(long = "cow-mem", conflicts_with = "image")]
     pub cow_memory: bool,
+
+    /// Deprecated alias for --cow-mem.
+    #[arg(long, hide = true, conflicts_with = "image")]
+    pub forked: bool,
+
+    /// Permit unavailable captured external resources; never waive required snapshot data.
+    #[arg(long, conflicts_with = "image")]
+    pub allow_missing_resources: bool,
+
+    /// Reuse unspecified bindings only from validated source-local records.
+    #[arg(long, conflicts_with = "image")]
+    pub dangerously_inherit_resources: bool,
+
+    /// Validate supplied external objects strictly or tolerate supported stale-object mismatches.
+    #[arg(long, value_parser = ["strict", "relaxed"], conflicts_with = "image")]
+    pub external_mount_policy: Option<String>,
 }
 
 /// An unambiguous source interpretation, before any filesystem or catalog work.
@@ -91,10 +107,24 @@ impl SnapshotSourceArgs {
                 (builder.override_snapshot_paths(paths, checkpoint), label)
             }
         };
-        Ok((
-            builder.snapshot_launch_options(self.disk_only, self.cow_memory),
-            label,
-        ))
+        if self.forked {
+            crate::ui::warn("--forked is deprecated; use --cow-mem instead");
+        }
+        let policy = self.external_mount_policy.as_deref().map(|policy| {
+            if policy == "relaxed" {
+                microsandbox::sandbox::ExternalMountRestorePolicy::Relaxed
+            } else {
+                microsandbox::sandbox::ExternalMountRestorePolicy::Strict
+            }
+        });
+        let builder = builder
+            .snapshot_launch_options(self.disk_only, self.cow_memory || self.forked)
+            .snapshot_resource_options(
+                self.allow_missing_resources,
+                self.dangerously_inherit_resources,
+                policy,
+            );
+        Ok((builder, label))
     }
 
     /// Resolve CLI precedence over a configured source without inspecting host files.
@@ -119,8 +149,14 @@ impl SnapshotSourceArgs {
         };
         if inputs.is_empty() {
             anyhow::ensure!(
-                self.checkpoint.is_none() && !self.disk_only && !self.cow_memory,
-                "--checkpoint, --disk-only and --cow-mem require a snapshot source from --from-snapshot or configuration"
+                self.checkpoint.is_none()
+                    && !self.disk_only
+                    && !self.cow_memory
+                    && !self.forked
+                    && !self.allow_missing_resources
+                    && !self.dangerously_inherit_resources
+                    && self.external_mount_policy.is_none(),
+                "snapshot selection, mode and resource controls require a snapshot source from --from-snapshot or configuration"
             );
             return Ok(None);
         }
@@ -270,6 +306,32 @@ mod tests {
         }
         .resolve(None, false)
         .map(Option::unwrap)
+    }
+
+    #[test]
+    fn resource_controls_require_a_selected_snapshot() {
+        for controls in [
+            SnapshotSourceArgs {
+                allow_missing_resources: true,
+                ..Default::default()
+            },
+            SnapshotSourceArgs {
+                dangerously_inherit_resources: true,
+                ..Default::default()
+            },
+            SnapshotSourceArgs {
+                external_mount_policy: Some("relaxed".into()),
+                ..Default::default()
+            },
+            SnapshotSourceArgs {
+                forked: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(controls.resolve(None, false).is_err());
+            assert!(controls.resolve(Some("history"), false).unwrap().is_some());
+            assert!(controls.resolve(Some("history"), true).is_err());
+        }
     }
 
     #[test]
