@@ -1,6 +1,6 @@
 //! Retain source protection inside blocking workers, even if their async caller is cancelled.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use microsandbox_image::snapshot::{DESCRIPTOR_FILENAME, migration::V066_DESCRIPTOR_FILENAME};
 use microsandbox_image::storage_lease::StorageLease;
@@ -13,9 +13,17 @@ use microsandbox_image::storage_lease::StorageLease;
 #[derive(Clone)]
 pub(super) struct DeletionLease {
     _namespace: StorageLease,
+    _group: Option<GroupDeletionLease>,
     _writer: Option<super::writer::WriterLease>,
     #[cfg(unix)]
     _descriptor: Option<StorageLease>,
+}
+
+/// One exclusive group lifetime gate can be shared by all members in a rollback.
+#[derive(Clone)]
+pub(super) struct GroupDeletionLease {
+    directory: PathBuf,
+    _lease: StorageLease,
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -65,18 +73,45 @@ pub(super) fn deletion(path: &Path) -> std::io::Result<Option<DeletionLease>> {
     } else {
         None
     };
-    deletion_inner(path, writer)
+    let group = if let Some(directory) = super::group::group_path(path) {
+        let Some(lease) = group_deletion(&directory)? else {
+            return Ok(None);
+        };
+        Some(lease)
+    } else {
+        None
+    };
+    deletion_inner(path, writer, group)
 }
 
 /// Journal recovery already owns the group lock and must not invert admission ordering.
 /// It only tries member pins; a conflicting remover leaves the journal intact for retry.
-pub(super) fn deletion_under_group_lock(path: &Path) -> std::io::Result<Option<DeletionLease>> {
-    deletion_inner(path, None)
+pub(super) fn deletion_under_group_lock(
+    path: &Path,
+    group: &GroupDeletionLease,
+) -> std::io::Result<Option<DeletionLease>> {
+    if path.parent().map(Path::canonicalize).transpose()?.as_ref() != Some(&group.directory) {
+        return Err(std::io::Error::other(
+            "group deletion lease belongs to another history",
+        ));
+    }
+    deletion_inner(path, None, Some(group.clone()))
+}
+
+pub(super) fn group_deletion(directory: &Path) -> std::io::Result<Option<GroupDeletionLease>> {
+    let directory = directory.canonicalize()?;
+    Ok(
+        StorageLease::try_exclusive(&directory)?.map(|lease| GroupDeletionLease {
+            directory,
+            _lease: lease,
+        }),
+    )
 }
 
 fn deletion_inner(
     path: &Path,
     writer: Option<super::writer::WriterLease>,
+    group: Option<GroupDeletionLease>,
 ) -> std::io::Result<Option<DeletionLease>> {
     let Some(namespace) = StorageLease::try_exclusive(path)? else {
         return Ok(None);
@@ -106,6 +141,7 @@ fn deletion_inner(
         drop(descriptor);
         Ok(Some(DeletionLease {
             _namespace: namespace,
+            _group: group,
             _writer: writer,
         }))
     }
@@ -113,6 +149,7 @@ fn deletion_inner(
     {
         Ok(Some(DeletionLease {
             _namespace: namespace,
+            _group: group,
             _writer: writer,
             _descriptor: descriptor,
         }))

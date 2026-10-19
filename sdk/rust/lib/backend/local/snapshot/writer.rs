@@ -1,7 +1,8 @@
 //! Stable admission for updated writers, outside a replaceable group directory.
 //!
 //! Older writers do not honor this gate and must be excluded operationally during
-//! atomic imports. Readers keep their existing descriptor and group-lock protocol.
+//! atomic imports. Exact readers retain descriptor pins; whole-group verification
+//! uses a separate shared group lifetime lease honored by updated removers.
 
 use std::io;
 use std::path::{Path, PathBuf};

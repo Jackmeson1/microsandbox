@@ -48,17 +48,23 @@ async fn verify_group_observed(
     directory: &Path,
     pinned: impl FnOnce() + Send + 'static,
 ) -> MicrosandboxResult<SnapshotGroupVerifyReport> {
-    // Serialize selection with updated publishers, then hold every selected reader lease before
-    // releasing admission. Never hold the group mutex while awaiting a descriptor reader lease.
+    // Select under writer admission, then retain one stable lifetime lease outside
+    // the replaceable directory. Updated removers honor this lease; append-only
+    // publication can continue after selection without opening every descriptor.
     let writer = WriterLease::acquire(directory).await?;
+    // Complete any pending recovery before taking the reader lifetime gate;
+    // rollback may need the exclusive side of that gate itself.
     let paths = group::verification_paths(directory).await?;
+    let history =
+        microsandbox_image::storage_lease::StorageLease::shared_async(directory.canonicalize()?)
+            .await?;
     let mut members = Vec::with_capacity(paths.len());
     for path in paths {
         let result = match tokio::fs::symlink_metadata(&path).await {
             Ok(metadata) if metadata.file_type().is_dir() => {
                 store::open_for_verification(local, &path)
                     .await
-                    .and_then(|artifact| {
+                    .and_then(|mut artifact| {
                         if path.file_name().and_then(|name| name.to_str())
                             != Some(artifact.id().as_str())
                         {
@@ -67,6 +73,10 @@ async fn verify_group_observed(
                                     .into(),
                             ));
                         }
+                        // Opening still validates the descriptor under its normal
+                        // pin. Transfer lifetime protection to the group lease now,
+                        // keeping the number of simultaneously open handles bounded.
+                        artifact.lease = None;
                         Ok(artifact)
                     })
             }
@@ -87,6 +97,7 @@ async fn verify_group_observed(
     // The worker owns the leases, so cancelling the async caller cannot release protection while
     // blocking payload hashing is still running.
     tokio::task::spawn_blocking(move || {
+        let _history = history;
         pinned();
         verify_members(group, members, fs_state_limit)
     })
@@ -102,7 +113,7 @@ fn verify_members(
     let mut checkpoints = Vec::with_capacity(members.len());
     let mut checks = Vec::new();
     let mut plans = Vec::with_capacity(members.len());
-    // Keep `members` alive through hashing: each successful artifact owns its reader lease.
+    // Metadata stays in memory; the worker owns the single group lifetime lease.
     for (path, artifact) in &members {
         let mut result = CheckpointVerification {
             id: path
@@ -409,6 +420,56 @@ mod tests {
         .unwrap();
         std::fs::write(path.join(DEFAULT_UPPER_FILE), b"valid").unwrap();
         path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn whole_group_verification_bounds_open_descriptors() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "backend::local::snapshot::verify::group::tests::low_descriptor_limit_verification_worker",
+                "--ignored",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "subprocess-only reduced descriptor limit"]
+    async fn low_descriptor_limit_verification_worker() {
+        let home = tempfile::tempdir().unwrap();
+        let local = LocalBackend::builder()
+            .home(home.path())
+            .build()
+            .await
+            .unwrap();
+        let directory = group::ensure(&local.snapshots_dir(), Some("long-history"))
+            .await
+            .unwrap();
+        for ordinal in 1..=611 {
+            install(&directory, ordinal);
+        }
+        let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+        // The limit is process-wide, hence this dedicated subprocess.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) },
+            0
+        );
+        let mut limit = unsafe { limit.assume_init() };
+        limit.rlim_cur = limit.rlim_cur.min(96);
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+        let report = verify_group(&local, &directory).await.unwrap();
+        assert_eq!(report.state, State::Complete);
+        assert_eq!(report.checkpoints.len(), 611);
     }
 
     #[tokio::test]

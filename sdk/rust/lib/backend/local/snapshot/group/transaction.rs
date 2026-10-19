@@ -470,11 +470,19 @@ fn rollback(directory: &Path, intent: &Intent) -> MicrosandboxResult<()> {
     }
     // Preflight every identity and acquire all deletion pins before changing anything. A
     // historical reader may still hold one of these descriptors; never delete its live payload.
+    // Acquire the lifetime gate once for the batch; its clones retain the same
+    // lock, avoiding self-conflict while pinning several rollback members.
+    let group_lease = super::super::lease::group_deletion(directory)?.ok_or_else(|| {
+        integrity(
+            "snapshot batch recovery is waiting for group verification; retry after it finishes"
+                .into(),
+        )
+    })?;
     let mut leases = Vec::new();
     for (id, digest) in &intent.added {
         let path = directory.join(id);
         if path_exists(&path)? {
-            let lease = super::super::lease::deletion_under_group_lock(&path)?.ok_or_else(|| integrity(format!(
+            let lease = super::super::lease::deletion_under_group_lock(&path, &group_lease)?.ok_or_else(|| integrity(format!(
                 "snapshot batch recovery is waiting for an active reader of {id}; retry after it finishes"
             )))?;
             if read_member(&path, true)?.1.digest != *digest {
