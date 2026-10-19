@@ -1001,8 +1001,7 @@ mod command_tests {
             vec!["snaps"],
         ] {
             let cli =
-                Cli::try_parse_from(["msb"].into_iter().chain(prefix).chain(["app"]))
-                    .unwrap();
+                Cli::try_parse_from(["msb"].into_iter().chain(prefix).chain(["app"])).unwrap();
             let args = match cli.command {
                 Commands::Snapshots(args) => args,
                 Commands::Snapshot(snapshot::SnapshotArgs {
