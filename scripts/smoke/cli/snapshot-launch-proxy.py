@@ -43,7 +43,8 @@ def receive(stream, length):
 class SocksHandler(socketserver.BaseRequestHandler):
     def handle(self):
         self.request.settimeout(5)
-        event = {"authenticated": False, "target": None, "http": False}
+        event = {"authenticated": False, "authentication": "not-attempted",
+                 "target": None, "http": False}
         try:
             version, count = receive(self.request, 2)
             methods = receive(self.request, count)
@@ -57,10 +58,15 @@ class SocksHandler(socketserver.BaseRequestHandler):
                 version, length = receive(self.request, 2)
                 username = receive(self.request, length)
                 password = receive(self.request, receive(self.request, 1)[0])
-                accepted = version == 1 and username == b"fixture" and password == self.server.password
+                if version != 1:
+                    raise ValueError("unexpected SOCKS authentication version")
+                accepted = username == b"fixture" and password == self.server.password
                 self.request.sendall(bytes([1, 0 if accepted else 1]))
+                event["authentication"] = "accepted" if accepted else "rejected"
                 if not accepted:
                     return
+            else:
+                event["authentication"] = "not-required"
             event["authenticated"] = True
             version, command, reserved, kind = receive(self.request, 4)
             if (version, reserved, kind) != (5, 0, 1):
@@ -99,6 +105,9 @@ class SocksFixture(socketserver.ThreadingTCPServer):
         self.password = password
         self.events = []
         self.events_lock = threading.Lock()
+        self.handlers = set()
+        self.handlers_done = threading.Condition(self.events_lock)
+        self.closed = False
         super().__init__(("127.0.0.1", 0), SocksHandler)
         self.thread = threading.Thread(target=self.serve_forever, daemon=True)
         self.thread.start()
@@ -107,12 +116,56 @@ class SocksFixture(socketserver.ThreadingTCPServer):
     def url(self):
         return f"socks5://127.0.0.1:{self.server_address[1]}"
 
+    def process_request(self, request, client_address):
+        with self.handlers_done:
+            self.handlers.add(request)
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            with self.handlers_done:
+                self.handlers.remove(request)
+                self.handlers_done.notify_all()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self.handlers_done:
+                self.handlers.remove(request)
+                self.handlers_done.notify_all()
+
+    def idle(self):
+        with self.events_lock:
+            return not self.handlers
+
     def close(self):
+        if self.closed:
+            return
         self.shutdown()
-        self.server_close()
         self.thread.join(timeout=10)
         if self.thread.is_alive():
             raise RuntimeError("proxy fixture did not stop")
+        # Include connections already queued by the kernel when acceptance stopped.
+        self.socket.setblocking(False)
+        while True:
+            try:
+                request, address = self.get_request()
+            except BlockingIOError:
+                break
+            self.process_request(request, address)
+        self.server_close()
+        # Daemon handlers are not joined by socketserver. Stop accepting first,
+        # interrupt incomplete handshakes, then wait for their final event records.
+        with self.events_lock:
+            pending = list(self.handlers)
+        for request in pending:
+            with suppress(OSError):
+                request.shutdown(socket.SHUT_RDWR)
+        with self.handlers_done:
+            if not self.handlers_done.wait_for(lambda: not self.handlers, timeout=10):
+                raise RuntimeError("proxy fixture handlers did not finish")
+        self.closed = True
 
 
 def dns_response(packet):
@@ -174,6 +227,35 @@ def digest(path):
     with path.open("rb") as source:
         return hashlib.file_digest(source, "sha256").hexdigest()
 
+def install_termination_handler():
+    def terminate(signum, _frame):
+        # Let the first signal unwind through child/VM cleanup; a second TERM
+        # must not interrupt that cleanup halfway through.
+        signal.signal(signum, signal.SIG_IGN)
+        raise SystemExit(128 + signum)
+    signal.signal(signal.SIGTERM, terminate)
+
+
+def audit_inputs_and_catalog(report, archive, original_hash, home):
+    """Record audit failures without replacing the original qualification error."""
+    report["archive_unchanged"] = False
+    report["sandbox_count"] = None
+    try:
+        report["archive_unchanged"] = digest(archive) == original_hash
+    except Exception as error:
+        report["cleanup"]["archive_audit"] = type(error).__name__
+    try:
+        # A failed first command may leave no catalog. Never create one merely
+        # to audit it, and never let this secondary failure suppress report.json.
+        uri = (home / "db/msb.db").resolve().as_uri() + "?mode=ro"
+        with sqlite3.connect(uri, uri=True) as database:
+            report["sandbox_count"] = database.execute("SELECT COUNT(*) FROM sandbox").fetchone()[0]
+    except Exception as error:
+        report["cleanup"]["catalog_audit"] = type(error).__name__
+    if (any(value != 0 for value in report["cleanup"].values())
+            or not report["archive_unchanged"] or report["sandbox_count"] != 0):
+        report["status"] = "failed"
+
 
 def sealed(group):
     # Runtime lock files can change; immutable descriptors and payloads must not.
@@ -232,11 +314,12 @@ def qualify(args):
               "agent_sha256": digest(args.agent), "firmware_sha256": digest(args.firmware),
               "archive_sha256": original_hash, "harness_sha256": digest(Path(__file__)),
               "cases": [], "cleanup": {}}
-    names = {"source"}
+    names = set()
     proxies = []
     resolvers = []
     try:
         runner.run("seed", "snapshot", "load", "seed", "--file", args.archive)
+        names.add("source")
         runner.run("source", "create", "--from-snapshot", "seed", "--name", "source", "--pull", "never")
         runner.run("prepare", "exec", "source", "--", "sh", "-ec",
                    "mkdir -p /home/codex; echo snapshot-source > /home/codex/marker; "
@@ -249,6 +332,9 @@ def qualify(args):
         if not before:
             raise RuntimeError("no immutable source files to compare")
         fetch = f"wget -T 3 -qO- http://{TARGET}:{TARGET_PORT}/probe"
+        # Request private guest IPv4 even when qualification blocks host route
+        # discovery. The ephemeral published port is bound only to loopback.
+        network_fixture = ["--port", "127.0.0.1:0:18080"]
         for label, authenticated in (("plain", False), ("authenticated", True)):
             proxy = SocksFixture(b"fixture-password" if authenticated else None)
             proxies.append(proxy)
@@ -261,6 +347,7 @@ def qualify(args):
                      "--mount-dir", f"{project}:/home/codex/project:ro",
                      "--mount-named", "build-cache:/home/codex/cache:nosuid,nodev,noexec,uid=1000,gid=1000",
                      "--env", "LAUNCH=explicit", "--no-stdin", "--no-tty"]
+            flags += network_fixture
             if authenticated:
                 runner.env[PASSWORD_ENV] = "fixture-password"
                 flags += ["--socks5-username", "fixture", "--socks5-password-env", PASSWORD_ENV]
@@ -297,7 +384,7 @@ def qualify(args):
         names.add("created")
         runner.run("created-create", "create", "--from-snapshot", "baseline", "--name", "created",
                    "--pull", "never", "--proxy", proxy.url, "--net-rule", "allow@198.51.100.0/24",
-                   "--trust-host-cas", "--no-dns-rebind-protection")
+                   "--trust-host-cas", "--no-dns-rebind-protection", *network_fixture)
         runner.run("created-fetch", "exec", "created", "--", "sh", "-ec",
                    f'test "$({fetch})" = snapshot-destination-proxy; '
                    'echo restart-marker > /home/codex/restart-marker')
@@ -331,7 +418,7 @@ def qualify(args):
                                                             "password_env": PASSWORD_ENV}}}))
         names.add("configured")
         runner.run("configured-run", "run", "--conf", config, "--name", "configured",
-                   "--trust-host-cas", "--no-dns-rebind-protection", "--no-stdin", "--",
+                   "--trust-host-cas", "--no-dns-rebind-protection", "--no-stdin", *network_fixture, "--",
                    "sh", "-ec", f'test "$({fetch})" = snapshot-destination-proxy')
         _, inspected = runner.run("configured-inspect", "inspect", "configured", "--format", "json")
         verify_network(json.loads(inspected), proxy)
@@ -362,7 +449,7 @@ def qualify(args):
                 scoped.write_text(json.dumps({"proxy": replacement.url}))
                 args_for_case += ["--net-conf", scoped]
             runner.run(label + "-run", "run", *args_for_case, "--name", label,
-                       "--no-stdin", "--",
+                       "--no-stdin", *network_fixture, "--",
                        "sh", "-ec", f'test "$({fetch})" = snapshot-destination-proxy')
             _, inspected = runner.run(label + "-inspect", "inspect", label, "--format", "json")
             parsed = json.loads(inspected)
@@ -383,6 +470,7 @@ def qualify(args):
             flags = ["--from-snapshot", "baseline", "--name", label, "--pull", "never",
                      "--proxy", proxy.url, "--dns-nameserver", resolver.address,
                      "--net-default", "allow", "--no-stdin"]
+            flags += network_fixture
             if disabled:
                 flags.append("--no-dns-rebind-protection")
             request = f"wget -T 3 -qO- http://{DNS_NAME}:{TARGET_PORT}/probe"
@@ -417,6 +505,7 @@ def qualify(args):
                     url = f"socks5://127.0.0.1:{held.getsockname()[1]}"
                 flags = ["--from-snapshot", "baseline", "--name", label, "--pull", "never",
                          "--proxy", url, "--no-stdin", "--no-tty"]
+                flags += network_fixture
                 flags += (["--net-default", "deny"] if label == "policy-denied"
                           else ["--net-rule", "allow@198.51.100.0/24"])
                 if label in ("bad-auth", "missing-credential"):
@@ -434,16 +523,18 @@ def qualify(args):
                         raise RuntimeError("missing credential failed for an unrelated reason")
                 elif "request-refused" not in stdout:
                     raise RuntimeError("negative request did not finish its refusal assertion")
-                if any(e["http"] for e in proxy.events):
-                    raise RuntimeError("refused request reached the proxy HTTP endpoint")
-                if label == "bad-auth" and not any(not e["authenticated"] for e in proxy.events):
-                    raise RuntimeError("authentication refusal was not observed by the proxy")
-                if label in ("policy-denied", "missing-credential") and proxy.events:
-                    raise RuntimeError("pre-connection refusal nevertheless contacted the proxy")
                 inspect_code, _ = runner.run(label + "-inspect", "inspect", label, "--format", "json", expected=None)
                 if inspect_code == 0:
                     runner.run(label + "-stop", "stop", label)
                     runner.run(label + "-remove", "rm", label)
+                proxy.close()
+                if any(e["http"] for e in proxy.events):
+                    raise RuntimeError("refused request reached the proxy HTTP endpoint")
+                if label == "bad-auth" and not any(
+                        e["authentication"] == "rejected" for e in proxy.events):
+                    raise RuntimeError("authentication refusal was not observed by the proxy")
+                if label in ("policy-denied", "missing-credential") and proxy.events:
+                    raise RuntimeError("pre-connection refusal nevertheless contacted the proxy")
                 names.remove(label)
                 report["cases"].append({"case": label, "status": "passed", "launch_exit": code})
             finally:
@@ -463,17 +554,13 @@ def qualify(args):
                     report["cleanup"][f"{name}/{operation}"] = code
                 except Exception as error:
                     report["cleanup"][f"{name}/{operation}"] = type(error).__name__
-        for proxy in proxies:
-            proxy.close()
-        for resolver in resolvers:
-            resolver.close()
+        for index, fixture in enumerate([*proxies, *resolvers]):
+            try:
+                fixture.close()
+            except Exception as error:
+                report["cleanup"][f"fixture/{index}"] = type(error).__name__
         report["proxy_events"] = [p.events for p in proxies]
-        report["archive_unchanged"] = digest(args.archive) == original_hash
-        with sqlite3.connect(home / "db/msb.db") as database:
-            report["sandbox_count"] = database.execute("SELECT COUNT(*) FROM sandbox").fetchone()[0]
-        if (any(v != 0 for v in report["cleanup"].values()) or not report["archive_unchanged"]
-                or report["sandbox_count"] != 0):
-            report["status"] = "failed"
+        audit_inputs_and_catalog(report, args.archive, original_hash, home)
         (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     if report["status"] != "passed":
         raise RuntimeError("qualification cleanup or immutable input check failed")
@@ -488,6 +575,7 @@ def main():
     for name, value in vars(args).items():
         if isinstance(value, Path):
             setattr(args, name, value.resolve())
+    install_termination_handler()
     qualify(args)
 
 

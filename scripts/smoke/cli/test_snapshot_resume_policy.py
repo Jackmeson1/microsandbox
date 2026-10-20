@@ -41,7 +41,11 @@ class EvidenceTests(unittest.TestCase):
                              [{"http": True, "authenticated": False}]):
             with self.assertRaises(RuntimeError):
                 smoke.assert_policy("allow", observations)
-        smoke.assert_policy("allow", [{"http": True, "authenticated": True}])
+        with self.assertRaises(RuntimeError):
+            smoke.assert_policy("allow", [{"http": True, "authenticated": True,
+                                           "authentication": "not-required"}])
+        smoke.assert_policy("allow", [{"http": True, "authenticated": True,
+                                        "authentication": "accepted"}])
 
     def test_denial_cannot_pass_after_contact_or_response(self):
         for label in ("deny", "missing-credential"):
@@ -56,7 +60,11 @@ class EvidenceTests(unittest.TestCase):
             smoke.assert_policy("wrong-credential", [])
         with self.assertRaises(RuntimeError):
             smoke.assert_policy("wrong-credential", [{"http": True, "authenticated": True}])
-        smoke.assert_policy("wrong-credential", [{"http": False, "authenticated": False}])
+        with self.assertRaises(RuntimeError):
+            smoke.assert_policy("wrong-credential", [{"http": False, "authenticated": False,
+                                                      "authentication": "not-attempted"}])
+        smoke.assert_policy("wrong-credential", [{"http": False, "authenticated": False,
+                                                  "authentication": "rejected"}])
 
     def test_idle_wait_includes_unfinished_daemon_handlers(self):
         server = smoke.TrackedSocksFixture()
@@ -68,6 +76,22 @@ class EvidenceTests(unittest.TestCase):
         connection.close()
         smoke.wait_until(server.idle, "handler did not finish", timeout=3)
         self.assertEqual(len(smoke.events(server)), 1)
+
+    def test_close_records_late_handshake_contact_before_negative_assertion(self):
+        server = smoke.TrackedSocksFixture(b"expected")
+        self.addCleanup(server.close)
+        connection = socket.create_connection(server.server_address, timeout=3)
+        self.addCleanup(connection.close)
+        smoke.wait_until(lambda: not server.idle(), "handler did not start", timeout=3)
+        self.assertEqual(smoke.events(server), [])
+        server.close()
+        self.assertTrue(server.idle())
+        observed = smoke.events(server)
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0]["authentication"], "not-attempted")
+        for label in ("deny", "missing-credential", "wrong-credential"):
+            with self.assertRaises(RuntimeError):
+                smoke.assert_policy(label, observed)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,6 @@ import importlib.util
 import json
 from pathlib import Path
 import shlex
-import sqlite3
 import tempfile
 import time
 
@@ -22,33 +21,7 @@ proxy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(proxy)
 
 
-class TrackedSocksFixture(proxy.SocksFixture):
-    """Count accepted handlers, including daemon threads omitted by socketserver."""
-
-    def __init__(self, password=None):
-        self.active = 0
-        super().__init__(password)
-
-    def process_request(self, request, client_address):
-        with self.events_lock:
-            self.active += 1
-        try:
-            super().process_request(request, client_address)
-        except BaseException:
-            with self.events_lock:
-                self.active -= 1
-            raise
-
-    def process_request_thread(self, request, client_address):
-        try:
-            super().process_request_thread(request, client_address)
-        finally:
-            with self.events_lock:
-                self.active -= 1
-
-    def idle(self):
-        with self.events_lock:
-            return self.active == 0
+TrackedSocksFixture = proxy.SocksFixture
 
 
 def events(server):
@@ -103,7 +76,8 @@ def guest_progress(runner, label, name, require_success=False):
 def assert_policy(label, observed):
     """Require positive control traffic as well as meaningful negative observations."""
     if label == "allow":
-        if not any(row["http"] and row["authenticated"] for row in observed):
+        if not any(row["http"] and row["authenticated"]
+                   and row.get("authentication") == "accepted" for row in observed):
             raise RuntimeError("allowed resumed workload never reached destination proxy")
     else:
         if any(row["http"] for row in observed):
@@ -111,7 +85,7 @@ def assert_policy(label, observed):
         if label in ("deny", "missing-credential") and observed:
             raise RuntimeError("pre-connection refusal contacted the destination proxy")
         if label == "wrong-credential" and not any(
-                not row["authenticated"] for row in observed):
+                row.get("authentication") == "rejected" for row in observed):
             raise RuntimeError("wrong-credential case did not exercise authentication")
 
 
@@ -177,8 +151,7 @@ def qualify(args):
         report["sealed_before"] = sealed
         report["source_requests"] = len(source_events)
         for label in ("allow", "deny", "wrong-credential", "missing-credential"):
-            server = proxy.SocksFixture(
-                b"destination-only-value" if "credential" in label else None)
+            server = proxy.SocksFixture(b"destination-only-value")
             servers.append(server)
             names.add(label)
             flags = ["--from-snapshot", "full", "--name", label, "--pull", "never",
@@ -186,12 +159,13 @@ def qualify(args):
                      "--port", "127.0.0.1:0:18080"]
             flags += (["--net-default", "deny"] if label == "deny"
                       else ["--net-rule", "allow@198.51.100.0/24"])
-            if "credential" in label:
-                runner.env.pop(proxy.PASSWORD_ENV, None)
-                if label == "wrong-credential":
-                    runner.env[proxy.PASSWORD_ENV] = "incorrect-fixture-value"
-                flags += ["--socks5-username", "fixture",
-                          "--socks5-password-env", proxy.PASSWORD_ENV]
+            runner.env.pop(proxy.PASSWORD_ENV, None)
+            if label != "missing-credential":
+                runner.env[proxy.PASSWORD_ENV] = (
+                    "incorrect-fixture-value" if label == "wrong-credential"
+                    else "destination-only-value")
+            flags += ["--socks5-username", "fixture",
+                      "--socks5-password-env", proxy.PASSWORD_ENV]
             row = {"case": label, "status": "running"}
             report["cases"].append(row)
             code, _ = runner.run(label + "-create", "create", *flags, expected=None)
@@ -209,29 +183,41 @@ def qualify(args):
                 if label == "allow":
                     wait_until(lambda: any(event["http"] for event in events(server)),
                                "resumed workload never used the replacement proxy")
-            row["events"] = events(server)
-            assert_policy(label, row["events"])
-            if events(source_proxy) != source_events:
-                raise RuntimeError("resumed workload fell back to the source proxy")
             inspect, _ = runner.run(label + "-inspect", "inspect", label,
                                     "--format", "json", expected=None)
+            if label != "missing-credential" and inspect != 0:
+                raise RuntimeError("cannot inspect the resumed sandbox before stopping it")
             if inspect == 0:
                 runner.run(label + "-stop", "stop", label)
                 runner.run(label + "-remove", "rm", label)
             names.remove(label)
+            # A negative assertion is valid only after the guest can no longer
+            # initiate traffic and every accepted handler has recorded its result.
+            server.close()
+            row["events"] = events(server)
+            assert_policy(label, row["events"])
+            wait_until(source_proxy.idle, "source proxy handlers did not finish after resume")
+            if events(source_proxy) != source_events:
+                raise RuntimeError("resumed workload fell back to the source proxy")
             row["status"] = "passed"
+        source_proxy.close()
+        if events(source_proxy) != source_events:
+            raise RuntimeError("late resumed traffic reached the source proxy")
         report["sealed_after"] = sealed_full(home / "snapshots/full")
         if report["sealed_after"] != sealed:
             raise RuntimeError("destination workflow modified the full checkpoint")
         report["sealed_unchanged"] = True
         report["status"] = "passed"
-    except Exception as error:
+    except BaseException as error:
         report["status"] = "failed"
         report["error"] = str(error)
-        if "source" in names:
-            runner.run("source-failure-diagnostics", "exec", "source", "--", "sh", "-c",
-                       "id; ip address; ip route; cat /root/policy-attempts; "
-                       "head -c 4096 /root/policy-workload.log", expected=None)
+        if "source" in names and isinstance(error, Exception):
+            try:
+                runner.run("source-failure-diagnostics", "exec", "source", "--", "sh", "-c",
+                           "id; ip address; ip route; cat /root/policy-attempts; "
+                           "head -c 4096 /root/policy-workload.log", expected=None)
+            except Exception as diagnostic:
+                report["diagnostic_error"] = type(diagnostic).__name__
         raise
     finally:
         for name in sorted(names):
@@ -242,15 +228,13 @@ def qualify(args):
                     report["cleanup"][f"{name}/{operation}"] = code
                 except Exception as error:
                     report["cleanup"][f"{name}/{operation}"] = type(error).__name__
-        for server in servers:
-            server.close()
+        for index, server in enumerate(servers):
+            try:
+                server.close()
+            except Exception as error:
+                report["cleanup"][f"fixture/{index}"] = type(error).__name__
         report["proxy_events"] = [events(server) for server in servers]
-        report["archive_unchanged"] = proxy.digest(args.archive) == archive_hash
-        with sqlite3.connect(home / "db/msb.db") as database:
-            report["sandbox_count"] = database.execute("SELECT COUNT(*) FROM sandbox").fetchone()[0]
-        if (any(value != 0 for value in report["cleanup"].values())
-                or not report["archive_unchanged"] or report["sandbox_count"] != 0):
-            report["status"] = "failed"
+        proxy.audit_inputs_and_catalog(report, args.archive, archive_hash, home)
         (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     if report["status"] != "passed":
         raise RuntimeError("qualification cleanup failed")
@@ -265,6 +249,7 @@ def main():
     for name, value in vars(args).items():
         if isinstance(value, Path):
             setattr(args, name, value.resolve())
+    proxy.install_termination_handler()
     qualify(args)
 
 
