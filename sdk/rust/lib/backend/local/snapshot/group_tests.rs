@@ -860,8 +860,32 @@ async fn explicit_selection_can_choose_a_retained_branch_or_an_older_snapshot() 
     );
 }
 
+#[test]
+fn removing_a_head_selects_its_surviving_parent_then_clears_the_last_member() {
+    // This contract expects immediate acquisition after each previous operation returns.
+    // Unrelated parallel tests can fork with those operations' descriptor/group leases;
+    // CLOEXEC closes the inherited handles only at exec. Create all fixtures in a child
+    // running this test alone, preserving the immediate-acquisition assertion.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "backend::local::snapshot::group::tests::removing_a_head_worker",
+            "--ignored",
+            "--nocapture",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[tokio::test]
-async fn removing_a_head_selects_its_surviving_parent_then_clears_the_last_member() {
+#[ignore = "subprocess helper for the immediate head-removal contract"]
+async fn removing_a_head_worker() {
     let root = tempfile::tempdir().unwrap();
     let group = ensure(root.path(), Some("removal")).await.unwrap();
     add(&group, 1, None).await;
