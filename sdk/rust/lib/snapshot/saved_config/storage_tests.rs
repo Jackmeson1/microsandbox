@@ -88,7 +88,7 @@ fn patch(mounts: Vec<VolumeMount>, routes: Vec<VsockRouteSpec>) -> SandboxSpecPa
         .vsock(VsockSpecPatch::new().routes(routes))
 }
 
-fn manifest(full: bool) -> Manifest {
+pub(super) fn manifest(full: bool) -> Manifest {
     let mut manifest: Manifest = serde_json::from_value(json!({
         "schema":"microsandbox.snapshot/1", "snapshot_id":"snap_0123456789abcdef0123456789abcdef", "scope":"file",
         "state":{"kind":"file","disk_format":"raw","filesystem":"ext4","virtual_size":4,"head":"layer_0123456789abcdef0123456789abcdef",
@@ -109,7 +109,7 @@ fn manifest(full: bool) -> Manifest {
     manifest
 }
 
-fn owned(guest: &str) -> OwnedVolumeCapture {
+pub(super) fn owned(guest: &str) -> OwnedVolumeCapture {
     OwnedVolumeCapture {
         mount_id: owned_volume_mount_id(guest),
         mount: OwnedMountSnapshot {

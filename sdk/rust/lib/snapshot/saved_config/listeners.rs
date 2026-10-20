@@ -8,7 +8,7 @@ use microsandbox_types::snapshot::saved_config::{
     MAX_SAVED_CONFIG_ENTRIES, SavedBindingReference, SavedBindingUses, SavedNetworkConfig,
     SavedPublishedPort, SavedRuntimeConfig, SavedValue, collect_binding_uses,
 };
-use microsandbox_types::{PortProtocol, PublishedPortSpec};
+use microsandbox_types::{NetworkSpec, PortProtocol, PublishedPortSpec};
 
 use crate::{MicrosandboxError, MicrosandboxResult};
 
@@ -50,6 +50,33 @@ pub struct ListenerInputPlan {
     pub requires_full_compatibility: bool,
 }
 
+/// Complete native listener inputs with immutable admission obligations. No sockets are opened.
+pub struct ListenerConfigurationPlan {
+    ports: Vec<PublishedPortSpec>,
+    selection: ListenerInputPlan,
+}
+
+//--------------------------------------------------------------------------------------------------
+// Methods
+//--------------------------------------------------------------------------------------------------
+
+impl ListenerConfigurationPlan {
+    /// Keep source completeness and full-state connection/NIC obligations.
+    pub fn selection(&self) -> &ListenerInputPlan {
+        &self.selection
+    }
+
+    /// Replace only the listener inventory. Unknown source observations refuse before
+    /// mutation; socket allocation, mandatory policy and captured connections remain gates.
+    pub fn apply_to(&self, network: &mut NetworkSpec) -> MicrosandboxResult<()> {
+        if self.selection.source_unknown {
+            return Err(error("SCFG_UNKNOWN", "listener inventory needs resolution"));
+        }
+        network.ports.clone_from(&self.ports);
+        Ok(())
+    }
+}
+
 //--------------------------------------------------------------------------------------------------
 // Trait Implementations
 //--------------------------------------------------------------------------------------------------
@@ -85,9 +112,45 @@ impl fmt::Debug for ListenerInputPlan {
     }
 }
 
+impl fmt::Debug for ListenerConfigurationPlan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ListenerConfigurationPlan")
+            .field("selection", &self.selection)
+            .finish_non_exhaustive()
+    }
+}
+
 //--------------------------------------------------------------------------------------------------
 // Functions
 //--------------------------------------------------------------------------------------------------
+
+/// Prepare all selected listener bindings as immediate destination inputs. A missing saved
+/// listener cannot silently disappear, and supplying an address does not prove bind success.
+pub fn prepare_listener_configuration(
+    saved: Option<&SavedValue<Vec<SavedPublishedPort>>>,
+    explicit: &[PublishedPortSpec],
+    bindings: &BTreeMap<String, ListenerBindingInput>,
+    full_resume: bool,
+) -> MicrosandboxResult<ListenerConfigurationPlan> {
+    let selection = select_listener_inputs(saved, explicit, bindings, full_resume)?;
+    if !selection.remaining_bindings.is_empty() {
+        return Err(error(
+            "SCFG_BINDING",
+            "required listener inputs are missing",
+        ));
+    }
+    let ports = selection
+        .entries
+        .iter()
+        .map(|entry| {
+            entry
+                .destination
+                .clone()
+                .ok_or_else(|| error("SCFG_BINDING", "selected listener has no destination"))
+        })
+        .collect::<MicrosandboxResult<Vec<_>>>()?;
+    Ok(ListenerConfigurationPlan { ports, selection })
+}
 
 /// Resolve selected listeners by logical identity, using a native port override only when
 /// the remaining service/transport match is unambiguous in both inputs. Multiple listeners
