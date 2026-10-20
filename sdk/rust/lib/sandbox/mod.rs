@@ -17,6 +17,8 @@ mod compact;
 pub(crate) mod config;
 #[cfg(test)]
 mod control_pipe;
+#[cfg(feature = "local")]
+mod creation_cleanup;
 pub mod exec;
 #[cfg(feature = "local")]
 mod exit;
@@ -1116,20 +1118,6 @@ impl Sandbox {
             handle.lock().await.disarm();
         }
         Ok(())
-    }
-
-    /// Creation cleanup owns this exact process and must not reacquire its transition lock.
-    #[cfg(feature = "local")]
-    pub(crate) async fn terminate_creation_owner(&self) {
-        if let Some(local) = self.local()
-            && let Some(handle) = &local.handle
-        {
-            let mut handle = handle.lock().await;
-            if matches!(handle.try_wait(), Ok(None)) {
-                let _ = handle.kill();
-                let _ = tokio::time::timeout(DEFAULT_KILL_TIMEOUT, handle.wait()).await;
-            }
-        }
     }
 
     fn is_local_ephemeral(&self) -> bool {

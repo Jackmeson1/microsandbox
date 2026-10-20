@@ -257,10 +257,10 @@ impl LocalBackend {
                 )
                 .await?
                 {
-                    sandbox.terminate_creation_owner().await;
-                    return Err(crate::MicrosandboxError::Runtime(format!(
+                    let error = crate::MicrosandboxError::Runtime(format!(
                         "sandbox {name:?} lost its Starting state before readiness publication"
-                    )));
+                    ));
+                    return Err(sandbox.creation_failure(error).await);
                 }
                 if let Err(err) = Self::update_sandbox_active_config(
                     write_db,
@@ -269,8 +269,7 @@ impl LocalBackend {
                 )
                 .await
                 {
-                    sandbox.terminate_creation_owner().await;
-                    return Err(err);
+                    return Err(sandbox.creation_failure(err).await);
                 }
                 if matches!(mode, SpawnMode::Detached) {
                     sandbox.finish_detached_creation().await?;

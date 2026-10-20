@@ -1007,11 +1007,11 @@ impl LocalBackend {
         )
         .await?
         {
-            sandbox.terminate_creation_owner().await;
             let error = crate::MicrosandboxError::Runtime(format!(
                 "sandbox {:?} lost its Starting state before readiness publication",
                 sandbox.name()
             ));
+            let error = sandbox.creation_failure(error).await;
             return Err(creation_cleanup.finish_owned_failure(error).await);
         }
         if let Err(err) = Self::update_sandbox_active_config(
@@ -1021,7 +1021,7 @@ impl LocalBackend {
         )
         .await
         {
-            sandbox.terminate_creation_owner().await;
+            let err = sandbox.creation_failure(err).await;
             return Err(creation_cleanup.finish_owned_failure(err).await);
         }
 
@@ -1031,7 +1031,7 @@ impl LocalBackend {
         ) && let Err(err) =
             Self::persist_oci_manifest_pin(write_db, sandbox_id, manifest_digest).await
         {
-            sandbox.terminate_creation_owner().await;
+            let err = sandbox.creation_failure(err).await;
             // A bounded termination attempt can expire before runtime ownership ends.
             // Keep the original failure, but never remove storage without the lifecycle lock.
             self.rollback_failed_startup(
@@ -1055,7 +1055,7 @@ impl LocalBackend {
                     let error = crate::MicrosandboxError::InvalidConfig(format!(
                         "workdir is not a directory in guest: {workdir}"
                     ));
-                    sandbox.terminate_creation_owner().await;
+                    let error = sandbox.creation_failure(error).await;
                     self.rollback_failed_startup(
                         write_db,
                         sandbox_id,
@@ -1074,7 +1074,7 @@ impl LocalBackend {
                     let error = crate::MicrosandboxError::InvalidConfig(format!(
                         "could not validate workdir in guest {workdir:?}: {cause}"
                     ));
-                    sandbox.terminate_creation_owner().await;
+                    let error = sandbox.creation_failure(error).await;
                     self.rollback_failed_startup(
                         write_db,
                         sandbox_id,
@@ -1101,7 +1101,7 @@ impl LocalBackend {
             )
             .await
             {
-                sandbox.terminate_creation_owner().await;
+                let error = sandbox.creation_failure(error).await;
                 return Err(creation_cleanup.finish_owned_failure(error).await);
             }
             if let Err(error) = remove_dir_if_exists(&closure) {
