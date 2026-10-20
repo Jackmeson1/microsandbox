@@ -377,6 +377,62 @@ impl LocalBackend {
             archive_stage = Some(prepared.1);
         }
 
+        // Resolve the captured base while the old destination is still intact. In particular,
+        // an offline cache miss must not stop/delete a sandbox before returning an error.
+        // Keep the image's cache lease through the existing materialization/publication path.
+        // Branch capture resolves its source later, so leave that path's ordering unchanged.
+        let has_snapshot_image = config.snapshot_upper_source.is_some()
+            || config.checkpoint_restore.is_some()
+            || !config.snapshot_upper_layers.is_empty()
+            || installed_checkpoint_restore.is_some()
+            || !installed_file_sources.is_empty();
+        if resolved_image.is_none()
+            && has_snapshot_image
+            && config.branch_source.is_none()
+            && let RootfsSource::Oci(oci) = &config.spec.image
+        {
+            // Preserve option admission ahead of image/cache effects. Direct resolved
+            // snapshot inputs can bypass the public builder's reference-based check.
+            if !config.spec.patches.is_empty()
+                && !matches!(oci.root_disk, Some(RootDisk::Flat { .. }))
+            {
+                let source = if config.snapshot_upper_source.is_some() {
+                    "from_snapshot"
+                } else {
+                    "full snapshot restore"
+                };
+                return Err(crate::MicrosandboxError::InvalidConfig(format!(
+                    "patches cannot be combined with {source}"
+                )));
+            }
+            let materialization = if matches!(oci.root_disk, Some(RootDisk::Flat { .. })) {
+                RootfsMaterialization::Flat
+            } else {
+                RootfsMaterialization::Layered
+            };
+            let registry = RegistryOptions {
+                auth: config.registry_auth.clone(),
+                insecure: config.insecure,
+                ca_certs: config.ca_certs.clone(),
+                ..Default::default()
+            };
+            resolved_image = Some(
+                timing::measure(
+                    &timing_name,
+                    "image_resolution",
+                    self.resolve_oci_image_for_create(
+                        &oci.reference,
+                        config.spec.pull_policy,
+                        registry,
+                        config.manifest_digest.as_deref(),
+                        materialization,
+                        progress.clone(),
+                    ),
+                )
+                .await?,
+            );
+        }
+
         // Transition ownership is deliberately separate from the runtime lifecycle lock: this
         // guard serializes database/storage mutation and launcher-to-runtime handoff, while the
         // lifecycle lock remains owned by the VM for its entire runtime generation.
