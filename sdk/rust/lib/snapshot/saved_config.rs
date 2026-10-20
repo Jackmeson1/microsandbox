@@ -22,6 +22,9 @@ mod resource_tests;
 mod resources;
 mod runtime;
 #[cfg(test)]
+mod runtime_input_tests;
+mod runtime_inputs;
+#[cfg(test)]
 mod secret_tests;
 mod secrets;
 mod storage;
@@ -54,6 +57,10 @@ pub use resources::{
     ResourceDefaultClear, ResourceDefaultSelection, ResourceRestoreMode, select_resource_defaults,
 };
 pub use runtime::select_runtime_defaults;
+pub use runtime_inputs::{
+    PreparedRuntimeInit, PreparedRuntimeScript, PreparedRuntimeValue, RuntimeBindingInput,
+    RuntimeInputPlan, prepare_runtime_inputs,
+};
 pub use secrets::{SecretInputPlan, SecretInputSelection, select_secret_inputs};
 pub use storage::{
     MountInputSelection, StorageApprovalRequirement, StorageInputSelection, StorageRelaxation,

@@ -19,7 +19,8 @@ pub const MAX_SAVED_SCRIPT_BYTES: usize = 64 * 1024;
 /// Maximum combined inline script bytes in one configuration.
 pub const MAX_SAVED_SCRIPTS_BYTES: usize = 256 * 1024;
 
-pub(super) const MAX_TEXT_BYTES: usize = 64 * 1024;
+/// Maximum UTF-8 bytes in one runtime argument or environment value, including bound inputs.
+pub const MAX_TEXT_BYTES: usize = 64 * 1024;
 pub(super) const MAX_NAME_BYTES: usize = 256;
 pub(super) const MAX_GUEST_PATH_BYTES: usize = 4096;
 const MAX_BINDING_ID_BYTES: usize = 128;
