@@ -51,7 +51,8 @@ class ProxyFixtureTests(unittest.TestCase):
         self.assertEqual(smoke.receive(stream, 2), b"\x05\x00")
         self.request(stream)
         self.assertEqual(self.events(server), [{
-            "authenticated": True, "target": [smoke.TARGET, smoke.TARGET_PORT], "http": True}])
+            "authenticated": True, "authentication": "not-required",
+            "target": [smoke.TARGET, smoke.TARGET_PORT], "http": True}])
 
     def test_authenticated_request_records_no_credential_material(self):
         server = self.server(b"sensitive-test-value")
@@ -74,7 +75,7 @@ class ProxyFixtureTests(unittest.TestCase):
         stream.sendall(b"\x01\x07fixture\x05wrong")
         self.assertEqual(smoke.receive(stream, 2), b"\x01\x01")
         self.assertEqual(self.events(server), [{
-            "authenticated": False, "target": None, "http": False}])
+            "authenticated": False, "authentication": "rejected", "target": None, "http": False}])
 
     def test_unexpected_target_is_not_a_compatibility_pass(self):
         server = self.server()
