@@ -15,13 +15,14 @@ use microsandbox_image::snapshot::{
     LayerPayload, Manifest, SCHEMA, SnapshotCapture, SnapshotConsistency, SnapshotFormat,
     SnapshotId, SnapshotRootDisk, SnapshotScope, SnapshotState,
 };
-use sea_orm::EntityTrait;
+use sea_orm::{EntityTrait, Set};
 
 use crate::backend::local::database;
 use crate::backend::local::snapshot::archive::{
     save_direct_checkpoint_snapshot, save_direct_file_snapshot,
 };
 use crate::config::{GlobalConfig, PathsConfig};
+use crate::db::entity::run as run_entity;
 use crate::sandbox::SandboxBuilder;
 use crate::snapshot::SnapshotReference;
 use crate::test_support::local_backend;
@@ -264,15 +265,49 @@ async fn assert_request_preserves_target(
     request: impl Into<SandboxBuilder>,
     reason: &str,
 ) {
+    assert_request_preserves_target_with_owner(backend, request, reason, false).await;
+}
+
+async fn assert_request_preserves_target_with_owner(
+    backend: Arc<LocalBackend>,
+    request: impl Into<SandboxBuilder>,
+    reason: &str,
+    running: bool,
+) {
     let config = replaceable_config();
     let pools = backend.db().await.unwrap();
     let id = LocalBackend::insert_sandbox_record_with_status(
         pools.write(),
         &config,
-        SandboxStatus::Stopped,
+        if running {
+            SandboxStatus::Running
+        } else {
+            SandboxStatus::Stopped
+        },
     )
     .await
     .unwrap();
+    // A real child catches premature stop/kill as well as catalog/storage deletion.
+    // It does not pretend to establish guest execution or VM activation behavior.
+    let mut owner = if running {
+        let child = tokio::process::Command::new("sleep")
+            .arg("60")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        run_entity::Entity::insert(run_entity::ActiveModel {
+            sandbox_id: Set(id),
+            pid: Set(Some(child.id().unwrap() as i32)),
+            status: Set(run_entity::RunStatus::Running),
+            ..Default::default()
+        })
+        .exec(pools.write())
+        .await
+        .unwrap();
+        Some(child)
+    } else {
+        None
+    };
     let before = sandbox_entity::Entity::find_by_id(id)
         .one(pools.read())
         .await
@@ -312,11 +347,52 @@ async fn assert_request_preserves_target(
         vec![std::ffi::OsString::from("replaceable")],
         "staging must be reclaimed"
     );
+    if let Some(owner) = owner.as_mut() {
+        assert!(
+            owner.try_wait().unwrap().is_none(),
+            "prior owner was stopped"
+        );
+        let run = LocalBackend::load_latest_run(pools.read(), id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.status, run_entity::RunStatus::Running);
+        assert_eq!(run.pid, Some(owner.id().unwrap() as i32));
+        owner.kill().await.unwrap();
+    }
 }
 
 //--------------------------------------------------------------------------------------------------
 // Tests
 //--------------------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn uncached_snapshot_image_preserves_replacement_target() {
+    for running in [false, true] {
+        let root = tempfile::tempdir_in("/tmp").unwrap();
+        let source = root.path().join("snapshot-upper.ext4");
+        std::fs::write(&source, b"snapshot disk must remain unchanged").unwrap();
+        let backend = backend(root.path(), 18).await;
+        // Exercise the resolved disk-snapshot input accepted by older runtimes. Image
+        // admission must fail before replacement or attempting to consume the disk.
+        let mut request = replaceable_config();
+        request.snapshot_upper_source = Some(source.clone());
+        request.manifest_digest = Some(format!("sha256:{}", "1".repeat(64)));
+        request.spec.pull_policy = crate::sandbox::PullPolicy::Never;
+        request.replace_existing = true;
+        assert_request_preserves_target_with_owner(
+            backend,
+            request,
+            "is not cached locally and pull policy is `never`",
+            running,
+        )
+        .await;
+        assert_eq!(
+            std::fs::read(source).unwrap(),
+            b"snapshot disk must remain unchanged"
+        );
+    }
+}
 
 #[tokio::test]
 async fn archive_flat_layout_is_admitted_before_replacement() {
