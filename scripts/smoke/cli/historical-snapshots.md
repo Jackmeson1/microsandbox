@@ -99,3 +99,21 @@ The integrated product tree `fbb19f49b184797559128625fdb8e42598b32580` passes ei
 Both hosts pass all 133 CLI harness tests, including four dependency-fixture checks. The final four harness/support source hashes match. Each producer and candidate catalog contains zero sandbox rows afterward; original fixtures remain unchanged. Mac IPv4/IPv6 egress is denied by the inherited process profile, and Linux runs as ubuntu in a private network namespace without an external route. Initial harness assumptions about the historical file-payload kind and RAM reuse in every incremental member were corrected; those failed attempts remain diagnostic evidence and are not counted as passes.
 
 These are same-host historical dependency results. Cross-host movement, cache collisions, reordered image metadata/foreign VMDK paths, the interrupted migration/downgrade/retry matrix and PR3's final saved-config artifacts remain required. No production code or format changes were needed for these cases.
+
+## Transferred archives and populated caches
+
+`historical-cross-host.py` separates portable archive handling from executable restore. Transfer a verified producer's `fixture.json` and unchanged standalone archive into each of `disk-060/fixture.msb`, `disk-078/fixture.msb` and `full-078/cp1.msb`. The last directory uses a successfully produced full-history fixture's complete base archive. Keep the original producer inventory in `fixture.json`; the helper validates the selected archive against that inventory without claiming that every original file was transferred.
+
+```sh
+python3 scripts/smoke/cli/historical-cross-host.py \
+  --transferred /tmp/transferred-fixtures \
+  --native-fixture /tmp/local-078-fixture \
+  --candidate /absolute/path/to/msb \
+  --firmware /absolute/path/to/libkrunfw \
+  --agent /absolute/path/to/agentd \
+  --output /tmp/cross-host-results
+```
+
+Use producer fixtures from the other CPU architecture and a native 0.7.8 disk fixture for `--native-fixture`. Each transferred archive must import, inspect and verify before launch is tested. A precise architecture refusal is recorded separately from a working guest. A native agent answering requests while the saved guest binaries fail to execute is a failed restore, not compatibility. Arbitrary parse errors or missing image failures do not count as architecture refusal.
+
+The populated-cache case installs the native fixture, rewrites only the representation of image metadata JSON, and reimports it. Equivalent local metadata bytes must remain unchanged, the group membership/head must remain stable, and imported VMDK extents must resolve inside the destination cache. Importing the foreign image under the same reference must then report the specific content conflict without publishing a new group or replacing the native metadata. Finally, the native snapshot must still verify and restore its guest checksums, files, links and permissions. All sandbox catalogs must be empty after cleanup, and all input archive bytes must be unchanged. These checks use private homes and `--pull never`; apply and record external network isolation separately when claiming an offline run.
