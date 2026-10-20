@@ -87,6 +87,8 @@ Sources and checks:
 
 Required review should include golden encoded payload bytes when serialization changes. Schema snapshots protect the protocol inventory, but they do not freeze every payload's encoded representation.
 
+Generation-10 resource observations add two gated messages without modifying prior payloads or framing. The client refuses the new read unless both the host relay and guest advertise support before transport admission; see the dual capability gate below. New agents return explicit per-resource unavailability on older kernels. Readiness sampling uses fixed sysfs paths with bounded inventory/record reads and does not touch the liveness pulse or idle-activity counters. Query identity and validated fields are only inputs to runtime operation fencing, which must still be implemented before reporting resize completion.
+
 ## 2. Bootstrap, Init, and Guest Runtime Contract
 
 The first current-protocol host frame is `core.bootstrap` with message ID zero and no flags. The guest then reports resolved init state, the relay installs identity mappings, the host acknowledges init, and only then may the guest become ready.
@@ -542,3 +544,5 @@ Incoming unversioned launch/cloud requests retain detection of previous formats.
 The runtime dispatcher selects the current reader when `execution` is present, `v0_6_10/launch.rs` when `bootstrap` is present, and `v0_5_9/launch.rs` otherwise. `client/launch.rs` contains both `LaunchConfig` and the `LaunchCapabilities` probe response. The launch type remains in the runtime crate to avoid a dependency cycle. SDK tests exercise its encoder against the runtime decoder; runtime tests also consume independently captured release payloads.
 
 Launch and cloud requests reject duplicate recognized fields and conflicting previous/current spellings. Previous saved-format decoding and the duplicate-key JSON fixture reader in the SDK are test-only.
+
+Resource observation admission requires both guest generation 10 and the host-owned `relay_resource_observation: 1` Ready extension. Discovery only reads the original connection handshake; it sends no capability probe. Missing, malformed or unsupported relay metadata refuses the observation with `UnsupportedOperation` and `Delivery::NotSent`, including through the ordinary typed request API. Existing start, exec and resize routing is unchanged. The relay adds this extension after decoding guest Ready into its known shape, so the guest cannot supply it through an unknown field. Released Ready readers ignore the additive field. New relays route well-formed unknown reply names without typed-enum decoding, preserving bulk ordering and transport validation; malformed transport remains an error.

@@ -293,32 +293,36 @@ fn generation_one_bytes_match_cross_language_fixtures() {
 
 #[test]
 fn neutral_envelope_preserves_existing_agent_encoding() {
-    let original = Message::with_payload(
-        MessageType::ExecStdin,
-        42,
-        &microsandbox_protocol::exec::ExecStdin {
-            data: b"input\0\xff".to_vec(),
-        },
-    )
-    .unwrap();
-    let neutral = Envelope {
-        v: original.v,
-        t: original.t.as_str().into(),
-        p: original.p.clone(),
-    };
-    let mut agent_bytes = Vec::new();
-    codec::encode_to_buf(&original, &mut agent_bytes).unwrap();
-    let mut neutral_bytes = Vec::new();
-    codec::encode_raw_to_buf(
-        &neutral.frame(original.id, original.flags).unwrap(),
-        &mut neutral_bytes,
-    )
-    .unwrap();
-    assert_eq!(agent_bytes, neutral_bytes);
+    // Agent resource observations deliberately introduce generation 10. The neutral envelope
+    // must still preserve every previous generation's framing and payload byte-for-byte.
+    for generation in 1..=message::PROTOCOL_VERSION {
+        let mut original = Message::with_payload(
+            MessageType::ExecStdin,
+            42,
+            &microsandbox_protocol::exec::ExecStdin {
+                data: b"input\0\xff".to_vec(),
+            },
+        )
+        .unwrap();
+        original.v = generation;
+        let neutral = Envelope {
+            v: original.v,
+            t: original.t.as_str().into(),
+            p: original.p.clone(),
+        };
+        let mut agent_bytes = Vec::new();
+        codec::encode_to_buf(&original, &mut agent_bytes).unwrap();
+        let mut neutral_bytes = Vec::new();
+        codec::encode_raw_to_buf(
+            &neutral.frame(original.id, original.flags).unwrap(),
+            &mut neutral_bytes,
+        )
+        .unwrap();
+        assert_eq!(agent_bytes, neutral_bytes, "agent generation {generation}");
+    }
     assert_eq!(
-        message::PROTOCOL_VERSION,
-        9,
-        "control must not bump the agent generation"
+        CONTROL_GENERATION, 2,
+        "agent observations must not bump control generation"
     );
 }
 

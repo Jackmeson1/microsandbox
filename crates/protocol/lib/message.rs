@@ -9,7 +9,7 @@ use crate::error::ProtocolResult;
 //--------------------------------------------------------------------------------------------------
 
 /// Current protocol version.
-pub const PROTOCOL_VERSION: u8 = 9;
+pub const PROTOCOL_VERSION: u8 = 10;
 
 /// Frame flag: this is the last message for the given correlation ID.
 ///
@@ -157,6 +157,14 @@ pub enum MessageType {
     /// Guest grants cumulative ordinary input capacity to its host relay.
     #[strum(serialize = "core.workload.transport.credit")]
     WorkloadTransportCredit,
+
+    /// Host requests fresh guest CPU/memory driver observations.
+    #[strum(serialize = "core.resources.observe")]
+    ObserveResources,
+
+    /// Guest returns independent observations bound to this query.
+    #[strum(serialize = "core.resources.observed")]
+    ObservedResources,
 
     /// Host checks mounted root-filesystem growth before changing block capacity.
     #[strum(serialize = "core.root_disk.prepare")]
@@ -342,6 +350,7 @@ impl MessageType {
             | Self::WorkloadFrozen
             | Self::WorkloadThawed
             | Self::RootDiskState
+            | Self::ObservedResources
             | Self::CoreError
             | Self::ExecExited
             | Self::ExecFailed
@@ -402,6 +411,7 @@ impl MessageType {
             | Self::WorkloadThawed
             | Self::WorkloadTransportCredit => 9,
             Self::RootDiskPrepare | Self::RootDiskGrow | Self::RootDiskState => 9,
+            Self::ObserveResources | Self::ObservedResources => 10,
             Self::BulkAccepted | Self::BulkCredit | Self::BulkFinish | Self::BulkCancel => 8,
             Self::TcpConnect
             | Self::TcpConnected

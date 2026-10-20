@@ -9,6 +9,7 @@
 mod config;
 mod error;
 mod mount_checkpoint;
+mod resources;
 mod rlimit;
 mod root_disk;
 mod workload;

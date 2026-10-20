@@ -451,6 +451,7 @@ pub mod exec_control;
 pub mod fs;
 pub mod heartbeat;
 pub mod message;
+pub mod resources;
 pub mod tcp;
 #[doc(hidden)]
 pub mod transport;
