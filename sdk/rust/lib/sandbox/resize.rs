@@ -39,6 +39,15 @@ impl Sandbox {
         self::resize_status(&self.backend, &self.name, &self.identity()).await
     }
 
+    /// Read the latest retained operation for each resource, including identity and evidence.
+    ///
+    /// Empty means no recorded request. These records can be passed to
+    /// [`Self::wait_for_resize_operations`] without rebinding to later requests.
+    #[cfg(feature = "local")]
+    pub async fn resize_operations(&self) -> MicrosandboxResult<Vec<ResizeOperation>> {
+        self::resize_operations(&self.backend, &self.name, &self.identity()).await
+    }
+
     /// Wait for exact operations returned by `apply_with_resize_tracking`.
     ///
     /// May reconnect to the same runtime. Missing history or replacement is an error;
@@ -95,13 +104,23 @@ pub(crate) async fn resize_status(
     name: &str,
     identity: &SandboxIdentity,
 ) -> MicrosandboxResult<Vec<ResourceResizeStatus>> {
-    let session = open_session(backend, name, identity).await?;
-    let operations = current_operations(&session).await?;
-    ensure_same_sandbox(backend, name, identity).await?;
-    Ok(operations
+    Ok(resize_operations(backend, name, identity)
+        .await?
         .into_iter()
         .map(|operation| operation.status)
         .collect())
+}
+
+/// Read identities and status together without selecting or applying a new target.
+pub(crate) async fn resize_operations(
+    backend: &Arc<dyn Backend>,
+    name: &str,
+    identity: &SandboxIdentity,
+) -> MicrosandboxResult<Vec<ResizeOperation>> {
+    let session = open_session(backend, name, identity).await?;
+    let operations = current_operations(&session).await?;
+    ensure_same_sandbox(backend, name, identity).await?;
+    Ok(operations)
 }
 
 /// Poll until every resource is terminal. `None` waits without a deadline.

@@ -331,6 +331,12 @@ impl SandboxHandle {
         super::resize::resize_status(&self.backend, &self.name, &self.identity()).await
     }
 
+    /// Read latest per-resource operation identities and evidence without applying a target.
+    #[cfg(feature = "local")]
+    pub async fn resize_operations(&self) -> MicrosandboxResult<Vec<super::ResizeOperation>> {
+        super::resize::resize_operations(&self.backend, &self.name, &self.identity()).await
+    }
+
     /// Wait for exact operations returned by `apply_with_resize_tracking`.
     ///
     /// A replaced runtime, expired operation or supersession is an error. `None`
