@@ -199,7 +199,8 @@ impl Handler for ControlContext {
                 .error
                 .clone()
                 .unwrap_or_else(|| "control operation failed".into()),
-            effect: if mutation {
+            effect: if mutation && result.error_code.as_deref() != Some("configuration_not_applied")
+            {
                 ErrorEffect::Unknown
             } else {
                 ErrorEffect::None

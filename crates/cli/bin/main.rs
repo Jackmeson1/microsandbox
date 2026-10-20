@@ -307,6 +307,7 @@ fn main() {
                     http_connect_proxy: cfg!(feature = "net"),
                     guest_clock: true,
                     fs_state_limit: true,
+                    configuration_retention: true,
                 })
                 .expect("serialize capabilities")
             );
