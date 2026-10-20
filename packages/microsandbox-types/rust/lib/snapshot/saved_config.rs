@@ -50,6 +50,7 @@ pub use storage::{
 pub use storage_capture::SavedExternalMountCapture;
 pub use value::{SavedOrigin, SavedText, SavedUnknownReason, SavedValue};
 
+pub use validation::MAX_TEXT_BYTES as MAX_SAVED_TEXT_BYTES;
 pub use validation::{
     MAX_SAVED_CONFIG_BYTES, MAX_SAVED_CONFIG_ENTRIES, MAX_SAVED_SCRIPT_BYTES,
     MAX_SAVED_SCRIPTS_BYTES,
