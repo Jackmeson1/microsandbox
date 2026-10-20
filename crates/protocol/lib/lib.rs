@@ -11,6 +11,8 @@ mod error;
 
 /// Runtime-owned execution jobs on the host-control extension.
 pub mod jobs;
+/// Operation-bound CPU and memory resize tracking over host control.
+pub mod resize;
 
 //--------------------------------------------------------------------------------------------------
 // Constants: Host↔Guest Shutdown Timings

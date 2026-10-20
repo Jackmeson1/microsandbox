@@ -11,7 +11,10 @@ import {
 import {
   modificationPlanFromJson,
   modifyOptionsToNapi,
+  resizeStatusFromJson,
+  validateResizeTimeout,
   type ModifyOptions,
+  type ResourceResizeStatus,
   type SandboxModificationPlan,
 } from "./modify.js";
 import {
@@ -589,6 +592,27 @@ export class Sandbox implements AsyncDisposable {
       this.inner.modify(modifyOptionsToNapi(opts)),
     );
     return modificationPlanFromJson(raw);
+  }
+
+  /** Read retained CPU and memory resize status. Rejects a stopped sandbox or unsupported runtime. */
+  async resizeStatus(): Promise<ResourceResizeStatus[]> {
+    return resizeStatusFromJson(
+      await withMappedErrors(() => this.inner.resizeStatus()),
+    );
+  }
+
+  /**
+   * Wait for the operations selected at the first read to be guest-confirmed.
+   * Stopped, unsupported, superseded or unavailable history is not success.
+   * Omitted waits without a deadline and keeps polling while a guest
+   * never converges; `0` checks once. Expiry throws `ResizeTimeoutError`, whose
+   * `status` is empty if no read completed before the deadline.
+   */
+  async waitUntilResized(timeoutMs?: number): Promise<ResourceResizeStatus[]> {
+    validateResizeTimeout(timeoutMs);
+    return resizeStatusFromJson(
+      await withMappedErrors(() => this.inner.waitUntilResized(timeoutMs)),
+    );
   }
 
   /** Compact sealed root and owned-data disk layers without rewriting existing snapshots. */

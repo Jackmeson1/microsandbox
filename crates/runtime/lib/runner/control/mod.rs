@@ -5,6 +5,8 @@
 
 mod dispatch;
 mod handler;
+mod resize;
+mod resize_memory;
 mod server;
 #[cfg(windows)]
 mod windows;

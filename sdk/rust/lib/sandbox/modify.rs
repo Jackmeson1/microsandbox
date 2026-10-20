@@ -5,10 +5,12 @@ use std::{
     sync::Arc,
 };
 
+use microsandbox_protocol::resize::{ResizeOperation, ResizeTarget};
 use microsandbox_types::{
     EnvVar, RootDisk, RootfsSource, SecretSubstitution, SecretViolationAction,
 };
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set, sea_query::Expr};
+use serde::{Deserialize, Serialize};
 
 use crate::backend::{Backend, ControlSession};
 use crate::db::entity::{sandbox as sandbox_entity, sandbox_label as sandbox_label_entity};
@@ -68,6 +70,19 @@ const WORKDIR_FIELD: &str = "workdir";
 //--------------------------------------------------------------------------------------------------
 // Types
 //--------------------------------------------------------------------------------------------------
+
+/// Modification result with exact resize identities when the selected runtime supports them.
+///
+/// Existing [`SandboxModificationBuilder::apply`] retains its original plan result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SandboxModificationResult {
+    /// Existing modification plan and accepted resource statuses.
+    pub plan: SandboxModificationPlan,
+    /// Operations dispatched by this call. `None` means no tracked live request was made,
+    /// including supported modifications through an older runtime. Never substitute a later
+    /// current operation for missing tracking evidence.
+    pub resize_operations: Option<Vec<ResizeOperation>>,
+}
 
 /// Fluent builder returned by [`Sandbox::modify`](super::Sandbox::modify).
 ///
@@ -340,6 +355,22 @@ impl SandboxModificationBuilder {
     /// identity requirement, or placeholder passthrough hosts require restart
     /// or next-start policy, even when combined with otherwise live edits.
     pub async fn apply(self) -> MicrosandboxResult<SandboxModificationPlan> {
+        Ok(self.apply_inner(false).await?.plan)
+    }
+
+    /// Apply once and retain the IDs of this call's live resize operations.
+    ///
+    /// Selects the tracked control path before mutation when supported. Older runtimes keep
+    /// the existing modification path and return no operation identities. A failed or lost
+    /// mutation reply is never retried through the legacy path.
+    pub async fn apply_with_resize_tracking(self) -> MicrosandboxResult<SandboxModificationResult> {
+        self.apply_inner(true).await
+    }
+
+    async fn apply_inner(
+        self,
+        track_resize: bool,
+    ) -> MicrosandboxResult<SandboxModificationResult> {
         let handle = self
             .backend
             .sandboxes()
@@ -380,29 +411,62 @@ impl SandboxModificationBuilder {
             serde_json::to_string(&prospective)?;
         }
         let restart_required = plan_requires_restart(&plan) && running_status(status);
+        let tracking = if track_resize
+            && !restart_required
+            && (live_cpu_target(&plan, &self.patch).is_some()
+                || live_memory_target(&plan, &self.patch).is_some())
+        {
+            super::resize::begin_tracking(control_session(&session)?).await?
+        } else {
+            None
+        };
+        let mut resize_operations = tracking.as_ref().map(|_| Vec::new());
         if restart_required {
             handle.stop().await?;
         }
         if !restart_required && let Some(target) = live_cpu_target(&plan, &self.patch) {
-            let state = control_session(&session)?
-                .request(&SetCpuTarget::new(u32::from(target)))
-                .await
-                .map_err(crate::MicrosandboxError::ControlClient)?;
-            plan.resize_status.push(ResourceResizeStatus {
-                resource: ResourceKind::Cpus,
-                requested: target.to_string(),
-                actual: state.actual_online.to_string(),
-                enforced: state.enforced.to_string(),
-                // The setter acknowledges the target. Its count does not establish a
-                // fresh, operation-bound guest CPU prefix (or exclude a later resize).
-                state: ResourceConvergenceState::Accepted,
-            });
+            let accepted = if let Some(tracking) = &tracking {
+                let operation = super::resize::apply_target(
+                    control_session(&session)?,
+                    tracking,
+                    ResizeTarget::Cpus {
+                        online: u32::from(target),
+                    },
+                )
+                .await?;
+                let ResizeTarget::Cpus { online } = operation.accepted_target else {
+                    unreachable!("validated CPU response")
+                };
+                let accepted = u8::try_from(online).map_err(|_| {
+                    MicrosandboxError::Runtime(
+                        "resize was accepted but its CPU target cannot be represented by this SDK"
+                            .into(),
+                    )
+                })?;
+                plan.resize_status.push(operation.status.clone());
+                resize_operations.as_mut().unwrap().push(operation);
+                accepted
+            } else {
+                let state = control_session(&session)?
+                    .request(&SetCpuTarget::new(u32::from(target)))
+                    .await
+                    .map_err(MicrosandboxError::ControlClient)?;
+                plan.resize_status.push(ResourceResizeStatus {
+                    resource: ResourceKind::Cpus,
+                    requested: target.to_string(),
+                    actual: state.actual_online.to_string(),
+                    enforced: state.enforced.to_string(),
+                    // A target acknowledgement is not operation-bound guest completion.
+                    state: ResourceConvergenceState::Accepted,
+                });
+                target
+            };
             // The running VM changed: refresh the active snapshot with the
             // enforced target so inspect does not report the already-live
             // change as pending. The guest driver converges asynchronously;
             // enforcement applies immediately either way.
             if let Some(active) = active.as_mut() {
-                active.spec.resources.cpus = target;
+                active.spec.resources.cpus = accepted;
                 persist_active_config(
                     &self.backend,
                     control_session(&session)?,
@@ -413,27 +477,45 @@ impl SandboxModificationBuilder {
             }
         }
         if !restart_required && let Some(target_mib) = live_memory_target(&plan, &self.patch) {
-            let state = control_session(&session)?
-                .request(&SetMemoryTarget {
-                    total_mib: u64::from(target_mib),
-                })
-                .await
-                .map_err(crate::MicrosandboxError::ControlClient)?;
-            plan.resize_status.push(ResourceResizeStatus {
-                resource: ResourceKind::Memory,
-                requested: format_mib(target_mib),
-                actual: format_mib(state.current_mib as u32),
-                enforced: format_mib(state.target_mib as u32),
-                // Plugged capacity is not confirmed guest-usable capacity. In particular,
-                // current > target is a pending shrink, never proof that it completed.
-                // Only operation-bound guest evidence may promote this to Applied.
-                state: ResourceConvergenceState::Accepted,
-            });
+            let accepted = if let Some(tracking) = &tracking {
+                let operation = super::resize::apply_target(
+                    control_session(&session)?,
+                    tracking,
+                    ResizeTarget::Memory {
+                        total_mib: u64::from(target_mib),
+                    },
+                )
+                .await?;
+                let ResizeTarget::Memory { total_mib } = operation.accepted_target else {
+                    unreachable!("validated memory response")
+                };
+                let accepted = u32::try_from(total_mib).map_err(|_| MicrosandboxError::Runtime(
+                    "resize was accepted but its memory target cannot be represented by this SDK".into()))?;
+                plan.resize_status.push(operation.status.clone());
+                resize_operations.as_mut().unwrap().push(operation);
+                accepted
+            } else {
+                let state = control_session(&session)?
+                    .request(&SetMemoryTarget {
+                        total_mib: u64::from(target_mib),
+                    })
+                    .await
+                    .map_err(MicrosandboxError::ControlClient)?;
+                plan.resize_status.push(ResourceResizeStatus {
+                    resource: ResourceKind::Memory,
+                    requested: format_mib(target_mib),
+                    actual: format_mib(state.current_mib as u32),
+                    enforced: format_mib(state.target_mib as u32),
+                    // Plugged capacity alone does not establish guest-ready completion.
+                    state: ResourceConvergenceState::Accepted,
+                });
+                state.target_mib as u32
+            };
             // Refresh the active snapshot with the accepted target so inspect
             // does not report the already-live change as pending. Convergence
             // (plugging blocks) continues asynchronously in the guest.
             if let Some(active) = active.as_mut() {
-                active.spec.resources.memory_mib = state.target_mib as u32;
+                active.spec.resources.memory_mib = accepted;
                 persist_active_config(
                     &self.backend,
                     control_session(&session)?,
@@ -512,7 +594,10 @@ impl SandboxModificationBuilder {
             start_after_modify(&handle).await?;
         }
         plan.applied = true;
-        Ok(plan)
+        Ok(SandboxModificationResult {
+            plan,
+            resize_operations,
+        })
     }
 }
 
@@ -3463,7 +3548,10 @@ mod tests {
 
         // Pending shrink, equal plugged target, and pending growth are all acceptance
         // acknowledgements. Even equality cannot attest to online guest memory pages.
-        for current_mib in [512_u64, 256, 128] {
+        for (current_mib, track) in [512_u64, 256, 128]
+            .into_iter()
+            .flat_map(|mib| [(mib, false), (mib, true)])
+        {
             let home = tempfile::tempdir_in("/tmp").unwrap();
             let local = crate::test_support::local_backend_builder(home.path())
                 .build()
@@ -3527,13 +3615,18 @@ mod tests {
                 operations
             });
             let backend: Arc<dyn Backend> = Arc::new(local);
-            let plan = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                SandboxModificationBuilder::new(backend.clone(), "api")
+            let plan = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                let builder = SandboxModificationBuilder::new(backend.clone(), "api")
                     .cpus(2)
-                    .memory(256_u32)
-                    .apply(),
-            )
+                    .memory(256_u32);
+                if track {
+                    let result = builder.apply_with_resize_tracking().await?;
+                    assert!(result.resize_operations.is_none());
+                    Ok(result.plan)
+                } else {
+                    builder.apply().await
+                }
+            })
             .await
             .unwrap()
             .unwrap();
