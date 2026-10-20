@@ -112,7 +112,7 @@ pub enum SavedInit {
         selection: SavedInitSelection,
         /// Actual absolute guest executable used by this capture.
         resolved_path: String,
-        /// Exact supplemental arguments, excluding implicit argv[0].
+        /// Exact supplemental arguments, excluding implicit `argv[0]`.
         args: Vec<SavedText>,
         /// Additional init environment, separate from command defaults.
         env: BTreeMap<String, SavedText>,
