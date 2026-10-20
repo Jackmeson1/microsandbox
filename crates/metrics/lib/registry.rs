@@ -879,6 +879,50 @@ impl MetricsSlotWriter {
         self.write_sample_inner(sample, GuestMemoryInput::Observed(observation))
     }
 
+    /// Invalidate guest-dependent observations without renewing other samples.
+    ///
+    /// A capable producer uses this synchronously at lifecycle boundaries and
+    /// serializes it with publication at its observation source. The slot seqlock
+    /// alone prevents torn writes, not publication of a previously captured report.
+    /// Independent counters, the limit, host residency and sample time are preserved.
+    pub fn invalidate_guest_memory(&self) -> MetricsResult<()> {
+        let slot = self.registry.try_slot(self.slot)?;
+        let observed = slot.generation.load(Ordering::Acquire);
+        if observed != self.generation {
+            return Err(MetricsError::GenerationMismatch {
+                expected: self.generation,
+                actual: observed,
+            });
+        }
+        let begin = begin_write(slot);
+        // A release/reuse may occur while waiting for the seqlock. Never clear
+        // the replacement runtime's observations with a previous writer handle.
+        let observed = slot.generation.load(Ordering::Acquire);
+        if observed != self.generation {
+            end_write(slot, begin);
+            return Err(MetricsError::GenerationMismatch {
+                expected: self.generation,
+                actual: observed,
+            });
+        }
+        let flags = slot.sample_flags.load(Ordering::Relaxed);
+        slot.sample_flags.store(
+            (flags
+                & !(SAMPLE_FLAG_GUEST_MEMORY_VALID
+                    | SAMPLE_FLAG_MEMORY_USED
+                    | SAMPLE_FLAG_MEMORY_AVAILABLE))
+                | SAMPLE_FLAG_GUEST_MEMORY_OBSERVATION,
+            Ordering::Relaxed,
+        );
+        slot.memory_bytes.store(0, Ordering::Relaxed);
+        slot.memory_available_bytes.store(0, Ordering::Relaxed);
+        slot.memory_guest_total_bytes.store(0, Ordering::Relaxed);
+        slot.memory_received_ns.store(0, Ordering::Relaxed);
+        slot.memory_interval_ns.store(0, Ordering::Relaxed);
+        end_write(slot, begin);
+        Ok(())
+    }
+
     fn write_sample_inner(
         &self,
         mut sample: SampleWrite,
@@ -1699,6 +1743,46 @@ mod tests {
             received_at: guest_memory_clock().unwrap(),
             reporting_interval: Duration::from_secs(1),
         }
+    }
+
+    #[test]
+    fn guest_invalidation_preserves_independent_samples_and_cannot_clear_a_reused_slot() {
+        let (name, registry, writer, sample) = guest_memory_fixture("invalidate");
+        writer
+            .write_sample_with_guest_memory(sample, Some(guest_report()))
+            .unwrap();
+        let before = registry.snapshot().unwrap().remove(0);
+        writer.invalidate_guest_memory().unwrap();
+        let after = registry.snapshot().unwrap().remove(0);
+        assert_eq!(after.memory_total_bytes, None);
+        assert_eq!(after.memory_available_bytes, None);
+        assert!(!after.memory_bytes_reported);
+        assert_eq!(after.guest_memory_observation, None);
+        assert_eq!(after.timestamp, before.timestamp);
+        assert_eq!(after.memory_limit_bytes, before.memory_limit_bytes);
+        assert_eq!(
+            after.memory_host_resident_bytes,
+            before.memory_host_resident_bytes
+        );
+        assert_eq!(after.cpu_percent, before.cpu_percent);
+        assert_eq!(after.vcpu_time_ns, before.vcpu_time_ns);
+        assert_eq!(after.disk_read_bytes, before.disk_read_bytes);
+        assert_eq!(after.run_id, before.run_id);
+        writer.clone().release(ReleaseMode::Stale).unwrap();
+        let replacement = reserve_limit_writer(&registry, "replacement");
+        replacement
+            .write_sample_with_guest_memory(sample, Some(guest_report()))
+            .unwrap();
+        assert!(matches!(
+            writer.invalidate_guest_memory(),
+            Err(MetricsError::GenerationMismatch { .. })
+        ));
+        let row = registry.snapshot().unwrap().remove(0);
+        assert_eq!(row.name, "replacement");
+        assert_eq!(row.memory_total_bytes, Some(3000));
+        assert_eq!(row.memory_available_bytes, Some(1000));
+        assert!(row.memory_bytes_reported);
+        cleanup(&name);
     }
 
     #[test]
