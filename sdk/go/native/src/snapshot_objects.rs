@@ -435,6 +435,13 @@ async fn dispatch(id: u64, request: Request, pending: &PendingObjects) -> Result
     }
 }
 
+/// Advertise retained receivers from the `create_artifact` and `list_dir` producers.
+///
+/// The symbol is optional for older Go clients. Receiver dispatch alone does not
+/// imply these operations exist, and clients must select capture before mutation.
+#[unsafe(no_mangle)]
+pub extern "C" fn msb_supports_snapshot_artifact_receivers() {}
+
 /// Execute only the explicitly tagged operation against a retained receiver.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn msb_snapshot_object(
