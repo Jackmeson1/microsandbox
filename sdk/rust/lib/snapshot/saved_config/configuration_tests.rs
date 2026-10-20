@@ -21,11 +21,11 @@ use super::*;
 // Functions
 //--------------------------------------------------------------------------------------------------
 
-fn known(value: Value) -> Value {
+pub(super) fn known(value: Value) -> Value {
     json!({"state":"value","origin":"configured","value":value})
 }
 
-fn document(active: Value, bindings: Value) -> SavedSandboxConfig {
+pub(super) fn document(active: Value, bindings: Value) -> SavedSandboxConfig {
     SavedSandboxConfig::from_bytes(
         &serde_json::to_vec(&json!({
             "schema_version": 1, "active": active, "bindings": bindings,
@@ -63,7 +63,7 @@ fn text(value: &str) -> ConfigurationBindingInput {
     })
 }
 
-fn prepare(
+pub(super) fn prepare(
     saved: &SavedSandboxConfig,
     explicit: &SandboxSpecPatch,
     mode: SnapshotConfigMode,
@@ -101,7 +101,7 @@ fn prepare(
     )
 }
 
-fn disk() -> SavedConfigurationContext<'static> {
+pub(super) fn disk() -> SavedConfigurationContext<'static> {
     SavedConfigurationContext::Disk {
         starts_command: false,
     }
