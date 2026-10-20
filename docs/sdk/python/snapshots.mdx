@@ -395,8 +395,6 @@ A paused disk capture needs a matching prior flush; cloud rejects non-Auto polic
 
 <div className="msb-tags"><span className="msb-tag is-type">class</span></div>
 
-<p className="msb-backref">Returned by <a href="#handle-snapshot">snapshot()</a> · <a href="#snapshot-create">Checkpoint.create()</a> · <a href="#snapshot-open">Checkpoint.open()</a> · <a href="#snapshot-list_dir">Checkpoint.list_dir()</a> · <a href="#handle-open">handle.open()</a></p>
-
 Create, open, and manage snapshots. See [properties](#snapshot-properties) for returned metadata.
 
 <span id="snapshot-create" />
@@ -902,12 +900,24 @@ Read a group’s head, or select an exact member with `group:member`. Returns th
 
 Options for `load()` and `load_many()`.
 
-| Option | Purpose |
-| --- | --- |
-| `dest` | Parent directory containing groups. Defaults to the local snapshot store. |
-| `base` | External snapshot or standalone archive for missing dependencies. |
-| `group` | Destination group. Omit to create one group for the import. |
-| `set_head` | Select the imported tip, even with divergent ancestry. Defaults to false; requires a unique tip. |
+<div className="msb-params">
+  <div className="msb-param">
+    <div className="msb-param-key"><code>dest</code></div>
+    <div className="msb-param-desc">Parent directory containing groups. Defaults to the local snapshot store.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>base</code></div>
+    <div className="msb-param-desc">External snapshot or standalone archive for missing dependencies.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>group</code></div>
+    <div className="msb-param-desc">Destination group. Omit to create one group for the import.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>set_head</code></div>
+    <div className="msb-param-desc">Select the imported tip, even with divergent ancestry. Defaults to false; requires a unique tip.</div>
+  </div>
+</div>
 
 With divergent tips, the existing head stays selected; a new group has no head. Select a member explicitly. Identical members may be reused; conflicting identities fail. See [archive imports](/sandboxes/snapshots#import-archives).
 
@@ -1162,14 +1172,32 @@ child = await Sandbox.restore("api:baseline", name="api-restored", cow_memory=Tr
 
 </Accordion>
 
-| Control | Purpose |
-| --- | --- |
-| `cow_memory=True` | Share unchanged full-snapshot memory. |
-| `forked=True` | Deprecated alias for the same CoW memory policy; see [migration notes](/sandboxes/snapshots#migrating-restore-options). |
-| `disk_only=True` | Boot only the saved disk. |
-| `snapshot_base` | Supply an archive dependency. |
-| `Sandbox.restore()` | Return the restored sandbox. |
-| `Sandbox.restore_with_progress()` | Return a `PullSession`; await its result. |
+<div className="msb-params">
+  <div className="msb-param">
+    <div className="msb-param-key"><code>cow_memory=True</code></div>
+    <div className="msb-param-desc">Share unchanged full-snapshot memory.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>forked=True</code></div>
+    <div className="msb-param-desc">Deprecated alias for the same CoW memory policy; see <a href="/sandboxes/snapshots#migrating-restore-options">migration notes</a>.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>disk_only=True</code></div>
+    <div className="msb-param-desc">Boot only the saved disk.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>snapshot_base</code></div>
+    <div className="msb-param-desc">Supply an archive dependency.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Sandbox.restore()</code></div>
+    <div className="msb-param-desc">Return the restored sandbox.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>Sandbox.restore_with_progress()</code></div>
+    <div className="msb-param-desc">Return a <code>PullSession</code>; await its result.</div>
+  </div>
+</div>
 
 #### init
 
@@ -1191,28 +1219,62 @@ Image, replacement, and startup-command options are not accepted. Full restore r
 
 Restore rejects missing external filesystems (and, for full restore, additional disks) by default. Use `allow_missing_resources=True` to resume with unavailable devices (full restore records warnings). This is separate from strict/relaxed validation of supplied mappings; inheritance does not waive missing backing. Root and owned storage remain required.
 
-<Accordion title="Destination options">
 
-| Option | Purpose |
-| --- | --- |
-| `cpus, memory` | CPU count and memory in MiB. Full restore must match capture. |
-| `network_policy` | Replace host traffic filtering; guest DNS and TLS settings stay unchanged. |
-| `max_connections` | Concurrent TCP limit; zero means unlimited. |
-| `disable_network` | Remove the NIC. Rejected for full snapshots that captured one. |
-| `security` | Guest security profile. Disk boot only, including an explicit default profile. |
-| `max_duration, idle_timeout` | Lifetime and idle limits. Omitted means unlimited; zero expires immediately. |
-| `guest_clock` | `"sync"` or `"off"`; omission preserves a recorded policy, defaulting to sync when absent. |
-| `ports` | Bind destination TCP or UDP ports. |
-| `vsock` | Bind destination vsock endpoints. |
-| `user, log_level` | Default user for new execs and host runtime log level. |
-| `dangerously_inherit_resources` | Explicitly inherit host resources. Disabled by default. |
-| `external_mount_policy` | Validate supplied filesystem mappings: strict (default) or relaxed. Does not grant access. |
+<div className="msb-params">
+  <div className="msb-param">
+    <div className="msb-param-key"><code>cpus, memory</code></div>
+    <div className="msb-param-desc">CPU count and memory in MiB. Full restore must match capture.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>network_policy</code></div>
+    <div className="msb-param-desc">Replace host traffic filtering; guest DNS and TLS settings stay unchanged.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>max_connections</code></div>
+    <div className="msb-param-desc">Concurrent TCP limit; zero means unlimited.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>disable_network</code></div>
+    <div className="msb-param-desc">Remove the NIC. Rejected for full snapshots that captured one.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>security</code></div>
+    <div className="msb-param-desc">Guest security profile. Disk boot only, including an explicit default profile.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>max_duration, idle_timeout</code></div>
+    <div className="msb-param-desc">Lifetime and idle limits. Omitted means unlimited; zero expires immediately.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>guest_clock</code></div>
+    <div className="msb-param-desc"><code>&quot;sync&quot;</code> or <code>&quot;off&quot;</code>; omission preserves a recorded policy, defaulting to sync when absent.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>ports</code></div>
+    <div className="msb-param-desc">Bind destination TCP or UDP ports.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>vsock</code></div>
+    <div className="msb-param-desc">Bind destination vsock endpoints.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>user, log_level</code></div>
+    <div className="msb-param-desc">Default user for new execs and host runtime log level.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>dangerously_inherit_resources</code></div>
+    <div className="msb-param-desc">Explicitly inherit host resources. Disabled by default.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>external_mount_policy</code></div>
+    <div className="msb-param-desc">Validate supplied filesystem mappings: strict (default) or relaxed. Does not grant access.</div>
+  </div>
+</div>
 
 Omitted controls retain destination defaults. Durations are non-negative finite seconds, rounded up. Network policy accepts `NetworkPolicy`, not `Network`. `captured_volumes` contains guest paths.
 
 Full capture records the source clock policy; current disk capture does not. An explicit sync policy overrides a saved off policy. The same option is available on group and checkpoint spawn, including progress variants. Clock selection controls guest wall-clock synchronization. Unsupported native SDKs or runtimes refuse unsupported explicit selection before launching the destination.
 
-</Accordion>
 
 #### <span className="msb-recv">restore.</span><span className="msb-hn">volumes</span>
 
@@ -1257,20 +1319,30 @@ Allow unavailable external filesystems or additional disks. Full restore records
 
 Compact a local sandbox’s root or owned disks. See [compaction](/sandboxes/snapshots#compact-disks) for examples and recovery requirements.
 
-<Accordion title="Options and results">
 
-| Option | Purpose |
-| --- | --- |
-| `disk` | Select one owned disk by guest path; `/` selects the root. |
-| `root_disk_only` | Select only the root. Cannot combine with the disk selector. |
-| `layers` | Oldest sealed layers to merge, including the base. Minimum two; omit for all. Excludes the writable layer. |
-| `dry_run` | Preview without changing storage. |
+<div className="msb-params">
+  <div className="msb-param">
+    <div className="msb-param-key"><code>disk</code></div>
+    <div className="msb-param-desc">Select one owned disk by guest path; <code>/</code> selects the root.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>root_disk_only</code></div>
+    <div className="msb-param-desc">Select only the root. Cannot combine with the disk selector.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>layers</code></div>
+    <div className="msb-param-desc">Oldest sealed layers to merge, including the base. Minimum two; omit for all. Excludes the writable layer.</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key"><code>dry_run</code></div>
+    <div className="msb-param-desc">Preview without changing storage.</div>
+  </div>
+</div>
 
 Defaults to the root and owned data disks; excludes named/external volumes and directories. Requires a running or fully stopped local sandbox. Fewer than two sealed layers means no change; no eligible disks returns an empty result with zero counts.
 
 Results include aggregate counts and per-disk entries keyed by `guest_path`. `materialized_bytes` counts copied bytes, not reclaimed space. Times are microseconds: per-disk `total_us` covers preparation; aggregate `total_us` also includes switching; `pause_us` measures the shared VM pause.
 
-</Accordion>
 
 
 ## Types
@@ -1279,110 +1351,498 @@ Results include aggregate counts and per-disk entries keyed by `guest_path`. `ma
 
 <div className="msb-tags"><span className="msb-tag is-type">class</span></div>
 
-<p className="msb-backref">Returned by <a href="#handle-snapshot">snapshot()</a> · <a href="#snapshot-create">Checkpoint.create()</a> · <a href="#snapshot-open">Checkpoint.open()</a> · <a href="#snapshot-list_dir">Checkpoint.list_dir()</a> · <a href="#handle-open">handle.open()</a></p>
-
 A fully parsed backend-neutral snapshot. Properties are read-only attributes.
 
-| Property / Method | Type | Description |
-|-------------------|------|-------------|
-| <span id="snapshot-id" />`id` | `str` | Stable opaque snapshot identity |
-| <span id="snapshot-path" />`path` | `str` | Local artifact directory; raises `UnsupportedError` on cloud |
-| `reference` | `str` | Stable backend-relative restore reference |
-| `reference_kind` | `Literal["id", "path"]` | How the selected backend resolves the reference |
-| <span id="snapshot-digest" />`digest` | `str` | Canonical descriptor digest (`sha256:hex`), separate from the stable ID |
-| <span id="snapshot-size_bytes" />`size_bytes` | `int \| None` | Backend-reported stored payload size in bytes |
-| <span id="snapshot-image_ref" />`image_ref` | `str` | Image reference the snapshot was taken from |
-| <span id="snapshot-image_manifest_digest" />`image_manifest_digest` | `str` | OCI manifest digest of the pinned image |
-| <span id="snapshot-state_kind" />`state_kind` | [`SnapshotStateKind`](#snapshotstatekind) | File-backed or checkpoint-backed state |
-| <span id="snapshot-format" />`format` | [`SnapshotFormat`](#snapshotformat)` \| None` | On-disk format for file-backed state |
-| <span id="snapshot-scope" />`scope` | [`SnapshotScope`](#snapshotscope) | Captured state scope |
-| <span id="snapshot-fstype" />`fstype` | `str \| None` | Filesystem type for file-backed state (e.g. `"ext4"`) |
-| <span id="snapshot-checkpoint_id" />`checkpoint_id` | `str \| None` | Checkpoint identifier for checkpoint-backed state |
-| <span id="snapshot-checkpoint_manifest_digest" />`checkpoint_manifest_digest` | `str \| None` | Checkpoint manifest digest for checkpoint-backed state |
-| <span id="snapshot-parent" />`parent` | `str \| None` | Parent snapshot's digest, or `None` for a root |
-| <span id="snapshot-created_at" />`created_at` | `str` | RFC 3339 timestamp |
-| <span id="snapshot-labels" />`labels` | `dict[str, str]` | User-supplied labels |
-| <span id="snapshot-source_sandbox" />`source_sandbox` | `str \| None` | Best-effort source-sandbox name |
-| `save_to(...)` | `Awaitable[None]` | Bundle through the backend retained by this snapshot |
-| `copy_to(path)` | [`SnapshotCopyBuilder`](#snapshotcopybuilder) | Configure a copied archive with replacement metadata |
-| `verify()` | `Awaitable[dict[str, Any]]` | Recompute and check the upper-layer integrity hash. See [`verify()`](#snap-verify) |
+<span id="snapshot-id" />
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">id</span>
+
+```python
+id: str
+```
+
+Stable opaque snapshot identity
+
+<span id="snapshot-path" />
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">path</span>
+
+```python
+path: str
+```
+
+Local artifact directory; raises `UnsupportedError` on cloud
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">reference</span>
+
+```python
+reference: str
+```
+
+Stable backend-relative restore reference
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">reference_kind</span>
+
+```python
+reference_kind: Literal['id', 'path']
+```
+
+How the selected backend resolves the reference
+
+<span id="snapshot-digest" />
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">digest</span>
+
+```python
+digest: str
+```
+
+Canonical descriptor digest (`sha256:hex`), separate from the stable ID
+
+<span id="snapshot-size_bytes" />
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">size_bytes</span>
+
+```python
+size_bytes: int | None
+```
+
+Backend-reported stored payload size in bytes
+
+<span id="snapshot-image_ref" />
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">image_ref</span>
+
+```python
+image_ref: str
+```
+
+Image reference the snapshot was taken from
+
+<span id="snapshot-image_manifest_digest" />
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">image_manifest_digest</span>
+
+```python
+image_manifest_digest: str
+```
+
+OCI manifest digest of the pinned image
+
+<span id="snapshot-state_kind" />
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">state_kind</span>
+
+```python
+state_kind: SnapshotStateKind
+```
+
+File-backed or checkpoint-backed state. See [SnapshotStateKind](#snapshotstatekind).
+
+<span id="snapshot-format" />
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">format</span>
+
+```python
+format: SnapshotFormat | None
+```
+
+On-disk format for file-backed state. See [SnapshotFormat](#snapshotformat).
+
+<span id="snapshot-scope" />
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">scope</span>
+
+```python
+scope: SnapshotScope
+```
+
+Captured state scope. See [SnapshotScope](#snapshotscope).
+
+<span id="snapshot-fstype" />
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">fstype</span>
+
+```python
+fstype: str | None
+```
+
+Filesystem type for file-backed state (e.g. `"ext4"`)
+
+<span id="snapshot-checkpoint_id" />
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">checkpoint_id</span>
+
+```python
+checkpoint_id: str | None
+```
+
+Checkpoint identifier for checkpoint-backed state
+
+<span id="snapshot-checkpoint_manifest_digest" />
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">checkpoint_manifest_digest</span>
+
+```python
+checkpoint_manifest_digest: str | None
+```
+
+Checkpoint manifest digest for checkpoint-backed state
+
+<span id="snapshot-parent" />
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">parent</span>
+
+```python
+parent: str | None
+```
+
+Parent snapshot's digest, or `None` for a root
+
+<span id="snapshot-created_at" />
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">created_at</span>
+
+```python
+created_at: str
+```
+
+RFC 3339 timestamp
+
+<span id="snapshot-labels" />
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">labels</span>
+
+```python
+labels: dict[str, str]
+```
+
+User-supplied labels
+
+<span id="snapshot-source_sandbox" />
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">source_sandbox</span>
+
+```python
+source_sandbox: str | None
+```
+
+Best-effort source-sandbox name
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">save_to()</span>
+
+```python
+async def save_to(
+    self,
+    out: str | os.PathLike[str],
+    *,
+    with_parents: bool = False,
+    with_image: bool = False,
+    plain_tar: bool = False,
+    since: str | None = None,
+    last_layers: int | None = None,
+    compatibility: Literal["current", "0.7.8"] = "current",
+) -> None
+```
+
+Bundle through the backend retained by this snapshot
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">copy_to()</span>
+
+```python
+def copy_to(self, output_archive_path: str | os.PathLike[str]) -> SnapshotCopyBuilder
+```
+
+Configure a copied archive with replacement metadata. See [SnapshotCopyBuilder](#snapshotcopybuilder).
+
+#### <span className="msb-recv">checkpoint.</span><span className="msb-hn">verify()</span>
+
+```python
+async def verify(self) -> dict[str, Any]
+```
+
+Recompute and check the upper-layer integrity hash. See [`verify()`](#snap-verify)
 
 ### SnapshotCopyBuilder
 
 Returned by [`Checkpoint.copy_to()`](#snap-copy_to). Setters mutate the builder and
 return it so calls can be chained.
 
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `labels(dict[str, str])` | `SnapshotCopyBuilder` | Replace all labels in the copied manifest |
-| `record_integrity(bool)` | `SnapshotCopyBuilder` | Compute integrity when true, or omit it when false |
-| `save()` | `Awaitable[None]` | Write the configured archive |
+#### <span className="msb-recv">copy.</span><span className="msb-hn">labels()</span>
+
+```python
+def labels(self, labels: dict[str, str]) -> SnapshotCopyBuilder
+```
+
+Replace all labels in the copied manifest
+
+#### <span className="msb-recv">copy.</span><span className="msb-hn">record_integrity()</span>
+
+```python
+def record_integrity(self, enabled: bool) -> SnapshotCopyBuilder
+```
+
+Compute integrity when true, or omit it when false
+
+#### <span className="msb-recv">copy.</span><span className="msb-hn">save()</span>
+
+```python
+async def save(self) -> None
+```
+
+Write the configured archive
 
 ### SnapshotHandle
 
 <div className="msb-tags"><span className="msb-tag is-type">class</span></div>
 
-<p className="msb-backref">Returned by <a href="#snapshot-get">Checkpoint.get()</a> · <a href="#snapshot-list">Checkpoint.list()</a> · <a href="#snapshot-load">Checkpoint.load()</a></p>
-
 Lightweight handle returned by the active backend. Properties are read-only.
 
-| Property / Method | Type | Description |
-|-------------------|------|-------------|
-| `id` | `str` | Stable opaque snapshot identity |
-| `path` | `str` | Local artifact directory; raises `UnsupportedError` on cloud |
-| `digest` | `str` | Canonical descriptor digest, separate from the stable ID |
-| `name` | `str \| None` | Convenience alias |
-| `parent_digest` | `str \| None` | Parent snapshot digest, or `None` for a root |
-| `image_ref` | `str` | Image the snapshot was taken from |
-| `state_kind` | [`SnapshotStateKind`](#snapshotstatekind) | File-backed or checkpoint-backed state |
-| `format` | [`SnapshotFormat`](#snapshotformat)` \| None` | On-disk format for file-backed state |
-| `scope` | [`SnapshotScope`](#snapshotscope) | Captured state scope |
-| `fstype` | `str \| None` | Filesystem type for file-backed state |
-| `checkpoint_manifest_digest` | `str \| None` | Checkpoint manifest digest for checkpoint-backed state |
-| `size_bytes` | `int \| None` | Backend-reported stored payload size, when known |
-| `locality` | `str` | Artifact locality reported by the index |
-| `availability` | `str` | Artifact availability reported by the index |
-| `migration_state` | `str` | Current migration state |
-| `migration_error_code` | `str \| None` | Migration error code, when migration failed |
-| `created_at` | `float` | ms since Unix epoch |
-| `reference` | `str` | Stable backend-relative restore reference |
-| `reference_kind` | `Literal["id", "path"]` | How the selected backend resolves the reference |
-| `open()` | `Awaitable[`[`Checkpoint`](#snapshot)`]` | Load full metadata. See [`open()`](#handle-open) |
-| `remove(force=False)` | `Awaitable[None]` | Delete the artifact and its index row. See [`remove()`](#handle-remove) |
-| `save_to(...)` | `Awaitable[None]` | Bundle through the backend retained by this handle |
+#### <span className="msb-recv">handle.</span><span className="msb-hn">id</span>
+
+```python
+id: str
+```
+
+Stable opaque snapshot identity
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">path</span>
+
+```python
+path: str
+```
+
+Local artifact directory; raises `UnsupportedError` on cloud
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">digest</span>
+
+```python
+digest: str
+```
+
+Canonical descriptor digest, separate from the stable ID
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">name</span>
+
+```python
+name: str | None
+```
+
+Convenience alias
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">parent_digest</span>
+
+```python
+parent_digest: str | None
+```
+
+Parent snapshot digest, or `None` for a root
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">image_ref</span>
+
+```python
+image_ref: str
+```
+
+Image the snapshot was taken from
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">state_kind</span>
+
+```python
+state_kind: SnapshotStateKind
+```
+
+File-backed or checkpoint-backed state. See [SnapshotStateKind](#snapshotstatekind).
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">format</span>
+
+```python
+format: SnapshotFormat | None
+```
+
+On-disk format for file-backed state. See [SnapshotFormat](#snapshotformat).
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">scope</span>
+
+```python
+scope: SnapshotScope
+```
+
+Captured state scope. See [SnapshotScope](#snapshotscope).
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">fstype</span>
+
+```python
+fstype: str | None
+```
+
+Filesystem type for file-backed state
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">checkpoint_manifest_digest</span>
+
+```python
+checkpoint_manifest_digest: str | None
+```
+
+Checkpoint manifest digest for checkpoint-backed state
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">size_bytes</span>
+
+```python
+size_bytes: int | None
+```
+
+Backend-reported stored payload size, when known
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">locality</span>
+
+```python
+locality: str
+```
+
+Artifact locality reported by the index
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">availability</span>
+
+```python
+availability: str
+```
+
+Artifact availability reported by the index
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">migration_state</span>
+
+```python
+migration_state: str
+```
+
+Current migration state
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">migration_error_code</span>
+
+```python
+migration_error_code: str | None
+```
+
+Migration error code, when migration failed
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">created_at</span>
+
+```python
+created_at: float
+```
+
+ms since Unix epoch
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">reference</span>
+
+```python
+reference: str
+```
+
+Stable backend-relative restore reference
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">reference_kind</span>
+
+```python
+reference_kind: Literal['id', 'path']
+```
+
+How the selected backend resolves the reference
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">open()</span>
+
+```python
+async def open(self) -> Checkpoint
+```
+
+Load full metadata. See [`open()`](#handle-open)
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">remove()</span>
+
+```python
+async def remove(self, *, force: bool = False) -> None
+```
+
+Delete the artifact and its index row. See [`remove()`](#handle-remove)
+
+#### <span className="msb-recv">handle.</span><span className="msb-hn">save_to()</span>
+
+```python
+async def save_to(
+    self,
+    out: str | os.PathLike[str],
+    *,
+    with_parents: bool = False,
+    with_image: bool = False,
+    plain_tar: bool = False,
+    since: str | None = None,
+    last_layers: int | None = None,
+    compatibility: Literal["current", "0.7.8"] = "current",
+) -> None
+```
+
+Bundle through the backend retained by this handle
 
 ### SnapshotStateKind
 
-<p className="msb-backref">Returned by <a href="#snapshot">Checkpoint.state_kind</a> · <a href="#snapshothandle">SnapshotHandle.state_kind</a></p>
-
 Checkpoint state representation.
 
-| Member | Value | Description |
-|--------|-------|-------------|
-| `SnapshotStateKind.FILE` | `"file"` | File-backed upper-layer state |
-| `SnapshotStateKind.CHECKPOINT` | `"checkpoint"` | Checkpoint-manifest-backed state |
+#### <span className="msb-hn">SnapshotStateKind.FILE</span>
+
+```python
+SnapshotStateKind.FILE = "file"
+```
+
+File-backed upper-layer state
+
+#### <span className="msb-hn">SnapshotStateKind.CHECKPOINT</span>
+
+```python
+SnapshotStateKind.CHECKPOINT = "checkpoint"
+```
+
+Checkpoint-manifest-backed state
 
 ### SnapshotFormat
 
-<p className="msb-backref">Returned by <a href="#snapshot">Checkpoint.format</a> · <a href="#snapshothandle">SnapshotHandle.format</a></p>
-
 On-disk format for file-backed snapshot state.
 
-| Member | Value | Description |
-|--------|-------|-------------|
-| `SnapshotFormat.RAW` | `"raw"` | Raw disk image |
-| `SnapshotFormat.QCOW2` | `"qcow2"` | QEMU copy-on-write v2 image |
+#### <span className="msb-hn">SnapshotFormat.RAW</span>
+
+```python
+SnapshotFormat.RAW = "raw"
+```
+
+Raw disk image
+
+#### <span className="msb-hn">SnapshotFormat.QCOW2</span>
+
+```python
+SnapshotFormat.QCOW2 = "qcow2"
+```
+
+QEMU copy-on-write v2 image
 
 ### SnapshotScope
 
-<p className="msb-backref">Returned by <a href="#snapshot">Checkpoint.scope</a> · <a href="#snapshothandle">SnapshotHandle.scope</a></p>
-
 Captured snapshot state scope.
 
-| Member | Value | Description |
-|--------|-------|-------------|
-| `SnapshotScope.DISK` | `"disk"` | Disk-only state |
-| `SnapshotScope.FULL` | `"full"` | Disk, memory, and device state |
+#### <span className="msb-hn">SnapshotScope.DISK</span>
+
+```python
+SnapshotScope.DISK = "disk"
+```
+
+Disk-only state
+
+#### <span className="msb-hn">SnapshotScope.FULL</span>
+
+```python
+SnapshotScope.FULL = "full"
+```
+
+Disk, memory, and device state
 
 <Accordion title="Example">
 
