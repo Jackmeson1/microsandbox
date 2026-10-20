@@ -47,6 +47,8 @@ mod runtime_assembly_tests;
 #[cfg(test)]
 mod runtime_input_tests;
 mod runtime_inputs;
+#[cfg(all(feature = "local", unix))]
+mod script_backing;
 mod secret_preparation;
 #[cfg(test)]
 mod secret_preparation_tests;
@@ -106,6 +108,8 @@ pub use runtime_inputs::{
     PreparedRuntimeInit, PreparedRuntimeScript, PreparedRuntimeValue, RuntimeBindingInput,
     RuntimeInputPlan, prepare_runtime_inputs,
 };
+#[cfg(all(feature = "local", unix))]
+pub use script_backing::capture_runtime_scripts;
 pub use secret_preparation::{
     SecretBindingInput, SecretConfigurationPlan, prepare_secret_configuration,
 };
