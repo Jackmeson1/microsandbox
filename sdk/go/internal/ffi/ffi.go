@@ -1090,6 +1090,12 @@ char *call_msb_image_prune(uint64_t cancel_id, uint8_t *buf, size_t buf_len) {
 	return ptr_msb_image_prune ? ptr_msb_image_prune(cancel_id, buf, buf_len) : NULL;
 }
 bool has_msb_snapshot_objects(void) { return ptr_msb_snapshot_object && ptr_msb_snapshot_object_close; }
+bool has_msb_snapshot_artifact_receivers(void) {
+    // General receivers predate create_artifact/list_dir. Select the producer ABI
+    // before dispatch: probing by capture failure could repeat a published mutation.
+    return has_msb_snapshot_objects() && lib_handle &&
+        dlsym(lib_handle, "msb_supports_snapshot_artifact_receivers") != NULL;
+}
 char *call_msb_snapshot_object(uint64_t cancel_id, uint64_t handle, const char *request, uint8_t *buf, size_t buf_len) {
     return ptr_msb_snapshot_object ? ptr_msb_snapshot_object(cancel_id, handle, request, buf, buf_len) : NULL;
 }
@@ -5685,7 +5691,7 @@ func SnapshotCreate(ctx context.Context, sourceSandbox string, opts SnapshotCrea
 	if err := checkGuestFlush(opts.GuestFlush, !opts.Full); err != nil {
 		return nil, err
 	}
-	if bool(C.has_msb_snapshot_objects()) {
+	if bool(C.has_msb_snapshot_artifact_receivers()) {
 		// Capture once through the owned response; reopening by name afterward could
 		// select a replacement, and retrying a legacy response could capture twice.
 		raw, err := SnapshotObjectCall(ctx, 0, map[string]any{"op": "create_artifact", "source": sourceSandbox, "options": opts})
@@ -5843,7 +5849,7 @@ func SnapshotListDir(ctx context.Context, dir string) ([]*SnapshotInfo, error) {
 	if err := ensureLoaded(); err != nil {
 		return nil, err
 	}
-	if bool(C.has_msb_snapshot_objects()) {
+	if bool(C.has_msb_snapshot_artifact_receivers()) {
 		raw, err := SnapshotObjectCall(ctx, 0, map[string]any{"op": "list_dir", "directory": dir})
 		if err != nil {
 			return nil, err
