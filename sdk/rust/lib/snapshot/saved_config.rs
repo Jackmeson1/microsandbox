@@ -27,6 +27,7 @@ mod listeners;
 mod network_assembly;
 #[cfg(test)]
 mod network_assembly_tests;
+mod network_inputs;
 mod network_policy;
 #[cfg(test)]
 mod network_policy_tests;

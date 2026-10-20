@@ -1,15 +1,16 @@
 //! Combined preparation checks cross-family invariants that isolated selectors cannot prove.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use microsandbox_types::snapshot::saved_config::{
     MAX_SAVED_CONFIG_BYTES, SavedBindingConsumer, SavedBindingKind, SavedBindingUse,
     SavedBindingUses, SavedSandboxConfig,
 };
 use microsandbox_types::{
-    EnvVar, NetworkSpecPatch, PortProtocol, PublishedPortSpec, SandboxResources,
-    SandboxResourcesPatch, SandboxRuntimeOptionsPatch, SandboxSpec, SandboxSpecPatch, SecretSource,
-    SecretsConfig, SecurityProfile,
+    DnsConfig, DnsConfigPatch, EnvVar, InterfaceOverrides, InterfaceOverridesPatch,
+    NetworkSpecPatch, PortProtocol, PublishedPortSpec, SandboxResources, SandboxResourcesPatch,
+    SandboxRuntimeOptionsPatch, SandboxSpec, SandboxSpecPatch, SecretSource, SecretsConfig,
+    SecretsConfigPatch, SecurityProfile, TlsConfig, TlsConfigPatch,
 };
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
@@ -464,4 +465,347 @@ fn late_preparation_failure_cannot_modify_explicit_destination_or_source() {
     );
     assert_eq!(serde_json::to_vec(&saved).unwrap(), source_bytes);
     assert_eq!(format!("{patch:?}"), explicit_before);
+}
+
+#[test]
+fn network_assembly_preserves_absent_and_explicit_empty_containers() {
+    let saved = document(
+        json!({"network":{
+            "dns":{"state":"default"}, "tls":{"state":"default"},
+            "secrets":{"state":"default"}, "ports":{"state":"default"},
+            "guest_trust":{"state":"default"}, "outbound_proxy":{"state":"default"}
+        }}),
+        json!({}),
+    );
+    for explicit_containers in [false, true] {
+        let network = if explicit_containers {
+            NetworkSpecPatch::new()
+                .dns(DnsConfigPatch::new())
+                .tls(TlsConfigPatch::new())
+                .secrets(SecretsConfigPatch::new())
+        } else {
+            NetworkSpecPatch::new()
+        };
+        let plan = prepare(
+            &saved,
+            &SandboxSpecPatch::new().network(network),
+            SnapshotConfigMode::Saved,
+            disk(),
+            BTreeMap::new(),
+        )
+        .unwrap();
+        let native = plan.network_inputs().unwrap();
+        assert_eq!(native.dns.is_some(), explicit_containers);
+        assert_eq!(native.tls.is_some(), explicit_containers);
+        assert_eq!(native.secrets.is_some(), explicit_containers);
+        assert!(native.ports.is_empty());
+        assert!(native.outbound_proxy.is_none());
+    }
+}
+
+#[test]
+fn network_assembly_keeps_policy_resources_and_all_admission_obligations_together() {
+    let saved = document(
+        json!({"network":{
+            "dns":known(json!({"rebind_protection":false,"query_timeout_ms":17,
+                "resolvers":[{"id":"resolver"}]})),
+            "tls":known(json!({"enabled":true,"intercepted_ports":[443],"bypass":[],
+                "verify_upstream":true,"block_quic_on_intercept":true,
+                "upstream_cas":[{"id":"ca"}],"scoped_upstream_cas":[],
+                "scoped_verify_upstream":[]})),
+            "secrets":{"state":"default"},
+            "ports":known(json!([{"guest_port":80,"protocol":"tcp","binding":{"id":"listener"}}])),
+            "guest_trust":known(json!([{"id":"ca"}])),
+            "outbound_proxy":known(json!({"protocol":"http_connect","endpoint":{"id":"proxy"}}))
+        }}),
+        json!({"resolver":"dns_resolver","ca":"certificate","listener":"listener","proxy":"proxy_endpoint"}),
+    );
+    let before = serde_json::to_vec(&saved).unwrap();
+    let bindings = BTreeMap::from([
+        (
+            "resolver".into(),
+            ConfigurationBindingInput::Gateway(GatewayBindingInput::DnsResolver(
+                "DNS_SENTINEL.invalid:5353".into(),
+            )),
+        ),
+        (
+            "ca".into(),
+            ConfigurationBindingInput::Gateway(GatewayBindingInput::Certificate(
+                "/missing/CA_SENTINEL.pem".into(),
+            )),
+        ),
+        (
+            "proxy".into(),
+            ConfigurationBindingInput::Gateway(GatewayBindingInput::ProxyEndpoint(
+                "PROXY_SENTINEL.invalid:3128".into(),
+            )),
+        ),
+        (
+            "listener".into(),
+            ConfigurationBindingInput::Listener(ListenerBindingInput {
+                host_bind: "127.0.0.1".parse().unwrap(),
+                host_port: 0,
+            }),
+        ),
+    ]);
+    let plan = prepare(
+        &saved,
+        &SandboxSpecPatch::new(),
+        SnapshotConfigMode::Saved,
+        disk(),
+        bindings,
+    )
+    .unwrap();
+    let approvals = format!("{:?}", plan.network_policy().selection().required_approvals);
+    assert!(
+        !plan
+            .network_policy()
+            .selection()
+            .required_approvals
+            .is_empty()
+    );
+    let native = plan.network_inputs().unwrap();
+    let dns = native.dns.as_ref().unwrap();
+    assert!(!dns.rebind_protection);
+    assert_eq!(dns.query_timeout_ms, 17);
+    assert_eq!(dns.nameservers, ["DNS_SENTINEL.invalid:5353"]);
+    let tls = native.tls.as_ref().unwrap();
+    assert!(tls.enabled);
+    assert_eq!(
+        tls.upstream_ca_cert,
+        [PathBuf::from("/missing/CA_SENTINEL.pem")]
+    );
+    assert_eq!(native.ports.len(), 1);
+    assert_eq!(native.ports[0].host_port, 0);
+    assert_eq!(native.ports[0].guest_port, 80);
+    assert!(native.outbound_proxy.is_some());
+    assert_eq!(
+        plan.gateway().guest_trust_certificates().unwrap(),
+        [PathBuf::from("/missing/CA_SENTINEL.pem")]
+    );
+    // No filesystem, DNS or credential lookup was needed, and composition grants no consent.
+    assert_eq!(
+        format!("{:?}", plan.network_policy().selection().required_approvals),
+        approvals
+    );
+    assert_eq!(
+        serde_json::to_value(plan.network_inputs().unwrap()).unwrap(),
+        serde_json::to_value(native).unwrap()
+    );
+    assert_eq!(serde_json::to_vec(&saved).unwrap(), before);
+    assert!(!format!("{plan:?}").contains("SENTINEL"));
+}
+
+#[test]
+fn network_assembly_refuses_each_unknown_inventory_instead_of_returning_partial_inputs() {
+    for field in [
+        "dns",
+        "tls",
+        "secrets",
+        "ports",
+        "guest_trust",
+        "outbound_proxy",
+    ] {
+        let mut network = json!({
+            "dns":{"state":"default"}, "tls":{"state":"default"},
+            "secrets":{"state":"default"}, "ports":{"state":"default"},
+            "guest_trust":{"state":"default"}, "outbound_proxy":{"state":"default"}
+        });
+        network[field] = json!({"state":"unknown","reason":"not_recorded"});
+        let saved = document(json!({"network":network}), json!({}));
+        let before = serde_json::to_vec(&saved).unwrap();
+        let plan = prepare(
+            &saved,
+            &SandboxSpecPatch::new(),
+            SnapshotConfigMode::Saved,
+            disk(),
+            BTreeMap::new(),
+        )
+        .unwrap();
+        let error = plan.network_inputs().unwrap_err().to_string();
+        assert!(error.contains("SCFG_UNKNOWN"), "{field}: {error}");
+        assert_eq!(serde_json::to_vec(&saved).unwrap(), before);
+    }
+}
+
+#[test]
+fn network_assembly_does_not_resolve_secret_sources_or_make_future_commands_ready() {
+    let mut saved = shared();
+    let defaults = document(
+        json!({"network":{
+            "dns":{"state":"default"}, "tls":{"state":"default"},
+            "ports":{"state":"default"}, "guest_trust":{"state":"default"},
+            "outbound_proxy":{"state":"default"}
+        }}),
+        json!({}),
+    );
+    saved.active.network.dns = defaults.active.network.dns;
+    saved.active.network.tls = defaults.active.network.tls;
+    saved.active.network.ports = defaults.active.network.ports;
+    saved.active.network.guest_trust = defaults.active.network.guest_trust;
+    saved.active.network.outbound_proxy = defaults.active.network.outbound_proxy;
+    let plan = prepare(
+        &saved,
+        &SandboxSpecPatch::new(),
+        SnapshotConfigMode::Saved,
+        disk(),
+        BTreeMap::from([(
+            "shared".into(),
+            ConfigurationBindingInput::TextSource(SecretSource::env("UNAVAILABLE_SENTINEL")),
+        )]),
+    )
+    .unwrap();
+    let native = plan.network_inputs().unwrap();
+    let secrets = native.secrets.unwrap();
+    assert_eq!(secrets.secrets.len(), 1);
+    assert!(secrets.secrets[0].value.is_empty());
+    assert_eq!(
+        secrets.secrets[0].source,
+        Some(SecretSource::env("UNAVAILABLE_SENTINEL"))
+    );
+    assert!(plan.runtime().command_defaults().is_err());
+    assert!(plan.unresolved_text_sources().contains("shared"));
+    assert!(plan.supply_gaps().before_new_command.contains("shared"));
+    assert!(!format!("{plan:?}").contains("SENTINEL"));
+}
+
+#[test]
+fn network_assembly_keeps_destination_interface_and_caps_without_claiming_full_compatibility() {
+    let saved = document(
+        json!({"network":{
+            "dns":{"state":"default"}, "tls":{"state":"default"},
+            "secrets":{"state":"default"}, "ports":{"state":"default"},
+            "guest_trust":{"state":"default"}, "outbound_proxy":{"state":"default"}
+        }}),
+        json!({}),
+    );
+    let explicit = SandboxSpecPatch::new().network(
+        NetworkSpecPatch::new()
+            .interface(InterfaceOverridesPatch::new().mtu(1400))
+            .max_udp_connections(0)
+            .tcp_accept_queue_size(23),
+    );
+    let resources = SandboxResources::default();
+    let captured = SavedBindingUses::new();
+    let plan = prepare(
+        &saved,
+        &explicit,
+        SnapshotConfigMode::Fresh,
+        SavedConfigurationContext::Full {
+            resources: &resources,
+            security: SecurityProfile::default(),
+            bindings: &captured,
+        },
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let native = plan.network_inputs().unwrap();
+    assert_eq!(native.interface.unwrap().mtu, Some(1400));
+    assert_eq!(native.max_udp_connections, Some(0));
+    assert_eq!(native.tcp_accept_queue_size, Some(23));
+    assert!(native.dns.is_none());
+    assert!(native.tls.is_none());
+    assert!(native.secrets.is_none());
+    assert!(
+        plan.network_policy()
+            .selection()
+            .requires_full_compatibility
+    );
+    assert!(plan.gateway().selection().requires_full_compatibility);
+    assert!(plan.listeners().selection().requires_full_compatibility);
+    assert!(plan.secrets().selection().requires_full_identity);
+}
+
+#[test]
+fn network_assembly_keeps_recorded_empty_substitution_container_present() {
+    let saved = document(
+        json!({"network":{
+            "dns":{"state":"default"}, "tls":{"state":"default"},
+            "secrets":known(json!({"entries":[],"violation_action":"block","passthrough_hosts":[]})),
+            "ports":{"state":"default"}, "guest_trust":{"state":"default"},
+            "outbound_proxy":{"state":"default"}
+        }}),
+        json!({}),
+    );
+    let plan = prepare(
+        &saved,
+        &SandboxSpecPatch::new(),
+        SnapshotConfigMode::Saved,
+        disk(),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let native = plan.network_inputs().unwrap();
+    let secrets = native.secrets.unwrap();
+    assert!(secrets.secrets.is_empty());
+    assert_eq!(secrets.passthrough_hosts, Some(vec![]));
+}
+
+#[test]
+fn network_assembly_fresh_mode_keeps_destination_policy_container_presence() {
+    let saved = document(
+        json!({"network":{
+            "dns":{"state":"default"}, "tls":{"state":"default"},
+            "secrets":{"state":"default"}, "ports":{"state":"default"},
+            "guest_trust":{"state":"default"}, "outbound_proxy":{"state":"default"}
+        }}),
+        json!({}),
+    );
+    let mut lower = SandboxSpec::default();
+    lower.network.dns = Some(DnsConfig {
+        query_timeout_ms: 12345,
+        ..Default::default()
+    });
+    lower.network.tls = Some(TlsConfig {
+        enabled: true,
+        intercepted_ports: vec![443, 8443],
+        ..Default::default()
+    });
+    lower.network.interface = Some(InterfaceOverrides {
+        mtu: Some(1337),
+        mac: Some([2, 0, 0, 0, 0, 7]),
+        ..Default::default()
+    });
+    let explicit = SandboxSpecPatch::new()
+        .network(NetworkSpecPatch::new().interface(InterfaceOverridesPatch::new().mtu(1400)));
+    let baseline = DestinationNetworkBaseline {
+        strict: true,
+        tls_enabled: true,
+        intercepted_ports: vec![443, 8443],
+    };
+    let plan = prepare_saved_configuration(
+        SavedConfigurationRequest {
+            saved: &saved,
+            manifest: &storage_tests::manifest(false),
+            lower: &lower,
+            lower_resources: &SandboxResourcesPatch::new(),
+            explicit: &explicit,
+            clears: &SavedConfigurationClears::default(),
+            mode: SnapshotConfigMode::Fresh,
+            context: disk(),
+            guest_security: DestinationGuestSecurity {
+                baseline: SecurityProfile::default(),
+                minimum: SecurityProfile::default(),
+            },
+            network_baseline: &baseline,
+        },
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let native = plan.network_inputs().unwrap();
+    let interface = native.interface.as_ref().unwrap();
+    assert_eq!(interface.mtu, Some(1400));
+    assert_eq!(interface.mac, Some([2, 0, 0, 0, 0, 7]));
+    assert_eq!(
+        native
+            .dns
+            .expect("destination DNS policy must remain present")
+            .query_timeout_ms,
+        12345
+    );
+    let tls = native
+        .tls
+        .expect("destination TLS policy must remain present");
+    assert!(tls.enabled);
+    assert_eq!(tls.intercepted_ports, [443, 8443]);
 }
