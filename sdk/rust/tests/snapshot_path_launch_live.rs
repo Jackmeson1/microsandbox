@@ -1,4 +1,4 @@
-//! Manual path-set launch qualification against a real local VM runtime.
+//! Path-set launch qualification against a real local VM runtime.
 
 #![cfg(feature = "local")]
 
@@ -167,9 +167,31 @@ async fn scenario(home: &Path, full: bool) {
 //--------------------------------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires an installed VM runtime and an empty MSB_LAUNCH_TEST_HOME"]
+#[ignore = "requires an installed VM runtime; MSB_LAUNCH_TEST_HOME optionally selects an empty home"]
 async fn archive_sets_launch_after_source_and_group_deletion() {
-    let home = PathBuf::from(std::env::var_os("MSB_LAUNCH_TEST_HOME").expect("isolated test home"));
+    // CI runs ignored VM tests without a caller-provisioned home. Keep that
+    // case isolated too, without changing the process-wide SDK configuration.
+    // The guard outlives guest cleanup; explicit qualification homes stay owned
+    // by their caller and retain the existing empty-directory requirement.
+    let explicit_home = std::env::var_os("MSB_LAUNCH_TEST_HOME").map(PathBuf::from);
+    let owned_home = if explicit_home.is_none() {
+        let root = if cfg!(unix) {
+            // Match the other VM fixtures' short Unix roots for socket paths.
+            PathBuf::from("/tmp")
+        } else {
+            std::env::temp_dir()
+        };
+        Some(
+            tempfile::Builder::new()
+                .prefix("msb-launch-")
+                .tempdir_in(root)
+                .expect("isolated launch test home"),
+        )
+    } else {
+        None
+    };
+    let home = explicit_home.unwrap_or_else(|| owned_home.as_ref().unwrap().path().to_path_buf());
+    eprintln!("launch qualification: isolated home {}", home.display());
     assert!(
         std::fs::read_dir(&home).unwrap().next().is_none(),
         "test home must be empty"
