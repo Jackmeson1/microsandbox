@@ -70,6 +70,7 @@ def run_test(command, env, root, log):
             try:
                 child.wait(timeout=5)
             except subprocess.TimeoutExpired:
+                # A supervisor ignoring SIGTERM needs the SIGKILL fallback below.
                 pass
             # The supervisor can exit before a publisher that ignores SIGTERM.
             # Kill survivors in our owned group even when the supervisor exited.

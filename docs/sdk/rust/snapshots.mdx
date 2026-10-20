@@ -1638,7 +1638,7 @@ Supply an archive dependency.
 #### <span className="msb-recv">restore.</span><span className="msb-hn">restore()</span>
 
 ```rust
-fn restore(snapshot: impl Into<String>) -> RestoreBuilder
+async fn restore(self) -> MicrosandboxResult<Sandbox>
 ```
 
 Return the restored sandbox.
