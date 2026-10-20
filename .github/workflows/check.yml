@@ -1694,6 +1694,10 @@ jobs:
       - name: Run integration tests
         env:
           MSB_TEST_ISOLATE_HOME: "1"
+          # Self-provisioning fixtures may select a fresh backend home. Resolve the
+          # downloaded runtime explicitly instead of looking inside that empty home.
+          MSB_PATH: ${{ github.workspace }}/build/msb
+          MSB_LIBKRUNFW_PATH: ${{ github.workspace }}/build/libkrunfw.so.${{ env.LIBKRUNFW_VERSION }}
           MSB_AGENTD_PATH: ${{ github.workspace }}/build/agentd
         run: |
           export PATH="$HOME/.microsandbox/bin:$PATH"
