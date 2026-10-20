@@ -5,8 +5,7 @@ import importlib.util
 import os
 from pathlib import Path
 import tempfile
-import unittest
-from unittest import mock
+import unittest.mock
 
 
 SPEC = importlib.util.spec_from_file_location(
@@ -33,7 +32,7 @@ class SnapshotCompatibilityTests(unittest.TestCase):
             self.assertEqual(binary.stat().st_mode & 0o777, 0o700)
 
     def test_environment_does_not_turn_historical_reader_into_candidate_runtime(self):
-        with mock.patch.dict(os.environ, {"MSB_HOME": "/caller", "MSB_BACKEND": "cloud",
+        with unittest.mock.patch.dict(os.environ, {"MSB_HOME": "/caller", "MSB_BACKEND": "cloud",
                                           "MSB_PATH": "/candidate", "MSB_AGENTD_PATH": "/agent",
                                           "MSB_CONFIG_PATH": "/caller.json", "LD_PRELOAD": "/shim",
                                           "DYLD_INSERT_LIBRARIES": "/shim"}):
@@ -46,17 +45,17 @@ class SnapshotCompatibilityTests(unittest.TestCase):
             self.assertNotIn(key, env)
 
     def test_timeout_reaps_publisher_process_group(self):
-        child = mock.MagicMock()
+        child = unittest.mock.MagicMock()
         child.pid = 876543
         child.wait.side_effect = [HARNESS.subprocess.TimeoutExpired("test", 180), 0, 0]
-        with mock.patch.object(HARNESS.subprocess, "Popen") as popen, \
-                mock.patch.object(HARNESS.os, "killpg") as kill:
+        with unittest.mock.patch.object(HARNESS.subprocess, "Popen") as popen, \
+                unittest.mock.patch.object(HARNESS.os, "killpg") as kill:
             popen.return_value.__enter__.return_value = child
             with self.assertRaises(HARNESS.subprocess.TimeoutExpired):
-                HARNESS.run_test(["test"], {}, Path("/fixture"), mock.Mock())
+                HARNESS.run_test(["test"], {}, Path("/fixture"), unittest.mock.Mock())
             self.assertTrue(popen.call_args.kwargs["start_new_session"])
-            self.assertEqual(kill.call_args_list, [mock.call(child.pid, HARNESS.signal.SIGTERM),
-                                                  mock.call(child.pid, HARNESS.signal.SIGKILL)])
+            self.assertEqual(kill.call_args_list, [unittest.mock.call(child.pid, HARNESS.signal.SIGTERM),
+                                                  unittest.mock.call(child.pid, HARNESS.signal.SIGKILL)])
             self.assertEqual(child.wait.call_count, 3)
 
 
