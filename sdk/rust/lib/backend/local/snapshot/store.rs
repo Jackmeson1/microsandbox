@@ -1203,8 +1203,33 @@ mod tests {
         .await;
     }
 
+    #[test]
+    fn whole_group_recovery_preserves_a_recreated_group() {
+        // Recovery must reach the injected SQL failure immediately. Unrelated parallel
+        // fork/exec tests can temporarily inherit setup's reader leases and correctly
+        // cause pre-publication refusal instead. Create the fixture after exec in an
+        // isolated process; do not retry removal or weaken its committed-result checks.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "backend::local::snapshot::store::tests::whole_group_recovery_worker",
+                "--ignored",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+
     #[tokio::test]
-    async fn whole_group_recovery_preserves_a_recreated_group() {
+    #[ignore = "subprocess helper for the committed group-recovery contract"]
+    async fn whole_group_recovery_worker() {
         let home = tempfile::tempdir().unwrap();
         let local = std::sync::Arc::new(
             crate::test_support::local_backend_builder(home.path())
