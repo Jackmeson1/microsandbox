@@ -141,7 +141,11 @@ impl SandboxBuilder {
     }
 
     /// Overlay sparse sandbox configuration on the hardcoded and global defaults.
-    pub fn overlay(mut self, patch: SandboxConfigPatch) -> Self {
+    pub fn overlay(mut self, mut patch: SandboxConfigPatch) -> Self {
+        // Public sparse inputs are explicit even when the selected value equals the default.
+        if patch.has_http_override() {
+            patch.http_defaults_implicit = Some(false);
+        }
         self.record_prepared_boot_override(|boot| {
             boot.security |= patch.spec.security_profile.is_some();
             boot.init |= patch.spec.init.is_some();
@@ -158,9 +162,16 @@ impl SandboxBuilder {
     /// on a builder from [`new`](Self::new). This is the Rust entry the FFI
     /// `create_from_spec` path calls into, so both share one implementation.
     pub fn from_spec_json(json: &str) -> MicrosandboxResult<Self> {
-        let spec: SandboxSpec = serde_json::from_str(json)
+        let value: serde_json::Value = serde_json::from_str(json)
             .map_err(|e| MicrosandboxError::InvalidConfig(e.to_string()))?;
-        Ok(Self::from(SandboxConfig::from(spec)))
+        let implicit_http = value
+            .pointer("/network/http")
+            .is_none_or(|http| http.as_object().is_some_and(serde_json::Map::is_empty));
+        let spec: SandboxSpec = serde_json::from_value(value)
+            .map_err(|e| MicrosandboxError::InvalidConfig(e.to_string()))?;
+        let mut builder = Self::from(SandboxConfig::from(spec));
+        builder.config.http_defaults_implicit = Some(implicit_http);
+        Ok(builder)
     }
 
     /// Set the root filesystem image source.
@@ -860,12 +871,17 @@ impl SandboxBuilder {
                 return self;
             }
         };
-        match f(NetworkBuilder::from_config(network)).build() {
+        let network = f(NetworkBuilder::from_inherited_config(network));
+        let http_override = network.has_http_override();
+        match network.build() {
             Ok(net) => {
                 if let Err(err) = self.set_local_network_config(net)
                     && self.build_error.is_none()
                 {
                     self.build_error = Some(err);
+                }
+                if http_override {
+                    self.config.http_defaults_implicit = Some(false);
                 }
             }
             Err(err) => {
@@ -1561,8 +1577,10 @@ impl SandboxBuilder {
         &mut self,
         network: microsandbox_network::config::NetworkConfig,
     ) -> MicrosandboxResult<()> {
+        let http_defaults_implicit = self.config.http_defaults_are_implicit();
         let network = super::config::network_spec_from_config(&network)?;
         self.config.spec.network = network.into();
+        self.config.http_defaults_implicit = Some(http_defaults_implicit);
         Ok(())
     }
 
@@ -3699,6 +3717,42 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["/second", "/third"]
         );
+    }
+
+    #[cfg(feature = "net")]
+    #[test]
+    fn http_default_intent_survives_layering_persistence_and_ffi_without_weakening_requests() {
+        let make = || SandboxBuilder::new("http-intent").image("alpine");
+        let finish = |builder: SandboxBuilder| builder.finish(None, None).unwrap();
+        let implicit = finish(make().network(|network| network.max_tcp_connections(8)));
+        assert!(implicit.has_implicit_http_defaults());
+        assert!(
+            finish(make().network(|network| network.http(|http| http)))
+                .has_implicit_http_defaults()
+        );
+        let restored: SandboxConfig =
+            serde_json::from_value(serde_json::to_value(&implicit).unwrap()).unwrap();
+        assert!(restored.has_implicit_http_defaults());
+
+        let explicit = finish(make().network(|network| {
+            network.http(|http| {
+                http.deny_response_format(microsandbox_types::HttpDenyResponseFormat::Json)
+            })
+        }));
+        assert!(!explicit.has_implicit_http_defaults());
+        let restored: SandboxConfig =
+            serde_json::from_value(serde_json::to_value(&explicit).unwrap()).unwrap();
+        assert!(!restored.has_implicit_http_defaults());
+
+        // Rebuilding a known config preserves its omission evidence; FFI can observe raw presence.
+        assert!(finish(SandboxBuilder::from(implicit.clone())).has_implicit_http_defaults());
+        let mut json = serde_json::to_value(&implicit).unwrap();
+        json["network"].as_object_mut().unwrap().remove("http");
+        let ffi = finish(SandboxBuilder::from_spec_json(&json.to_string()).unwrap());
+        assert!(ffi.has_implicit_http_defaults());
+        json["network"]["http"] = serde_json::json!({"deny_response_format": "json"});
+        let ffi = finish(SandboxBuilder::from_spec_json(&json.to_string()).unwrap());
+        assert!(!ffi.has_implicit_http_defaults());
     }
 
     #[cfg(feature = "net")]

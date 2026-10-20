@@ -33,12 +33,14 @@ use crate::secrets::config::{
 pub struct NetworkBuilder {
     config: NetworkConfig,
     errors: Vec<BuildError>,
+    http_override: bool,
 }
 
 /// Fluent builder for HTTP denial responses.
 #[derive(Default)]
 pub struct HttpBuilder {
     config: HttpConfig,
+    explicit: bool,
 }
 
 /// Fluent builder for [`DnsConfig`].
@@ -125,12 +127,14 @@ impl HttpBuilder {
 
     /// Enable readable HTTP denial responses. Enabled by default locally.
     pub fn deny_response(mut self, enabled: bool) -> Self {
+        self.explicit = true;
         self.config.deny_response = enabled;
         self
     }
 
     /// Choose the response format. Defaults to JSON.
     pub fn deny_response_format(mut self, format: HttpDenyResponseFormat) -> Self {
+        self.explicit = true;
         self.config.deny_response_format = format;
         self
     }
@@ -138,6 +142,7 @@ impl HttpBuilder {
     /// Set the legacy text message, substituting `{host}`. Ignored in JSON mode.
     /// Deprecated: prefer JSON mode and `network_deny_message` for new integrations.
     pub fn deny_message(mut self, message: impl Into<String>) -> Self {
+        self.explicit = true;
         self.config.deny_message = Some(message.into());
         self
     }
@@ -146,6 +151,7 @@ impl HttpBuilder {
     /// Requires `deny_response(true)` and JSON mode. An empty message preserves the code with an empty `message`;
     /// omission uses the default.
     pub fn network_deny_message(mut self, message: impl Into<String>) -> Self {
+        self.explicit = true;
         self.config.network_deny_message = Some(message.into());
         self
     }
@@ -153,6 +159,7 @@ impl HttpBuilder {
     /// Set the literal secret-denial JSON message. Requires `deny_response(true)` and JSON mode.
     /// Omission uses the default; an empty string leaves `message` empty.
     pub fn secret_deny_message(mut self, message: impl Into<String>) -> Self {
+        self.explicit = true;
         self.config.secret_deny_message = Some(message.into());
         self
     }
@@ -169,6 +176,7 @@ impl NetworkBuilder {
         Self {
             config: NetworkConfig::default(),
             errors: Vec::new(),
+            http_override: false,
         }
     }
 
@@ -177,7 +185,23 @@ impl NetworkBuilder {
         Self {
             config,
             errors: Vec::new(),
+            http_override: true,
         }
+    }
+
+    /// Seed SDK layering without treating inherited HTTP defaults as a caller override.
+    #[doc(hidden)]
+    pub fn from_inherited_config(config: NetworkConfig) -> Self {
+        Self {
+            http_override: false,
+            ..Self::from_config(config)
+        }
+    }
+
+    /// Whether this builder explicitly selected HTTP settings, including the default value.
+    #[doc(hidden)]
+    pub fn has_http_override(&self) -> bool {
+        self.http_override
     }
 
     /// Enable or disable networking.
@@ -422,10 +446,12 @@ impl NetworkBuilder {
 
     /// Configure HTTP responses to denied requests.
     pub fn http(mut self, configure: impl FnOnce(HttpBuilder) -> HttpBuilder) -> Self {
-        self.config.http = configure(HttpBuilder {
+        let http = configure(HttpBuilder {
             config: self.config.http,
-        })
-        .build();
+            explicit: false,
+        });
+        self.http_override |= http.explicit;
+        self.config.http = http.build();
         self
     }
 
