@@ -46,8 +46,8 @@ pub use backends::{
     memfs::{CachePolicy as MemCachePolicy, MemFs, MemFsConfig},
     passthroughfs::{
         BindIdentityMap, BindIdentityMapHandle, CachePolicy, CapturedRuntimeScripts,
-        HostPermissions, PassthroughConfig, PassthroughFs, PassthroughFsBuilder,
-        RuntimeScriptLimits, RuntimeScriptMetadata, StatVirtualization,
+        HostPermissions, PassthroughConfig, PassthroughFs, PassthroughFsBuilder, RuntimeBootScript,
+        RuntimeScriptLimits, RuntimeScriptMetadata, StatVirtualization, stage_runtime_boot_scripts,
     },
     singlefilefs::SingleFileFs,
 };

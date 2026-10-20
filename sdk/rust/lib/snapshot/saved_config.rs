@@ -49,6 +49,8 @@ mod runtime_input_tests;
 mod runtime_inputs;
 #[cfg(all(feature = "local", unix))]
 mod script_backing;
+#[cfg(all(test, feature = "local", unix))]
+mod script_backing_tests;
 mod secret_preparation;
 #[cfg(test)]
 mod secret_preparation_tests;
