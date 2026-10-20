@@ -236,7 +236,7 @@ async fn released_reader_observes_complete_group_after_removal_crash() {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 async fn crash_cases(legacy_cli: Option<&Path>) {
-    for boundary in ["prepared", "exchanged", "committed"] {
+    for boundary in ["linking", "prepared", "exchanged", "committed"] {
         let home = tempfile::tempdir().unwrap();
         let local = test_support::local_backend_builder(home.path())
             .build()
@@ -298,7 +298,7 @@ async fn crash_cases(legacy_cli: Option<&Path>) {
         child.wait().unwrap();
         reader.join().unwrap();
         reached.expect("removal did not reach its publication boundary");
-        let removed = boundary != "prepared";
+        let removed = matches!(boundary, "exchanged" | "committed");
         let expected_head = if removed { 1 } else { 2 };
         // Inspect the visible files BEFORE any new-runtime recovery. An old reader
         // does not understand our journal and must still see the complete chosen view.
@@ -337,20 +337,18 @@ async fn crash_cases(legacy_cli: Option<&Path>) {
         );
         deletion::recover_parent(&local, &directory).await.unwrap();
         deletion::recover_parent(&local, &directory).await.unwrap();
-        if removed {
-            assert!(
-                !fs::read_dir(directory.parent().unwrap())
-                    .unwrap()
-                    .any(|entry| {
-                        entry
-                            .unwrap()
-                            .file_name()
-                            .to_string_lossy()
-                            .starts_with(".group-generation-")
-                    }),
-                "committed removal leaked retired payloads at {boundary}"
-            );
-        }
+        assert!(
+            !fs::read_dir(directory.parent().unwrap())
+                .unwrap()
+                .any(|entry| {
+                    entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".group-generation-")
+                }),
+            "removal recovery leaked private payloads at {boundary}"
+        );
 
         assert_eq!(
             snapshot::Entity::find_by_id(key)
