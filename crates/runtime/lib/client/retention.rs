@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+#[path = "retention/live.rs"]
+mod live;
+
 #[path = "retention/selection.rs"]
 mod selection;
 
@@ -1002,4 +1005,5 @@ mod tests {
 // Re-Exports
 //--------------------------------------------------------------------------------------------------
 
+pub use live::LiveConfigurationSelection;
 pub use selection::select_stopped_configuration;
