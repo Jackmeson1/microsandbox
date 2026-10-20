@@ -14,6 +14,9 @@ mod execution_tests;
 #[cfg(test)]
 mod gateway_input_tests;
 mod gateway_inputs;
+mod gateway_preparation;
+#[cfg(test)]
+mod gateway_preparation_tests;
 #[cfg(test)]
 mod listener_tests;
 mod listeners;
@@ -59,6 +62,9 @@ pub use execution::{
 };
 pub use execution_assembly::{ExecutionConfigurationPlan, prepare_execution_configuration};
 pub use gateway_inputs::{GatewayInputPlan, select_gateway_inputs};
+pub use gateway_preparation::{
+    GatewayBindingInput, GatewayConfigurationPlan, prepare_gateway_configuration,
+};
 pub use listeners::{
     ListenerBindingInput, ListenerInputPlan, ListenerInputSelection, select_listener_inputs,
 };
