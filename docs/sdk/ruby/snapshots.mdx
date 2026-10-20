@@ -174,15 +174,36 @@ The group selects its head once; an exact checkpoint stays fixed even if the gro
 
 Both methods accept the same destination keywords. Progress returns a `PullSession`; its `progress` enumerator (or `next_event`) produces best-effort event hashes with `kind` (`pull` or `startup`) and `progress`. End of the stream is not success. `result` returns the persistent sandbox or raises the authoritative failure and can be consumed once. Progress may be ignored without blocking creation. `cancel` requests cancellation; consume `result` to learn whether cancellation or completion won. Cancellation after success does not stop the returned sandbox. Sessions cannot be used from a forked child process. Native waits release the Ruby interpreter lock. They do not have a built-in timeout; request cancellation from another Ruby thread when needed, then consume the result. Ruby’s `Timeout.timeout` does not reliably interrupt a native wait.
 
-| Destination controls | Keywords |
-| --- | --- |
-| Identity and capacity | `name`, `cpus`, `memory` (MiB) |
-| Lifetime | `max_duration`, `idle_timeout` (whole seconds) |
-| Restore policy | `disk_only`, `cow_memory`, `snapshot_base`, `guest_clock` (`sync` or `off`) |
-| Guest execution | `user`, `security` (`default` or `restricted`), `log_level` |
-| Egress | `disable_network`, `network` (`:none` or the existing `allowed_hosts`/`allowed_ports` policy hash), `max_tcp_connections`, `max_udp_connections` |
-| Ingress | `ports`, `max_inbound_tcp_connections`, `tcp_accept_queue_size` |
-| Resources | `volumes`, `captured_volumes`, `vsock`, `external_mount_policy` (`strict` or `relaxed`), `allow_missing_resources`, `dangerously_inherit_resources` |
+<div className="msb-params">
+  <div className="msb-param">
+    <div className="msb-param-key">Identity and capacity</div>
+    <div className="msb-param-desc"><code>name</code>, <code>cpus</code>, <code>memory</code> (MiB)</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key">Lifetime</div>
+    <div className="msb-param-desc"><code>max_duration</code>, <code>idle_timeout</code> (whole seconds)</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key">Restore policy</div>
+    <div className="msb-param-desc"><code>disk_only</code>, <code>cow_memory</code>, <code>snapshot_base</code>, <code>guest_clock</code> (<code>sync</code> or <code>off</code>)</div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key">Guest execution</div>
+    <div className="msb-param-desc"><code>user</code>, <code>security</code> (<code>default</code> or <code>restricted</code>), <code>log_level</code></div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key">Egress</div>
+    <div className="msb-param-desc"><code>disable_network</code>, <code>network</code> (<code>:none</code> or the existing <code>allowed_hosts</code>/<code>allowed_ports</code> policy hash), <code>max_tcp_connections</code>, <code>max_udp_connections</code></div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key">Ingress</div>
+    <div className="msb-param-desc"><code>ports</code>, <code>max_inbound_tcp_connections</code>, <code>tcp_accept_queue_size</code></div>
+  </div>
+  <div className="msb-param">
+    <div className="msb-param-key">Resources</div>
+    <div className="msb-param-desc"><code>volumes</code>, <code>captured_volumes</code>, <code>vsock</code>, <code>external_mount_policy</code> (<code>strict</code> or <code>relaxed</code>), <code>allow_missing_resources</code>, <code>dangerously_inherit_resources</code></div>
+  </div>
+</div>
 
 `ports` is an array of `{ host: 8080, guest: 80, bind: "127.0.0.1", protocol: :tcp }` hashes; bind is optional and protocol defaults to TCP. `vsock` is an array of `{ path: "/run/service.sock", port: 5000, datagram: false }`. `volumes` maps guest paths to hashes containing exactly one of `bind`, `named`, or `disk`, with optional `readonly: true`. For example: `volumes: { "/data" => { bind: "./data", readonly: true } }`. `captured_volumes` lists guest paths whose private captured disks should be selected. Explicit local host paths are captured when the method is called; remote backend paths are not resolved against the client directory.
 
