@@ -51,13 +51,14 @@ def guest(label, name, script):
 
 def create(name, snapshot=None, forked=False, checkpoint=None):
     names.append(name)
-    args = ["create", "--name", name]
     if snapshot:
-        args += ["--from-snapshot", snapshot]
-        if checkpoint is not None:
-            args += ["--checkpoint", checkpoint]
+        # PR1 exercises the retained restore interface; canonical create/run launch
+        # is introduced by PR2 and must not be assumed by this standalone suite.
+        reference = f"{snapshot}:{checkpoint}" if checkpoint is not None else snapshot
+        args = ["snapshot", "restore", reference, "--name", name]
     else:
-        args += [image, "--root-disk", layout, "--memory", "256M", "--cpus", "2"]
+        args = ["create", "--name", name, image, "--root-disk", layout,
+                "--memory", "256M", "--cpus", "2"]
     if forked:
         args.append("--cow-mem")
     run("create-" + name, *args)
@@ -182,8 +183,8 @@ try:
     run("restore-removed-member", "snapshot", "load", "received", "--file", delta_archive)
     run("clear-head", "snapshot", "modify", "received", "--clear-head")
     assert head("cleared-head", "received")["head"] is None
-    run("headless-spawn-refused", "create", "--name", "headless-child",
-        "--from-snapshot", "received", fail=True)
+    run("headless-spawn-refused", "snapshot", "restore", "received",
+        "--name", "headless-child", fail=True)
     select("restore-head-selection", "received", "full2")
 
     run("import-second-group", "snapshot", "load", "duplicate", "--file", base_archive)

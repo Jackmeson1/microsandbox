@@ -79,13 +79,13 @@ def run(args):
         assert report("snapshot-roots-image", "image", "prune", "--yes")["image_refs_removed"] == 0
         report("reclaim-idle-ram", "prune", "--yes")
         assert report("usage-after-prune", "df")["branch_memory"]["count"] == 0
-        command("restore-local", "create", "--from-snapshot", "saved", "--checkpoint", "base",
+        command("restore-local", "snapshot", "restore", "saved:base",
                 "--name", "restored", "--cow-mem", "--no-net")
         command("restore-retains-state", "exec", "restored", "--", "sh", "-ec",
                 'test "$(cat /root/storage-marker)" = disk-state; test "$(cat /ram/storage-marker)" = ram-state')
         command("import-fresh-home", "snapshot", "load", "imported", "--file", str(archive), home=homes[1])
         assert report("imported-snapshot-roots-image", "image", "prune", "--yes", home=homes[1])["image_refs_removed"] == 0
-        command("restore-imported", "create", "--from-snapshot", "imported", "--checkpoint", "base",
+        command("restore-imported", "snapshot", "restore", "imported:base",
                 "--name", "received", "--cow-mem", "--no-net", home=homes[1])
         command("import-retains-state", "exec", "received", "--", "sh", "-ec",
                 'test "$(cat /root/storage-marker)" = disk-state; test "$(cat /ram/storage-marker)" = ram-state', home=homes[1])

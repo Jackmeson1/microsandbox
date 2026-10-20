@@ -92,7 +92,7 @@ def main():
         name = "batch-" + mode
         names.append(name)
         options = ["--cow-mem"] if mode == "forked" else []
-        run("restore-" + mode, "create", "--name", name, "--from-snapshot", group, *options)
+        run("restore-" + mode, "snapshot", "restore", group, "--name", name, *options)
         actual = run("state-" + mode, "exec", name, "--", "sh", "-ec",
                      "cat /disk-marker; cat /dev/shm/marker")
         assert actual == marker, actual
@@ -121,7 +121,7 @@ def main():
                 export("export-file-seed", fixtures["cp2"][0], seed, "--with-image", source=True)
                 run("load-file-seed", "snapshot", "load", "seed", "--file", seed)
                 names.append("batch-capture")
-                run("create-file-source", "create", "--name", "batch-capture", "--from-snapshot", "seed")
+                run("create-file-source", "snapshot", "restore", "seed", "--name", "batch-capture")
                 for member, marker in (("cp1", "one"), ("cp2", "two")):
                     run("write-file-" + member, "exec", "batch-capture", "--", "sh", "-ec",
                         "echo " + marker + " > /disk-marker; sync")
@@ -162,7 +162,7 @@ def main():
             if args.live:
                 name = "batch-file"
                 names.append(name)
-                run("restore-file", "create", "--name", name, "--from-snapshot", "file")
+                run("restore-file", "snapshot", "restore", "file", "--name", name)
                 actual = run("state-file", "exec", name, "--", "sh", "-ec",
                              "cat /disk-marker; test ! -e /dev/shm/marker")
                 assert actual == "two", actual
@@ -252,7 +252,7 @@ def main():
         run("ambiguous-new", "snapshot", "load", "branches", "--file", archives[1], branch, archives[0])
         assert group_head("branches") is None
         assert len(members("branches")) == 3
-        run("headless-restore-refused", "create", "--name", "headless", "--from-snapshot", "branches", fail=True)
+        run("headless-restore-refused", "snapshot", "restore", "branches", "--name", "headless", fail=True)
         run("explicit-branch-selection", "snapshot", "modify", "branches", "--set-head", "local-child")
         assert group_head("branches") == fixtures["local-child"][1]["snapshot_id"]
 
