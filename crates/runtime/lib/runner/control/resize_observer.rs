@@ -11,12 +11,13 @@ use microsandbox_protocol::resize::{
 use microsandbox_protocol::resources::{
     ObservationUnavailable, ObservedResources, ResourceObservation,
 };
-use microsandbox_types::modify::{ResourceConvergenceState, ResourceResizeStatus};
+use microsandbox_types::modify::{ResourceConvergenceState, ResourceKind, ResourceResizeStatus};
 use tokio::sync::{Mutex, Notify};
 
 use super::executor::RuntimeControlExecutor;
 use super::resize_memory::{MemoryDeviceEvidence, observe_memory};
 use crate::control::RuntimeLifecycle;
+use crate::metrics::ConfirmedMemoryLimit;
 
 //--------------------------------------------------------------------------------------------------
 // Constants
@@ -29,19 +30,32 @@ const QUERY_DEADLINE: Duration = Duration::from_secs(2);
 // Types
 //--------------------------------------------------------------------------------------------------
 
-#[derive(Default)]
 pub(super) struct ResizeObserver {
     pub wake: Arc<Notify>,
     query: Mutex<()>,
     started: AtomicBool,
+    initial_memory_pending: AtomicBool,
+    pub memory_limit: ConfirmedMemoryLimit,
 }
 
 //--------------------------------------------------------------------------------------------------
 // Methods
 //--------------------------------------------------------------------------------------------------
 
+impl ResizeObserver {
+    pub fn new(boot_mib: u32, max_mib: u32, memory_limit: ConfirmedMemoryLimit) -> Self {
+        Self {
+            wake: Arc::new(Notify::new()),
+            query: Mutex::new(()),
+            started: AtomicBool::new(false),
+            initial_memory_pending: AtomicBool::new(max_mib > boot_mib),
+            memory_limit,
+        }
+    }
+}
+
 impl RuntimeControlExecutor {
-    /// Start one observer per runtime. No work is sent for idle or unsupported resources.
+    /// Start one observer per runtime. Initial hotplug state and pending changes are observed; unsupported resources park.
     pub(crate) fn start_resize_observer(self: &Arc<Self>) {
         if self.resize_observer.started.swap(true, Ordering::AcqRel) {
             return;
@@ -92,7 +106,12 @@ impl RuntimeControlExecutor {
                         && (!background || automatic_observation(record))
                 })
                 .collect();
-            if records.is_empty() {
+            if records.is_empty()
+                && !self
+                    .resize_observer
+                    .initial_memory_pending
+                    .load(Ordering::Acquire)
+            {
                 return;
             }
             if state.lifecycle != RuntimeLifecycle::Running || state.user_pause.is_some() {
@@ -139,6 +158,44 @@ impl RuntimeControlExecutor {
             // even if the resulting numeric quantities happen to match again.
             return;
         }
+        if matches!(&query, Ok(Err(error)) if error.kind == ErrorKind::UnsupportedOperation)
+            || matches!(&query, Ok(Ok(report)) if matches!(report.memory, ResourceObservation::Unavailable { reason: ObservationUnavailable::Unsupported }))
+        {
+            self.resize_observer
+                .initial_memory_pending
+                .store(false, Ordering::Release);
+        }
+        if let Ok(result) = &query
+            && started.elapsed() <= QUERY_DEADLINE
+            && let Some(host) = self.vm.memory_device_state()
+            && let Some(total_bytes) = host.boot_size.checked_add(host.requested_size)
+        {
+            let target = ResizeTarget::Memory {
+                total_mib: total_bytes >> 20,
+            };
+            let mut status = ResourceResizeStatus {
+                resource: ResourceKind::Memory,
+                requested: String::new(),
+                actual: String::new(),
+                enforced: String::new(),
+                state: ResourceConvergenceState::Accepted,
+            };
+            let evidence = self.apply_resize_evidence(&target, &mut status, result);
+            match (evidence, status.state) {
+                (ResizeObservation::Available, ResourceConvergenceState::Applied) => {
+                    let confirmed = self.resize_observer.memory_limit.confirm(total_bytes);
+                    self.resize_observer
+                        .initial_memory_pending
+                        .store(!confirmed, Ordering::Release);
+                }
+                (ResizeObservation::Unsupported, _) => {
+                    self.resize_observer
+                        .initial_memory_pending
+                        .store(false, Ordering::Release);
+                }
+                _ => {}
+            }
+        }
         for record in records {
             let mut status = record.status;
             let observation = match &query {
@@ -159,7 +216,11 @@ impl RuntimeControlExecutor {
         };
         state.lifecycle == RuntimeLifecycle::Running
             && state.user_pause.is_none()
-            && state.resize.current().iter().any(automatic_observation)
+            && (self
+                .resize_observer
+                .initial_memory_pending
+                .load(Ordering::Acquire)
+                || state.resize.current().iter().any(automatic_observation))
     }
 
     fn apply_resize_evidence(

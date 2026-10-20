@@ -13,6 +13,7 @@ use super::resize::ResizeTracker;
 use super::resize_observer::ResizeObserver;
 use crate::checkpoint::{CheckpointCoordinator, CheckpointResult, UserPause};
 use crate::control::*;
+use crate::metrics::ConfirmedMemoryLimit;
 use crate::vm::VmConfig;
 use microsandbox_protocol::bootstrap::GuestBootstrap;
 use microsandbox_protocol::control::ControlError as FramedControlError;
@@ -88,6 +89,7 @@ impl RuntimeControlExecutor {
             String,
             microsandbox_filesystem::OwnedDirectoryCheckpoint,
         >,
+        memory_limit: ConfirmedMemoryLimit,
     ) -> Result<Self, String> {
         let runtime_boot_id = new_runtime_boot_id();
         let jobs = crate::runner::jobs::JobManager::open(
@@ -128,7 +130,11 @@ impl RuntimeControlExecutor {
             agent_sock: agent_sock.to_path_buf(),
             #[cfg(feature = "net")]
             secrets,
-            resize_observer: ResizeObserver::default(),
+            resize_observer: ResizeObserver::new(
+                vm_config.memory_mib,
+                vm_config.max_memory_mib,
+                memory_limit,
+            ),
             state: Mutex::new(ExecutorState {
                 resize: ResizeTracker::new(runtime_boot_id.clone()),
                 runtime_boot_id,
