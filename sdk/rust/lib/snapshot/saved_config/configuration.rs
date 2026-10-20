@@ -9,9 +9,11 @@ use microsandbox_types::snapshot::saved_config::{
     collect_binding_uses,
 };
 use microsandbox_types::{
-    SandboxResources, SandboxResourcesPatch, SandboxSpec, SandboxSpecPatch, SecurityProfile,
+    NetworkSpec, SandboxResources, SandboxResourcesPatch, SandboxSpec, SandboxSpecPatch,
+    SecurityProfile,
 };
 
+use super::network_inputs::NetworkInputShape;
 use super::{
     BindingDemandContext, BindingDemandPlan, BindingSupplyGaps, ConfigurationBindingInput,
     DestinationGuestSecurity, DestinationNetworkBaseline, ExecutionConfigurationPlan,
@@ -94,6 +96,7 @@ pub struct SavedConfigurationPlan {
     resources: ResourceConfigurationPlan,
     execution: ExecutionConfigurationPlan,
     network_policy: NetworkPolicyConfigurationPlan,
+    network_shape: NetworkInputShape,
     gateway: GatewayConfigurationPlan,
     secrets: SecretConfigurationPlan,
     listeners: ListenerConfigurationPlan,
@@ -127,6 +130,14 @@ impl SavedConfigurationPlan {
     pub fn network_policy(&self) -> &NetworkPolicyConfigurationPlan {
         &self.network_policy
     }
+    /// Compose all selected network families without opening files, resolving credentials or
+    /// installing policy. This is input to admission, not a launch permit: the original plan
+    /// retains approvals, captured-state checks and binding requirements after composition.
+    /// Unknown inventories refuse instead of yielding an apparently complete network config.
+    pub fn network_inputs(&self) -> MicrosandboxResult<NetworkSpec> {
+        super::network_inputs::assemble(self, &self.network_shape)
+    }
+
     /// Prepared gateway references, before file loading and credential resolution.
     pub fn gateway(&self) -> &GatewayConfigurationPlan {
         &self.gateway
@@ -415,6 +426,12 @@ pub fn prepare_saved_configuration(
             execution_mode,
             request.guest_security,
         )?,
+        network_shape: NetworkInputShape::selected(
+            &saved.network,
+            &request.lower.network,
+            &explicit.network,
+            request.mode,
+        ),
         network_policy: prepare_network_policy_configuration(
             &saved.network,
             &request.lower.network,
