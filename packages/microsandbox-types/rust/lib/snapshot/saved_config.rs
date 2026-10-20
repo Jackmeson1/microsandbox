@@ -6,6 +6,7 @@
 mod bindings;
 mod document;
 mod execution;
+mod gateway_capture;
 mod inventory;
 mod network;
 mod network_capture;
@@ -20,6 +21,8 @@ mod value;
 
 #[cfg(test)]
 mod document_tests;
+#[cfg(test)]
+mod gateway_capture_tests;
 #[cfg(test)]
 mod network_tests;
 #[cfg(test)]
@@ -36,6 +39,7 @@ pub use document::{
     SAVED_CONFIG_SCHEMA_VERSION, SavedActiveConfig, SavedCaptureProvenance, SavedSandboxConfig,
 };
 pub use execution::{SavedExecutionConfig, SavedLifetimePolicy, SavedRlimit, SavedU64};
+pub use gateway_capture::SavedTlsCaptureBindings;
 pub use inventory::{
     SavedBindingConsumer, SavedBindingKind, SavedBindingUse, SavedBindingUses,
     collect_binding_uses, validate_binding_inventory,
