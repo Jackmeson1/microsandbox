@@ -39,6 +39,7 @@ mod creation_progress;
 mod exec_adapter;
 mod jobs;
 mod resize;
+mod resize_operations;
 mod restore;
 mod setup;
 mod storage;

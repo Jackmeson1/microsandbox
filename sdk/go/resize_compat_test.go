@@ -49,3 +49,39 @@ func TestResizeRefusesOlderNativeLibrary(t *testing.T) {
 		})
 	}
 }
+
+// The older binding may support ordinary resize status but lacks the additive
+// operation entry point. Invalid handles prove no native dispatch happens.
+func TestResizeOperationsRefuseOlderNativeLibrary(t *testing.T) {
+	path := os.Getenv("MSB_OLD_RESIZE_OPERATIONS_NATIVE")
+	if path == "" {
+		t.Skip("requires a native library predating operation tracking")
+	}
+	if err := ffi.Load(path); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	sandbox := &Sandbox{inner: new(ffi.Sandbox)}
+	handle := &SandboxHandle{name: "missing", backendKind: BackendLocal}
+	records := []ResizeOperation{resizeRecord()}
+	for name, call := range map[string]func() error{
+		"sandbox modify": func() error { _, err := sandbox.ModifyWithResizeTracking(ctx, ModifyOptions{}); return err },
+		"handle modify":  func() error { _, err := handle.ModifyWithResizeTracking(ctx, ModifyOptions{}); return err },
+		"sandbox read":   func() error { _, err := sandbox.ResizeOperations(ctx); return err },
+		"handle read":    func() error { _, err := handle.ResizeOperations(ctx); return err },
+		"sandbox wait":   func() error { _, err := sandbox.WaitForResizeOperations(ctx, records); return err },
+		"handle wait":    func() error { _, err := handle.WaitForResizeOperations(ctx, records); return err },
+		"sandbox timed wait": func() error {
+			_, err := sandbox.WaitForResizeOperationsWithTimeout(ctx, records, time.Second)
+			return err
+		},
+		"handle timed wait": func() error { _, err := handle.WaitForResizeOperationsWithTimeout(ctx, records, 0); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := call()
+			if !IsKind(err, ErrUnsupportedOperation) {
+				t.Fatalf("did not refuse before dispatch: %v", err)
+			}
+		})
+	}
+}

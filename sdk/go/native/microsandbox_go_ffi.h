@@ -1124,6 +1124,20 @@ char *msb_sandbox_wait_until_resized(uint64_t cancel_id,
                                      uintptr_t buf_len);
 
 /**
+ * Apply with tracking, read current operations, or wait on supplied identities.
+ * A nonzero handle retains its backend; zero uses the supplied name. Reads and waits require
+ * the expected sandbox identity. Modify preserves the existing fresh-by-name planning contract.
+ * The optional symbol itself advertises support; no mutation is replayed through an older ABI.
+ */
+char *msb_sandbox_resize_operations(uint64_t cancel_id,
+                                    Handle handle,
+                                    const char *name,
+                                    const char *expected_id,
+                                    const char *request_json,
+                                    unsigned char *buf,
+                                    uintptr_t buf_len);
+
+/**
  * Restore a detached sandbox through a dedicated C entry point.
  */
 char *msb_sandbox_restore(uint64_t cancel_id,

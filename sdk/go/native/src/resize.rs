@@ -8,7 +8,7 @@ use std::{
 
 use microsandbox::{
     MicrosandboxError,
-    sandbox::{DEFAULT_RESIZE_READ_TIMEOUT, ResourceResizeStatus, SandboxHandle},
+    sandbox::{DEFAULT_RESIZE_READ_TIMEOUT, ResizeOperation, ResourceResizeStatus, SandboxHandle},
 };
 
 use super::{FfiError, Handle, cstr, get, identified_sandbox_handle, run_c};
@@ -49,22 +49,27 @@ async fn wait_identified_until_resized(
     expected_id: &str,
     timeout: Option<Duration>,
 ) -> Result<Vec<microsandbox::sandbox::ResourceResizeStatus>, FfiError> {
-    wait_with_lookup(name, timeout, identified_sandbox_handle(name, expected_id)).await
+    wait_with_lookup(
+        name,
+        timeout,
+        identified_sandbox_handle(name, expected_id),
+        None,
+    )
+    .await
 }
 
 /// Lookup is part of the same deadline, including the bounded single-read case.
-async fn wait_with_lookup<L>(
+pub(super) async fn wait_with_lookup<L>(
     name: &str,
     timeout: Option<Duration>,
     lookup: L,
+    operations: Option<&[ResizeOperation]>,
 ) -> Result<Vec<ResourceResizeStatus>, FfiError>
 where
     L: Future<Output = Result<SandboxHandle, FfiError>> + Send,
 {
     let Some(timeout) = timeout else {
-        return lookup
-            .await?
-            .wait_until_resized()
+        return wait_selected(&lookup.await?, operations, None)
             .await
             .map_err(FfiError::from);
     };
@@ -92,18 +97,33 @@ where
         // Zero still means one read, with lookup charged against its transport budget.
         tokio::time::timeout(
             remaining,
-            handle.wait_until_resized_with_timeout(Duration::ZERO),
+            wait_selected(&handle, operations, Some(Duration::ZERO)),
         )
         .await
         .map_err(|_| expired(Vec::new()))?
     } else {
         // Let the SDK own the polling deadline: a competing outer timer can discard
         // its last observed status when both deadlines expire together.
-        handle.wait_until_resized_with_timeout(remaining).await
+        wait_selected(&handle, operations, Some(remaining)).await
     };
     match result {
         Err(MicrosandboxError::ResizeTimeout { status, .. }) => Err(expired(status)),
         result => result.map_err(FfiError::from),
+    }
+}
+
+/// Share deadline handling without changing how the original current-operation wait selects IDs.
+async fn wait_selected(
+    handle: &SandboxHandle,
+    operations: Option<&[ResizeOperation]>,
+    timeout: Option<Duration>,
+) -> Result<Vec<ResourceResizeStatus>, MicrosandboxError> {
+    match operations {
+        Some(operations) => handle.wait_for_resize_operations(operations, timeout).await,
+        None => match timeout {
+            Some(timeout) => handle.wait_until_resized_with_timeout(timeout).await,
+            None => handle.wait_until_resized().await,
+        },
     }
 }
 
@@ -197,6 +217,27 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn exact_wait_includes_identity_lookup_in_its_deadline() {
+        for timeout in [Duration::from_millis(5), Duration::ZERO] {
+            let budget = if timeout.is_zero() {
+                DEFAULT_RESIZE_READ_TIMEOUT
+            } else {
+                timeout
+            };
+            let lookup = std::future::pending::<Result<SandboxHandle, FfiError>>();
+            let error = tokio::time::timeout(
+                budget + Duration::from_secs(2),
+                wait_with_lookup("blocked-exact-lookup", Some(timeout), lookup, Some(&[])),
+            )
+            .await
+            .expect("exact wait lookup exceeded its budget")
+            .unwrap_err();
+            assert_eq!(error.kind, "resize_timeout");
+            assert!(error.resize_status.as_ref().is_some_and(Vec::is_empty));
+        }
+    }
+
+    #[tokio::test]
     async fn zero_and_positive_waits_bound_a_pending_identity_lookup() {
         for timeout in [Duration::from_millis(5), Duration::ZERO] {
             let budget = if timeout.is_zero() {
@@ -207,7 +248,7 @@ mod tests {
             let lookup = std::future::pending::<Result<SandboxHandle, FfiError>>();
             let error = tokio::time::timeout(
                 budget + Duration::from_secs(2),
-                wait_with_lookup("blocked-lookup", Some(timeout), lookup),
+                wait_with_lookup("blocked-lookup", Some(timeout), lookup, None),
             )
             .await
             .expect("identity lookup exceeded the complete wait budget")
