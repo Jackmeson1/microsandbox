@@ -8,6 +8,12 @@ mod demand_tests;
 mod execution;
 #[cfg(test)]
 mod execution_tests;
+#[cfg(test)]
+mod gateway_input_tests;
+mod gateway_inputs;
+#[cfg(test)]
+mod listener_tests;
+mod listeners;
 mod network_policy;
 #[cfg(test)]
 mod network_policy_tests;
@@ -35,6 +41,10 @@ pub use demand::{
 pub use execution::{
     DestinationGuestSecurity, ExecutionDefaultClear, ExecutionDefaultSelection,
     ExecutionRestoreMode, LifetimeDefaultSelection, select_execution_defaults,
+};
+pub use gateway_inputs::{GatewayInputPlan, select_gateway_inputs};
+pub use listeners::{
+    ListenerBindingInput, ListenerInputPlan, ListenerInputSelection, select_listener_inputs,
 };
 pub use network_policy::{
     DestinationNetworkBaseline, NetworkPolicyApproval, NetworkPolicyClear, NetworkPolicySelection,
