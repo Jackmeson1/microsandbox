@@ -28,7 +28,7 @@ pub struct SecretInputSelection {
 
 /// Selection only; binding preparation, policy enforcement and captured-state checks remain.
 pub struct SecretInputPlan {
-    /// Keyed entries, retaining every unsupplied selected requirement.
+    /// Saved order with replacements in place, followed by new destination entries.
     pub entries: Vec<SecretInputSelection>,
     /// Lower-priority global policy only; this patch never contains secret entries or values.
     pub global_defaults: SecretsConfigPatch,
@@ -97,17 +97,18 @@ pub fn select_secret_inputs(
         .validate()
         .map_err(|_| error("SCFG_VALUE", "invalid saved substitution metadata"))?;
     let configured = saved.and_then(SavedValue::value);
-    let mut entries = BTreeMap::new();
+    // Substitution can depend on order (including overlapping placeholders). Use
+    // the map only for identity lookup, never to reorder the resulting policy.
+    let mut positions = BTreeMap::new();
+    let mut entries = Vec::new();
     if let Some(source) = configured {
         for secret in &source.entries {
-            entries.insert(
-                secret.env_var.clone(),
-                SecretInputSelection {
-                    env_var: secret.env_var.clone(),
-                    saved: Some(secret.clone()),
-                    destination: None,
-                },
-            );
+            positions.insert(secret.env_var.clone(), entries.len());
+            entries.push(SecretInputSelection {
+                env_var: secret.env_var.clone(),
+                saved: Some(secret.clone()),
+                destination: None,
+            });
         }
     }
     let supplied = explicit.and_then(SecretsConfigPatch::get_secrets);
@@ -125,13 +126,15 @@ pub fn select_secret_inputs(
         secret
             .validate(0)
             .map_err(|_| error("SCFG_VALUE", "invalid destination substitution policy"))?;
-        let entry = entries
-            .entry(secret.env_var.clone())
-            .or_insert_with(|| SecretInputSelection {
+        let position = *positions.entry(secret.env_var.clone()).or_insert_with(|| {
+            entries.push(SecretInputSelection {
                 env_var: secret.env_var.clone(),
                 saved: None,
                 destination: None,
             });
+            entries.len() - 1
+        });
+        let entry = &mut entries[position];
         if full_resume
             && entry
                 .saved
@@ -151,7 +154,7 @@ pub fn select_secret_inputs(
     // Validate the combined view, not just each input list. Reusing a placeholder for
     // a different surviving key would route existing guest traffic to another secret.
     let mut placeholders = BTreeSet::new();
-    for entry in entries.values() {
+    for entry in &entries {
         let placeholder = match (&entry.destination, &entry.saved) {
             (Some(destination), _) => &destination.placeholder,
             (None, Some(saved)) => &saved.placeholder,
@@ -189,7 +192,7 @@ pub fn select_secret_inputs(
         }
     }
     let tls_identity_approvals = entries
-        .values()
+        .iter()
         .filter(|entry| {
             entry.destination.is_none()
                 && entry
@@ -200,7 +203,7 @@ pub fn select_secret_inputs(
         .map(|entry| entry.env_var.clone())
         .collect();
     Ok(SecretInputPlan {
-        entries: entries.into_values().collect(),
+        entries,
         global_defaults,
         global_passthrough_absent,
         remaining_bindings,
