@@ -6,10 +6,11 @@ use microsandbox_types::snapshot::saved_config::{
     MAX_SAVED_CONFIG_ENTRIES, SavedBindingReference, SavedOrigin, SavedPublishedPort,
     SavedUnknownReason, SavedValue,
 };
-use microsandbox_types::{PortProtocol, PublishedPortSpec};
+use microsandbox_types::{NetworkSpec, PortProtocol, PublishedPortSpec};
 
 use super::{
-    BindingDemandContext, ListenerBindingInput, plan_binding_demand, select_listener_inputs,
+    BindingDemandContext, ListenerBindingInput, plan_binding_demand,
+    prepare_listener_configuration, select_listener_inputs,
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -49,6 +50,92 @@ fn binding(host_port: u16) -> ListenerBindingInput {
 //--------------------------------------------------------------------------------------------------
 // Tests
 //--------------------------------------------------------------------------------------------------
+
+#[test]
+fn preparation_preserves_shared_tcp_udp_ephemeral_listeners_and_full_obligations() {
+    let source = saved(&[
+        ("shared", 80, PortProtocol::Tcp),
+        ("shared", 53, PortProtocol::Udp),
+    ]);
+    let before = serde_json::to_vec(&source).unwrap();
+    let plan = prepare_listener_configuration(
+        Some(&source),
+        &[],
+        &BTreeMap::from([("shared".into(), binding(0))]),
+        true,
+    )
+    .unwrap();
+    let mut network = NetworkSpec::default();
+    network.strict = false;
+    plan.apply_to(&mut network).unwrap();
+    assert_eq!(network.ports.len(), 2);
+    assert_eq!(network.ports[0].host_port, 0);
+    assert_eq!(network.ports[1].host_port, 0);
+    assert_eq!(network.ports[0].protocol, PortProtocol::Tcp);
+    assert_eq!(network.ports[1].protocol, PortProtocol::Udp);
+    assert!(!network.strict);
+    assert!(plan.selection().requires_full_compatibility);
+    assert_eq!(serde_json::to_vec(&source).unwrap(), before);
+    assert!(!format!("{plan:?}").contains("127.0.0.1"));
+}
+
+#[test]
+fn preparation_cannot_drop_an_unsupplied_shared_listener_consumer() {
+    let source = saved(&[
+        ("shared", 80, PortProtocol::Tcp),
+        ("shared", 53, PortProtocol::Udp),
+    ]);
+    let error = prepare_listener_configuration(
+        Some(&source),
+        &[port(8080, 80, PortProtocol::Tcp)],
+        &BTreeMap::new(),
+        false,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("SCFG_BINDING"));
+    assert!(!error.to_string().contains("shared"));
+    assert!(prepare_listener_configuration(Some(&source), &[], &BTreeMap::new(), false).is_err());
+}
+
+#[test]
+fn unknown_listener_inventory_cannot_partially_overwrite_network() {
+    let source = SavedValue::Unknown {
+        reason: SavedUnknownReason::NotObserved,
+    };
+    for saved in [None, Some(&source)] {
+        let plan = prepare_listener_configuration(
+            saved,
+            &[port(8080, 80, PortProtocol::Tcp)],
+            &BTreeMap::new(),
+            false,
+        )
+        .unwrap();
+        let mut network = NetworkSpec::default();
+        network.ports.push(port(9090, 90, PortProtocol::Tcp));
+        network.strict = false;
+        let before = serde_json::to_vec(&network).unwrap();
+        assert!(
+            plan.apply_to(&mut network)
+                .unwrap_err()
+                .to_string()
+                .contains("SCFG_UNKNOWN")
+        );
+        assert_eq!(serde_json::to_vec(&network).unwrap(), before);
+    }
+}
+
+#[test]
+fn known_empty_listener_inventory_replaces_lower_ports_without_changing_policy() {
+    let source = SavedValue::Default {};
+    let plan = prepare_listener_configuration(Some(&source), &[], &BTreeMap::new(), false).unwrap();
+    let mut network = NetworkSpec::default();
+    network.ports.push(port(9090, 90, PortProtocol::Tcp));
+    network.strict = false;
+    plan.apply_to(&mut network).unwrap();
+    assert!(network.ports.is_empty());
+    assert!(!network.strict);
+    assert!(plan.selection().source_defaulted);
+}
 
 #[test]
 fn one_native_mapping_preserves_other_services_and_shared_transport_requirements() {

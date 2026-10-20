@@ -46,6 +46,9 @@ mod secret_preparation_tests;
 mod secret_tests;
 mod secrets;
 mod storage;
+mod storage_preparation;
+#[cfg(test)]
+mod storage_preparation_tests;
 #[cfg(test)]
 mod storage_tests;
 #[cfg(test)]
@@ -69,7 +72,8 @@ pub use gateway_preparation::{
     GatewayBindingInput, GatewayConfigurationPlan, prepare_gateway_configuration,
 };
 pub use listeners::{
-    ListenerBindingInput, ListenerInputPlan, ListenerInputSelection, select_listener_inputs,
+    ListenerBindingInput, ListenerConfigurationPlan, ListenerInputPlan, ListenerInputSelection,
+    prepare_listener_configuration, select_listener_inputs,
 };
 pub use network_assembly::{NetworkPolicyConfigurationPlan, prepare_network_policy_configuration};
 pub use network_policy::{
@@ -95,6 +99,9 @@ pub use secrets::{SecretInputPlan, SecretInputSelection, select_secret_inputs};
 pub use storage::{
     MountInputSelection, StorageApprovalRequirement, StorageInputSelection, StorageRelaxation,
     VsockInputSelection, select_storage_inputs,
+};
+pub use storage_preparation::{
+    StorageBindingInput, StorageConfigurationPlan, prepare_storage_configuration,
 };
 pub use types::{
     RuntimeDefaultClear, RuntimeDefaultSelection, RuntimeSelectionContext, SnapshotConfigMode,
