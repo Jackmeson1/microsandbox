@@ -685,6 +685,8 @@ func (s *Sandbox) WaitForResizeOperationsWithTimeout(ctx context.Context, operat
 
 Wait on the supplied one or two records, rechecking identities and immutable request fields. Reconnection to the same runtime is supported. Runtime replacement, expired history and supersession fail instead of following a newer request; supplied applied status is not proof. The first method has no built-in deadline; cancel its context to stop waiting. The timed method treats zero or negative duration as one bounded check. `ResizeTimeoutError.Status` retains completed resource reads. Cancellation and timeout do not undo the resize. Unsupported observation is an error, never successful completion.
 
+The runtime retains at most 256 operation records, protecting the latest CPU and memory records from eviction. Older records can expire; restarting the runtime clears its history. Resident pause preserves the history. An expired identity cannot establish completion.
+
 Use `errors.As` with `*ResizeWaitError` to inspect `Reason`, optional `Sandbox`/`OperationID` and verified `Status`; `IsKind` recognizes `ErrResizeWait`. Reasons distinguish supersession, interrupted continuity, unavailable history, invalid responses and unavailable observations. Timeout and unsupported-feature errors remain separate. An observation failure does not undo the resize or prove that it failed.
 
 #### <span className="msb-recv">sb.</span><span className="msb-hn">ResizeStatus()</span>

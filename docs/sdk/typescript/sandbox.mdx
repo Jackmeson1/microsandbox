@@ -649,6 +649,8 @@ waitForResizeOperations(
 
 Wait on the supplied one or two records, rechecking their identities against the runtime. Reconnection to the same runtime is supported. Runtime replacement, expired history or supersession fails instead of following a new request; caller-supplied applied status is not proof. An omitted timeout waits indefinitely and zero performs one bounded check. Expiry raises `ResizeTimeoutError` with completed per-resource reads and does not undo the resize. Unsupported observation is an error, never successful completion.
 
+The runtime retains at most 256 operation records, protecting the latest CPU and memory records from eviction. Older records can expire; restarting the runtime clears its history. Resident pause preserves the history. An expired identity cannot establish completion.
+
 `ResizeWaitError` exposes `reason`, `sandbox`, `operationId`, verified `status` and the native error as `cause`. Reasons distinguish `superseded`, `interrupted`, `history_unavailable`, `invalid_response` and `observation_unavailable`. None implies rollback or final failure of the resize. Timeout and unsupported-feature errors remain separate; unknown future peer errors retain their ordinary mapping.
 
 #### <span className="msb-recv">sandbox.</span><span className="msb-hn">resizeStatus()</span>
