@@ -26,6 +26,11 @@ pub struct PreparedSnapshotImport {
 //--------------------------------------------------------------------------------------------------
 
 impl PreparedSnapshotImport {
+    /// Capture the current default backend and the local meaning of input paths.
+    ///
+    /// Local archive, destination and base paths are anchored now, before deferred
+    /// binding work can observe a different working directory. File contents are
+    /// read and validated when an import method runs, not by this constructor.
     pub fn new(files: Vec<PathBuf>, options: LoadOpts) -> MicrosandboxResult<Self> {
         Self::with_backend(default_backend(), files, options)
     }
@@ -63,6 +68,8 @@ impl PreparedSnapshotImport {
         Ok(self)
     }
 
+    /// Import the prepared inputs into the named group on the retained backend.
+    /// Returns the imported checkpoints and the resulting group/head outcome.
     pub async fn group(self, name: String) -> MicrosandboxResult<SnapshotImportResult> {
         #[cfg(feature = "local")]
         if let Some(local) = self.backend.as_local() {
@@ -81,6 +88,8 @@ impl PreparedSnapshotImport {
             .await
     }
 
+    /// Import the prepared inputs and return their retained checkpoint handles.
+    /// Uses the backend and path meanings fixed when this request was constructed.
     pub async fn checkpoints(self) -> MicrosandboxResult<Vec<SnapshotHandle>> {
         #[cfg(feature = "local")]
         if let Some(local) = self.backend.as_local() {
@@ -98,6 +107,9 @@ impl PreparedSnapshotImport {
             .await
     }
 
+    /// Import the prepared inputs and return the first resulting checkpoint.
+    /// Returns an error if the backend reports no checkpoints; this is not an
+    /// exact-member selector and does not restrict a batch to one imported member.
     pub async fn checkpoint(self) -> MicrosandboxResult<SnapshotHandle> {
         self.checkpoints().await?.into_iter().next().ok_or_else(|| {
             MicrosandboxError::Runtime("snapshot import returned no checkpoint".into())
