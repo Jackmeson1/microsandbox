@@ -69,15 +69,19 @@ impl Generation {
         let root = group
             .parent()
             .ok_or_else(|| integrity("group has no parent".into()))?;
-        let directory = tempfile::Builder::new()
-            .prefix(".group-generation-")
-            .tempdir_in(root)?;
         super::validate_ancestry(&members)?;
         if let Some(head) = &head
             && !members.contains_key(head)
         {
             return Err(integrity("staged head is not a member".into()));
         }
+        // Retry cleanup before another exchange can retire its published records.
+        // Writer admission excludes a live preparation for this group.
+        retirement::recover(group)?;
+        let directory = tempfile::Builder::new()
+            .prefix(".group-generation-")
+            .tempdir_in(root)?;
+        retirement::stage_preparation(group, directory.path())?;
         // Seed every published member's namespace before copying the lock directory.
         // An older reader may first acquire its namespace lease after preparation;
         // that lease must refer to the same file in both directory generations.
@@ -92,6 +96,11 @@ impl Generation {
             link_tree(&member.path, &destination)?;
             write_member_name(&destination, member.name.as_deref())?;
             sync_directory(&destination)?;
+            #[cfg(test)]
+            {
+                publication_boundary(group, "linking");
+                super::removal::publication_boundary(group, "linking");
+            }
         }
         // Mutable metadata has a distinct inode; truncating the staged copy must never
         // change the published generation. The group lock instead MUST keep its identity.
@@ -150,7 +159,7 @@ impl Generation {
 // Functions
 //--------------------------------------------------------------------------------------------------
 
-/// Recover only generations named by a published, identity-checked retirement journal.
+/// Recover only generations named by published, identity-checked cleanup journals.
 /// Caller retains group writer admission through this blocking operation.
 pub(super) fn recover_retired(group: &Path) -> MicrosandboxResult<()> {
     retirement::recover(group)
