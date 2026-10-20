@@ -21,6 +21,9 @@ mod network_policy_tests;
 mod resource_tests;
 mod resources;
 mod runtime;
+mod runtime_assembly;
+#[cfg(test)]
+mod runtime_assembly_tests;
 #[cfg(test)]
 mod runtime_input_tests;
 mod runtime_inputs;
@@ -57,6 +60,9 @@ pub use resources::{
     ResourceDefaultClear, ResourceDefaultSelection, ResourceRestoreMode, select_resource_defaults,
 };
 pub use runtime::select_runtime_defaults;
+pub use runtime_assembly::{
+    PreparedCommandDefaults, RuntimeConfigurationPlan, prepare_runtime_configuration,
+};
 pub use runtime_inputs::{
     PreparedRuntimeInit, PreparedRuntimeScript, PreparedRuntimeValue, RuntimeBindingInput,
     RuntimeInputPlan, prepare_runtime_inputs,
