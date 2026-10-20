@@ -2,9 +2,13 @@
 //!
 //! No launch path calls this module until complete policy and deferred-exec enforcement land.
 
+mod configuration;
+#[cfg(test)]
+mod configuration_tests;
 mod demand;
 #[cfg(test)]
 mod demand_tests;
+mod destination_bindings;
 mod execution;
 mod execution_assembly;
 #[cfg(test)]
@@ -59,9 +63,14 @@ mod types;
 // Re-Exports
 //--------------------------------------------------------------------------------------------------
 
+pub use configuration::{
+    SavedConfigurationClears, SavedConfigurationContext, SavedConfigurationPlan,
+    SavedConfigurationRequest, prepare_saved_configuration,
+};
 pub use demand::{
     BindingDemand, BindingDemandContext, BindingDemandPlan, BindingSupplyGaps, plan_binding_demand,
 };
+pub use destination_bindings::ConfigurationBindingInput;
 pub use execution::{
     DestinationGuestSecurity, ExecutionDefaultClear, ExecutionDefaultSelection,
     ExecutionRestoreMode, LifetimeDefaultSelection, select_execution_defaults,

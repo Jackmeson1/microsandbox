@@ -22,6 +22,7 @@ use crate::{MicrosandboxError, MicrosandboxResult};
 
 /// Destination-owned gateway material. Paths retain the caller's existing resolution policy;
 /// none is opened here. Credential sources are resolved by the normal launch preparation.
+#[derive(Clone)]
 pub enum GatewayBindingInput {
     /// One resolver, in the native IP/hostname and optional-port syntax.
     DnsResolver(String),
@@ -53,7 +54,7 @@ struct InputBudget(usize);
 //--------------------------------------------------------------------------------------------------
 
 impl GatewayBindingInput {
-    fn kind(&self) -> SavedBindingKind {
+    pub(super) fn kind(&self) -> SavedBindingKind {
         match self {
             Self::DnsResolver(_) => SavedBindingKind::DnsResolver,
             Self::Certificate(_) => SavedBindingKind::Certificate,

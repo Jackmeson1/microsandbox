@@ -19,6 +19,7 @@ use crate::{MicrosandboxError, MicrosandboxResult};
 //--------------------------------------------------------------------------------------------------
 
 /// Explicit destination text; no environment/store/file lookup is performed here.
+#[derive(Clone)]
 pub struct RuntimeBindingInput {
     /// Prepared UTF-8 content, cleared when this buffer is dropped.
     pub text: Zeroizing<String>,
