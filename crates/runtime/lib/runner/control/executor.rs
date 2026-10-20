@@ -10,15 +10,13 @@ use rand::Rng as _;
 use sha2::{Digest as _, Sha256};
 
 use super::resize::ResizeTracker;
-use super::resize_memory::{MemoryDeviceEvidence, observe_memory};
+use super::resize_observer::ResizeObserver;
 use crate::checkpoint::{CheckpointCoordinator, CheckpointResult, UserPause};
 use crate::control::*;
 use crate::vm::VmConfig;
 use microsandbox_protocol::bootstrap::GuestBootstrap;
 use microsandbox_protocol::control::ControlError as FramedControlError;
-use microsandbox_protocol::resize::{
-    ResizeObservation, ResizeOutcome, ResizeRequest, ResizeResponse, ResizeTarget,
-};
+use microsandbox_protocol::resize::{ResizeOutcome, ResizeRequest, ResizeResponse, ResizeTarget};
 use microsandbox_types::modify::{ResourceConvergenceState, ResourceKind, ResourceResizeStatus};
 
 //--------------------------------------------------------------------------------------------------
@@ -35,27 +33,28 @@ const RUNTIME_BOOT_ID_FILE: &str = "runtime-boot-id";
 
 /// One in-process authority for all host-owned runtime mutations.
 pub struct RuntimeControlExecutor {
-    signal_runtime: tokio::runtime::Handle,
+    pub(super) signal_runtime: tokio::runtime::Handle,
     signal_workload: std::sync::Arc<crate::runner::workload_control::WorkloadControl>,
     jobs: std::sync::Arc<crate::runner::jobs::JobManager>,
     pause_observation: std::sync::RwLock<ControlResponse>,
     resident_paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    vm: msb_krun::VmControl,
-    agent_sock: PathBuf,
+    pub(super) vm: msb_krun::VmControl,
+    pub(super) agent_sock: PathBuf,
     #[cfg(feature = "net")]
     secrets: Option<microsandbox_network::secrets::handle::SecretsHandle>,
-    state: Mutex<ExecutorState>,
+    pub(super) state: Mutex<ExecutorState>,
+    pub(super) resize_observer: ResizeObserver,
 }
 
-struct ExecutorState {
+pub(super) struct ExecutorState {
     runtime_boot_id: String,
-    resize: ResizeTracker,
+    pub(super) resize: ResizeTracker,
     revision: u64,
-    lifecycle: RuntimeLifecycle,
+    pub(super) lifecycle: RuntimeLifecycle,
     dedup: BTreeMap<String, DedupEntry>,
     dedup_order: VecDeque<String>,
     checkpoint: CheckpointCoordinator,
-    user_pause: Option<UserPause>,
+    pub(super) user_pause: Option<UserPause>,
 }
 
 #[derive(Clone)]
@@ -129,6 +128,7 @@ impl RuntimeControlExecutor {
             agent_sock: agent_sock.to_path_buf(),
             #[cfg(feature = "net")]
             secrets,
+            resize_observer: ResizeObserver::default(),
             state: Mutex::new(ExecutorState {
                 resize: ResizeTracker::new(runtime_boot_id.clone()),
                 runtime_boot_id,
@@ -255,6 +255,21 @@ impl RuntimeControlExecutor {
                 "resize identity must be nonempty printable ASCII of at most 128 bytes",
             ));
         }
+        // Never retain mutation authority while waiting for guest I/O. Another setter or
+        // lifecycle operation may run; the observer fences its result before publication.
+        let refresh = match &request {
+            ResizeRequest::Read { id, .. } => state
+                .resize
+                .get(id)
+                .is_some_and(|record| record.outcome == ResizeOutcome::Pending),
+            ResizeRequest::Current { .. } => true,
+            _ => false,
+        };
+        if refresh {
+            drop(state);
+            self.signal_runtime.block_on(self.refresh_resize(false));
+            state = self.state.lock().unwrap();
+        }
         let operations = match request {
             ResizeRequest::Hello => Vec::new(),
             ResizeRequest::Apply { target, .. } => {
@@ -290,107 +305,14 @@ impl RuntimeControlExecutor {
                         "resize identity is unknown or no longer retained in this runtime",
                     ));
                 }
-                self.observe_resize(&mut state, &id);
                 vec![state.resize.get(&id).unwrap().clone()]
             }
-            ResizeRequest::Current { .. } => {
-                for record in state.resize.current() {
-                    self.observe_resize(&mut state, &record.id);
-                }
-                state.resize.current()
-            }
+            ResizeRequest::Current { .. } => state.resize.current(),
         };
         Ok(ResizeResponse {
             tracking: state.resize.tracking(),
             operations,
         })
-    }
-
-    fn observe_resize(&self, state: &mut ExecutorState, id: &str) {
-        let Some(record) = state.resize.get(id).cloned() else {
-            return;
-        };
-        if record.outcome != ResizeOutcome::Pending {
-            return;
-        }
-        let mut status = record.status.clone();
-        let observation = if state.lifecycle != RuntimeLifecycle::Running
-            || state.user_pause.is_some()
-        {
-            ResizeObservation::Paused
-        } else {
-            let result = self.signal_runtime.block_on(async {
-                let client = microsandbox_agent_client::AgentClient::connect_with(
-                    &self.agent_sock,
-                    |options| options.setup_timeout(std::time::Duration::from_secs(1)),
-                )
-                .await?;
-                let query = microsandbox_agent_client::resources::observe_resources(
-                    &client,
-                    rand::random(),
-                    std::time::Duration::from_secs(1),
-                )
-                .await;
-                client.close().await;
-                query
-            });
-            match result {
-                Ok(report) => match record.accepted_target {
-                    ResizeTarget::Cpus { online } => match (report.cpu, self.vm.cpu_state()) {
-                    (
-                        microsandbox_protocol::resources::ResourceObservation::Available { value },
-                        Some(host),
-                    ) if value.possible == host.possible && host.requested_online == online => {
-                        status.actual = value.actual_online.to_string();
-                        status.enforced = host.enforced.to_string();
-                        status.state = if value.requested_online == online
-                            && value.actual_online == online
-                            && value.exact
-                            && host.actual_online == online
-                            && host.enforced == online
-                        {
-                            ResourceConvergenceState::Applied
-                        } else {
-                            ResourceConvergenceState::Converging
-                        };
-                        ResizeObservation::Available
-                    }
-                    (
-                        microsandbox_protocol::resources::ResourceObservation::Unavailable {
-                            reason:
-                                microsandbox_protocol::resources::ObservationUnavailable::Unsupported,
-                        },
-                        _,
-                    ) => ResizeObservation::Unsupported,
-                    _ => ResizeObservation::Unavailable,
-                    },
-                    ResizeTarget::Memory { total_mib } => observe_memory(
-                        &mut status,
-                        total_mib,
-                        self.vm.memory_device_state().map(|host| MemoryDeviceEvidence {
-                            boot_size: host.boot_size,
-                            address: host.address,
-                            region_size: host.region_size,
-                            requested_size: host.requested_size,
-                            plugged_size: host.plugged_size,
-                        }),
-                        report.memory,
-                    ),
-                },
-                Err(error)
-                    if matches!(
-                        error.kind,
-                        microsandbox_agent_client::ErrorKind::UnsupportedOperation
-                    ) =>
-                {
-                    ResizeObservation::Unsupported
-                }
-                Err(_) => ResizeObservation::Unavailable,
-            }
-        };
-        state
-            .resize
-            .observed(id, record.generation, status, observation);
     }
 
     /// Return the current immutable boot identity and mutation revision.
@@ -567,6 +489,12 @@ impl RuntimeControlExecutor {
             );
         }
 
+        if mutation {
+            // Even a failed capture can pause and resume the VM without advancing the public
+            // revision. Invalidate in-flight guest evidence before attempting any mutation.
+            state.resize.invalidate_observation();
+            self.resize_observer.wake.notify_one();
+        }
         let pause_policy = match &request {
             ControlRequest::PauseWithGuestFlush { guest_flush } => Some(*guest_flush),
             _ => None,

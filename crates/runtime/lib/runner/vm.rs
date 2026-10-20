@@ -1158,6 +1158,9 @@ fn run(
                 }
             },
         };
+        // The observer stays idle until a setter creates a pending operation. It holds only
+        // a weak executor reference while sleeping, so it cannot retain a finished runtime.
+        context.executor.start_resize_observer();
         if restored_agent.is_some() {
             Some(RestoreEndpointPublication {
                 agent_sock_path: config.agent_sock_path.clone(),

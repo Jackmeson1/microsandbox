@@ -24,7 +24,8 @@ pub(super) struct MemoryDeviceEvidence {
 // Functions
 //--------------------------------------------------------------------------------------------------
 
-/// The caller holds mutation authority throughout the guest query and host read.
+/// The caller fences the guest query against mutations and holds mutation authority
+/// while matching the host read.
 /// Plugged capacity remains the existing actual/enforced quantity; only the guest
 /// can establish whether that capacity is online and ready for this operation.
 pub(super) fn observe_memory(

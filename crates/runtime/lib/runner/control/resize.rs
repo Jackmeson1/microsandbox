@@ -1,6 +1,7 @@
 //! Runtime-incarnation-bound resize ownership, independent for CPU and memory.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 
 use microsandbox_protocol::resize::{
     MAX_RETAINED_RESIZES, ResizeObservation, ResizeOperation, ResizeOutcome, ResizeTarget,
@@ -14,6 +15,7 @@ use microsandbox_types::modify::ResourceResizeStatus;
 
 pub(super) struct ResizeTracker {
     runtime_boot_id: String,
+    observation_fence: Arc<()>,
     generations: [u64; 2],
     latest: [Option<String>; 2],
     records: BTreeMap<String, ResizeOperation>,
@@ -28,11 +30,25 @@ impl ResizeTracker {
     pub fn new(runtime_boot_id: String) -> Self {
         Self {
             runtime_boot_id,
+            observation_fence: Arc::new(()),
             generations: [0, 0],
             latest: [None, None],
             records: BTreeMap::new(),
             order: VecDeque::new(),
         }
+    }
+
+    /// An owned token cannot be reused while a query still retains it, avoiding counter ABA.
+    pub fn observation_fence(&self) -> Arc<()> {
+        Arc::clone(&self.observation_fence)
+    }
+
+    pub fn invalidate_observation(&mut self) {
+        self.observation_fence = Arc::new(());
+    }
+
+    pub fn matches_observation(&self, fence: &Arc<()>) -> bool {
+        Arc::ptr_eq(&self.observation_fence, fence)
     }
 
     pub fn tracking(&self) -> ResizeTracking {
@@ -185,6 +201,23 @@ mod tests {
             status(&target, ResourceConvergenceState::Accepted),
         )
     }
+    #[test]
+    fn failed_or_intervening_mutations_invalidate_query_evidence_without_changing_operations() {
+        let mut tracker = ResizeTracker::new("boot".into());
+        let operation = accept(&mut tracker, "cpu", ResizeTarget::Cpus { online: 2 });
+        let original = tracker.observation_fence();
+        assert!(tracker.matches_observation(&original));
+        // A failed capture can return to the same state without a successful mutation revision.
+        tracker.invalidate_observation();
+        let after_failure = tracker.observation_fence();
+        assert!(!tracker.matches_observation(&original));
+        assert!(tracker.matches_observation(&after_failure));
+        assert_eq!(tracker.get("cpu"), Some(&operation));
+        tracker.invalidate_observation();
+        assert!(!tracker.matches_observation(&original));
+        assert!(!tracker.matches_observation(&after_failure));
+    }
+
     #[test]
     fn resource_ownership_survives_other_resource_mutations_but_rejects_aba() {
         let mut tracker = ResizeTracker::new("boot".into());
