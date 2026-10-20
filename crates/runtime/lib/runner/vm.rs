@@ -913,6 +913,12 @@ fn run(
     let exit_socket_paths = socket_paths.clone();
     let exit_sandbox_name = config.sandbox_name.clone();
     let exit_sandboxes_dir = config.sandboxes_dir.clone();
+    let exit_retention_directory = config
+        .runtime_dir
+        .parent()
+        .expect("retention preparation validated the runtime parent")
+        .to_path_buf();
+    let exit_retention_boot = retention.record().owner.runtime_boot_id.clone();
     let exit_log_writer = exec_log_writer.clone();
     // Capture the activated writer so the exit observer can release the slot
     // without re-opening the registry (saving two mmap syscalls and a
@@ -973,6 +979,22 @@ fn run(
 
             rt_handle.block_on(async {
                 let now = chrono::Utc::now().naive_utc();
+
+                // Preserve catalog provenance before terminal_sandbox_update clears it. This
+                // reads the durable generation, so exit never waits for the control mutex of
+                // an operation that may itself be waiting for the VM to finish exiting.
+                if let Err(error) = crate::retention::seal_terminal(
+                    &exit_db,
+                    &exit_retention_directory,
+                    exit_sandbox_id,
+                    exit_run_id,
+                    Some(&exit_retention_boot),
+                    crate::retention::RetentionTerminalOrigin::RuntimeExit,
+                )
+                .await
+                {
+                    tracing::warn!(%error, "terminal configuration evidence unavailable");
+                }
 
                 if let Err(error) = exit_writeback_guard.release(&exit_db).await {
                     tracing::warn!(%error, "release writeback pressure membership at VM exit");

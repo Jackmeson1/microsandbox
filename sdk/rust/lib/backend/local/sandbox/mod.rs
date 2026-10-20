@@ -867,6 +867,21 @@ impl LocalBackend {
         }
 
         if let Some((run_dir, sandboxes_dir)) = socket_roots {
+            // Preserve last-active provenance while lifecycle ownership is held, before
+            // stale-state cleanup clears active_config. Missing older-runtime evidence is
+            // unknown; recording failure must not strand an already dead sandbox.
+            if let Err(error) = microsandbox_runtime::retention::seal_terminal(
+                pools.write(),
+                &sandboxes_dir.join(&sandbox.name),
+                sandbox.id,
+                run.id,
+                None,
+                microsandbox_runtime::retention::RetentionTerminalOrigin::ReconciledDeath,
+            )
+            .await
+            {
+                tracing::warn!(%error, "reconciled configuration evidence unavailable");
+            }
             crate::runtime::remove_sandbox_socket_artifacts_at(
                 run_dir,
                 sandboxes_dir,

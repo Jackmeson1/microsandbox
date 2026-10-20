@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 //--------------------------------------------------------------------------------------------------
 // Constants
@@ -18,6 +19,7 @@ use serde_json::Value;
 const SCHEMA: u32 = 1;
 const DIRECTORY: &str = "last-active";
 const RECORD: &str = "state.json";
+const TERMINAL: &str = "terminal.json";
 
 //--------------------------------------------------------------------------------------------------
 // Types
@@ -96,9 +98,50 @@ pub struct RetentionJournal {
     record: RetentionRecord,
 }
 
+/// Who established that the recorded runtime no longer owns the sandbox.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetentionTerminalOrigin {
+    /// The VM's exit observer, before clearing active configuration.
+    RuntimeExit,
+    /// Maintenance proved the process dead while holding lifecycle ownership.
+    ReconciledDeath,
+}
+
+/// A local terminal receipt preserves catalog provenance before terminal cleanup clears it.
+///
+/// It contains no configuration values. An absent digest means evidence was unavailable or
+/// inconsistent; neither a terminal run nor an old journal alone can fill that gap.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetentionTerminal {
+    schema: u32,
+    owner: RetentionOwner,
+    generation: u64,
+    origin: RetentionTerminalOrigin,
+    source_sha256: Option<String>,
+}
+
 //--------------------------------------------------------------------------------------------------
 // Methods
 //--------------------------------------------------------------------------------------------------
+
+impl RetentionTerminal {
+    /// Match a terminal receipt to independently checked ownership and the exact retained source.
+    /// Callers must still establish that this is the latest run and that its process is gone.
+    pub fn current<'a>(
+        &self,
+        owner: &RetentionOwner,
+        record: &'a RetentionRecord,
+    ) -> Option<&'a RetainedConfiguration> {
+        if self.schema != SCHEMA || self.owner != *owner || self.generation != record.generation {
+            return None;
+        }
+        let confirmed = record.current(owner)?;
+        let digest = source_digest(confirmed.source.as_ref()?).ok()?;
+        (self.source_sha256.as_deref() == Some(digest.as_str())).then_some(confirmed)
+    }
+}
 
 impl RetentionOwner {
     /// Read existing catalog rows without adding columns, tables or migration ledger entries.
@@ -153,30 +196,9 @@ impl RetentionRecord {
 impl RetentionJournal {
     /// Read without creating, repairing or treating a missing record as confirmed configuration.
     pub fn read(sandbox_directory: &Path) -> io::Result<Option<RetentionRecord>> {
-        let directory = sandbox_directory.join(DIRECTORY);
-        match fs::symlink_metadata(&directory) {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
-            Ok(_) => return Err(invalid("retention directory is not a real directory")),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error),
-        }
-        let mut options = OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-        }
-        let file = match options.open(directory.join(RECORD)) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error),
+        let Some(record) = read_private_json::<RetentionRecord>(sandbox_directory, RECORD)? else {
+            return Ok(None);
         };
-        if !file.metadata()?.is_file() {
-            return Err(invalid("retention record is not a regular file"));
-        }
-        let record: RetentionRecord =
-            serde_json::from_reader(file).map_err(|_| invalid("invalid retention record"))?;
         if record.schema != SCHEMA || record.generation == 0 {
             return Err(invalid("unsupported retention record"));
         }
@@ -191,6 +213,18 @@ impl RetentionJournal {
             return Err(invalid("inconsistent retention generation"));
         }
         Ok(Some(record))
+    }
+
+    /// Read a terminal receipt without creating one or changing lifecycle state.
+    pub fn read_terminal(sandbox_directory: &Path) -> io::Result<Option<RetentionTerminal>> {
+        let receipt = read_private_json::<RetentionTerminal>(sandbox_directory, TERMINAL)?;
+        if receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.schema != SCHEMA || receipt.generation == 0)
+        {
+            return Err(invalid("unsupported retention terminal receipt"));
+        }
+        Ok(receipt)
     }
 
     /// Durably fence activation before entering the guest. Previous confirmed evidence survives,
@@ -288,21 +322,7 @@ impl RetentionJournal {
     }
 
     fn write(&self, record: &RetentionRecord) -> io::Result<()> {
-        private_directory(&self.directory)?;
-        // A newly created directory must survive alongside the pre-effect record. The sandbox
-        // parent is already owned and durable before runtime launch.
-        sync_directory(
-            self.directory
-                .parent()
-                .ok_or_else(|| invalid("retention directory has no parent"))?,
-        )?;
-        let mut temporary = tempfile::NamedTempFile::new_in(&self.directory)?;
-        serde_json::to_writer(&mut temporary, record)
-            .map_err(|_| invalid("could not encode retention record"))?;
-        temporary.flush()?;
-        temporary.as_file().sync_all()?;
-        crate::checkpoint::replace_file(temporary.path(), &self.directory.join(RECORD))?;
-        sync_directory(&self.directory)
+        write_private_json(&self.directory, RECORD, record)
     }
 }
 
@@ -319,6 +339,163 @@ impl std::fmt::Debug for RetentionSource {
 //--------------------------------------------------------------------------------------------------
 // Functions
 //--------------------------------------------------------------------------------------------------
+
+/// Preserve last-run provenance before clearing active configuration.
+///
+/// The caller must be the exiting runtime or hold lifecycle ownership after proving its
+/// process dead. This never changes the catalog and never turns unknown evidence into defaults.
+pub async fn seal_terminal(
+    db: &microsandbox_db::DbWriteConnection,
+    sandbox_directory: &Path,
+    sandbox_id: i32,
+    run_id: i32,
+    expected_boot_id: Option<&str>,
+    origin: RetentionTerminalOrigin,
+) -> io::Result<bool> {
+    let Some(record) = RetentionJournal::read(sandbox_directory)? else {
+        return Ok(false);
+    };
+    if record.owner.sandbox_id != sandbox_id
+        || record.owner.run_id != run_id
+        || expected_boot_id.is_some_and(|boot| record.owner.runtime_boot_id != boot)
+    {
+        return Ok(false);
+    }
+    let catalog = db
+        .query_one_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT file FROM pragma_database_list WHERE name = 'main'",
+        ))
+        .await
+        .map_err(|_| invalid("could not identify retention catalog"))?
+        .ok_or_else(|| invalid("retention catalog is missing"))?;
+    let path: String = catalog
+        .try_get("", "file")
+        .map_err(|_| invalid("invalid retention catalog path"))?;
+    if path.is_empty() {
+        return Ok(false);
+    }
+    let owner = RetentionOwner::for_run(
+        db,
+        Path::new(&path),
+        sandbox_id,
+        run_id,
+        record.owner.runtime_boot_id.clone(),
+    )
+    .await?;
+    if owner != record.owner {
+        return Ok(false);
+    }
+    // A retry after catalog cleanup must not erase a valid earlier receipt merely because
+    // active_config has already been cleared. A later owner/generation cannot reuse it.
+    if RetentionJournal::read_terminal(sandbox_directory)?
+        .is_some_and(|receipt| receipt.current(&owner, &record).is_some())
+    {
+        return Ok(true);
+    }
+    let active = if microsandbox_db::catalog::has_column(db, "sandbox", "active_config")
+        .await
+        .map_err(|_| invalid("could not inspect active configuration support"))?
+    {
+        let row = db
+            .query_one_raw(Statement::from_sql_and_values(
+                DbBackend::Sqlite,
+                "SELECT active_config FROM sandbox WHERE id = ?",
+                [sandbox_id.into()],
+            ))
+            .await
+            .map_err(|_| invalid("could not read terminal active configuration"))?
+            .ok_or_else(|| invalid("terminal sandbox is missing"))?;
+        let json: Option<String> = row
+            .try_get("", "active_config")
+            .map_err(|_| invalid("invalid terminal active configuration"))?;
+        json.map(|json| {
+            serde_json::from_str::<Value>(&json)
+                .map_err(|_| invalid("invalid terminal configuration document"))
+        })
+        .transpose()?
+    } else {
+        None
+    };
+    publish_terminal(sandbox_directory, &record, active.as_ref(), origin)
+}
+
+fn publish_terminal(
+    sandbox_directory: &Path,
+    record: &RetentionRecord,
+    active: Option<&Value>,
+    origin: RetentionTerminalOrigin,
+) -> io::Result<bool> {
+    let source_sha256 = record
+        .current(&record.owner)
+        .and_then(|confirmed| confirmed.source.as_ref())
+        .filter(|source| Some(*source) == active)
+        .map(source_digest)
+        .transpose()?;
+    let receipt = RetentionTerminal {
+        schema: SCHEMA,
+        owner: record.owner.clone(),
+        generation: record.generation,
+        origin,
+        source_sha256,
+    };
+    write_private_json(&sandbox_directory.join(DIRECTORY), TERMINAL, &receipt)?;
+    Ok(true)
+}
+
+fn source_digest(source: &Value) -> io::Result<String> {
+    let bytes =
+        serde_json::to_vec(source).map_err(|_| invalid("could not fingerprint retained source"))?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+fn read_private_json<T: serde::de::DeserializeOwned>(
+    sandbox_directory: &Path,
+    name: &str,
+) -> io::Result<Option<T>> {
+    let directory = sandbox_directory.join(DIRECTORY);
+    match fs::symlink_metadata(&directory) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Err(invalid("retention directory is not a real directory")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = match options.open(directory.join(name)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !file.metadata()?.is_file() {
+        return Err(invalid("retention record is not a regular file"));
+    }
+    serde_json::from_reader(file)
+        .map(Some)
+        .map_err(|_| invalid("invalid retention record"))
+}
+
+fn write_private_json(directory: &Path, name: &str, value: &impl Serialize) -> io::Result<()> {
+    private_directory(directory)?;
+    // Sync the new directory's parent before publication, then the record and its own directory.
+    sync_directory(
+        directory
+            .parent()
+            .ok_or_else(|| invalid("retention directory has no parent"))?,
+    )?;
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+    serde_json::to_writer(&mut temporary, value)
+        .map_err(|_| invalid("could not encode retention record"))?;
+    temporary.flush()?;
+    temporary.as_file().sync_all()?;
+    crate::checkpoint::replace_file(temporary.path(), &directory.join(name))?;
+    sync_directory(directory)
+}
 
 /// Identity of the opened database, including deliberate symlinked catalog paths.
 pub fn catalog_file_identity(path: &Path) -> io::Result<[u64; 2]> {
@@ -527,5 +704,190 @@ mod tests {
         ] {
             assert!(journal.record().current(&changed).is_none());
         }
+    }
+
+    #[test]
+    fn terminal_receipt_requires_matching_catalog_source_and_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = owner("boot", 1);
+        let source = serde_json::json!({"env": ["PRIVATE_SENTINEL"], "labels": {"stage": "one"}});
+        let mut journal = RetentionJournal::begin_start(dir.path(), owner.clone()).unwrap();
+        journal.confirm(Some(source.clone())).unwrap();
+
+        for active in [
+            None,
+            Some(serde_json::json!({"env": ["PRIVATE_SENTINEL"], "labels": {"stage": "two"}})),
+        ] {
+            publish_terminal(
+                dir.path(),
+                journal.record(),
+                active.as_ref(),
+                RetentionTerminalOrigin::RuntimeExit,
+            )
+            .unwrap();
+            assert!(
+                RetentionJournal::read_terminal(dir.path())
+                    .unwrap()
+                    .unwrap()
+                    .current(&owner, journal.record())
+                    .is_none()
+            );
+        }
+        publish_terminal(
+            dir.path(),
+            journal.record(),
+            Some(&source),
+            RetentionTerminalOrigin::RuntimeExit,
+        )
+        .unwrap();
+        let receipt = RetentionJournal::read_terminal(dir.path())
+            .unwrap()
+            .unwrap();
+        assert!(receipt.current(&owner, journal.record()).is_some());
+        let bytes = fs::read_to_string(dir.path().join(DIRECTORY).join(TERMINAL)).unwrap();
+        assert!(!bytes.contains("PRIVATE_SENTINEL"));
+        assert!(!bytes.contains("labels"));
+
+        journal.begin_modify().unwrap();
+        assert!(receipt.current(&owner, journal.record()).is_none());
+        journal.confirm(Some(source.clone())).unwrap();
+        assert!(receipt.current(&owner, journal.record()).is_none());
+        publish_terminal(
+            dir.path(),
+            journal.record(),
+            Some(&source),
+            RetentionTerminalOrigin::ReconciledDeath,
+        )
+        .unwrap();
+        let receipt = RetentionJournal::read_terminal(dir.path())
+            .unwrap()
+            .unwrap();
+        assert!(receipt.current(&owner, journal.record()).is_some());
+
+        let replacement_owner = RetentionOwner {
+            runtime_boot_id: "other".into(),
+            run_id: 2,
+            run_started_at: "start-2".into(),
+            ..owner.clone()
+        };
+        let replacement = RetentionJournal::begin_start(dir.path(), replacement_owner).unwrap();
+        assert!(
+            receipt
+                .current(&replacement.record().owner, replacement.record())
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_catalog_admission_preserves_receipts_after_cleanup_and_reads_old_schemas() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("catalog.db");
+        let db = microsandbox_db::DbWriteConnection::open(
+            &catalog,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        db.execute_unprepared(
+            "CREATE TABLE sandbox (id INTEGER PRIMARY KEY, created_at TEXT, active_config TEXT);
+             CREATE TABLE run (id INTEGER PRIMARY KEY, sandbox_id INTEGER, started_at TEXT);
+             INSERT INTO sandbox VALUES (1, 'sandbox-created', '{\"labels\":{}}');
+             INSERT INTO run VALUES (1, 1, 'run-started');",
+        )
+        .await
+        .unwrap();
+        let owner = RetentionOwner::for_run(&db, &catalog, 1, 1, "boot".into())
+            .await
+            .unwrap();
+        let source = serde_json::json!({"labels": {}});
+        let mut journal = RetentionJournal::begin_start(dir.path(), owner.clone()).unwrap();
+        journal.confirm(Some(source.clone())).unwrap();
+        assert!(
+            !seal_terminal(
+                &db,
+                dir.path(),
+                1,
+                1,
+                Some("wrong-boot"),
+                RetentionTerminalOrigin::RuntimeExit,
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            RetentionJournal::read_terminal(dir.path())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            seal_terminal(
+                &db,
+                dir.path(),
+                1,
+                1,
+                Some("boot"),
+                RetentionTerminalOrigin::RuntimeExit,
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            RetentionJournal::read_terminal(dir.path())
+                .unwrap()
+                .unwrap()
+                .current(&owner, journal.record())
+                .is_some()
+        );
+        db.execute_unprepared("UPDATE sandbox SET active_config = NULL")
+            .await
+            .unwrap();
+        seal_terminal(
+            &db,
+            dir.path(),
+            1,
+            1,
+            None,
+            RetentionTerminalOrigin::ReconciledDeath,
+        )
+        .await
+        .unwrap();
+        assert!(
+            RetentionJournal::read_terminal(dir.path())
+                .unwrap()
+                .unwrap()
+                .current(&owner, journal.record())
+                .is_some()
+        );
+
+        // A later generation cannot borrow the old receipt. Missing historical columns are
+        // observed as unavailable evidence; no schema creation or fallback write is attempted.
+        journal.begin_modify().unwrap();
+        journal.confirm(Some(source)).unwrap();
+        db.execute_unprepared("ALTER TABLE sandbox DROP COLUMN active_config")
+            .await
+            .unwrap();
+        seal_terminal(
+            &db,
+            dir.path(),
+            1,
+            1,
+            None,
+            RetentionTerminalOrigin::ReconciledDeath,
+        )
+        .await
+        .unwrap();
+        assert!(
+            RetentionJournal::read_terminal(dir.path())
+                .unwrap()
+                .unwrap()
+                .current(&owner, journal.record())
+                .is_none()
+        );
+        assert!(
+            !microsandbox_db::catalog::has_column(&db, "sandbox", "active_config")
+                .await
+                .unwrap()
+        );
     }
 }
