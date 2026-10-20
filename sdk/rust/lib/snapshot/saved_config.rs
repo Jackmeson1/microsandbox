@@ -6,6 +6,9 @@ mod demand;
 #[cfg(test)]
 mod demand_tests;
 mod execution;
+mod execution_assembly;
+#[cfg(test)]
+mod execution_assembly_tests;
 #[cfg(test)]
 mod execution_tests;
 #[cfg(test)]
@@ -20,6 +23,9 @@ mod network_assembly_tests;
 mod network_policy;
 #[cfg(test)]
 mod network_policy_tests;
+mod resource_assembly;
+#[cfg(test)]
+mod resource_assembly_tests;
 #[cfg(test)]
 mod resource_tests;
 mod resources;
@@ -51,6 +57,7 @@ pub use execution::{
     DestinationGuestSecurity, ExecutionDefaultClear, ExecutionDefaultSelection,
     ExecutionRestoreMode, LifetimeDefaultSelection, select_execution_defaults,
 };
+pub use execution_assembly::{ExecutionConfigurationPlan, prepare_execution_configuration};
 pub use gateway_inputs::{GatewayInputPlan, select_gateway_inputs};
 pub use listeners::{
     ListenerBindingInput, ListenerInputPlan, ListenerInputSelection, select_listener_inputs,
@@ -60,6 +67,7 @@ pub use network_policy::{
     DestinationNetworkBaseline, NetworkPolicyApproval, NetworkPolicyClear, NetworkPolicySelection,
     select_network_policy_defaults,
 };
+pub use resource_assembly::{ResourceConfigurationPlan, prepare_resource_configuration};
 pub use resources::{
     ResourceDefaultClear, ResourceDefaultSelection, ResourceRestoreMode, select_resource_defaults,
 };
