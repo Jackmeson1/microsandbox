@@ -655,20 +655,37 @@ pub(crate) async fn validate_http_deny_response(
     path: &Path,
     config: &SandboxConfig,
 ) -> MicrosandboxResult<()> {
+    select_http_deny_response(path, config).await.map(|_| ())
+}
+
+/// Select once before dispatch. Only proven omission permits legacy response formatting;
+/// an explicit JSON choice or custom message must never be silently discarded.
+#[cfg(feature = "net")]
+pub(crate) async fn select_http_deny_response(
+    path: &Path,
+    config: &SandboxConfig,
+) -> MicrosandboxResult<microsandbox_types::HttpConfig> {
+    let mut http = config.spec.network.http.clone();
     if !config.spec.network.enabled || !config.spec.network.http.deny_response {
-        return Ok(());
+        return Ok(http);
     }
-    let supported = bounded_probe(path, "__launch-protocol")
+    let capabilities = bounded_probe(path, "__launch-protocol")
         .await
         .ok()
-        .and_then(|output| serde_json::from_slice::<LaunchCapabilities>(&output).ok())
-        .is_some_and(
-            |capabilities| match config.spec.network.http.deny_response_format {
+        .and_then(|output| serde_json::from_slice::<LaunchCapabilities>(&output).ok());
+    let supported =
+        capabilities
+            .as_ref()
+            .is_some_and(|capabilities| match http.deny_response_format {
                 HttpDenyResponseFormat::Text => capabilities.http_deny_message,
                 HttpDenyResponseFormat::Json => capabilities.http_deny_json,
-            },
-        );
+            });
     if !supported {
+        if config.has_implicit_http_defaults() {
+            http.deny_response_format = HttpDenyResponseFormat::Text;
+            http.deny_response = capabilities.is_some_and(|value| value.http_deny_message);
+            return Ok(http);
+        }
         return Err(MicrosandboxError::unsupported(
             crate::error::Operation::SandboxStart,
             crate::error::UnsupportedReason::NotAvailable(upgrade_required(
@@ -676,7 +693,7 @@ pub(crate) async fn validate_http_deny_response(
             )),
         ));
     }
-    Ok(())
+    Ok(http)
 }
 
 /// Probe guest clock support only when the caller turns host synchronization off.
@@ -1182,6 +1199,44 @@ mod tests {
         config.spec.network.http.deny_response_format =
             microsandbox_types::HttpDenyResponseFormat::Text;
         validate_http_deny_response(&path, &config).await.unwrap();
+    }
+
+    #[cfg(all(unix, feature = "net"))]
+    #[tokio::test]
+    async fn implicit_http_defaults_select_legacy_before_dispatch_but_explicit_json_is_strict() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::test_support::fixtures::decode(include_str!(
+            "../db/fixtures/config-0.6.18.json"
+        ))
+        .unwrap();
+        config.spec.network.enabled = true;
+        assert!(config.has_implicit_http_defaults());
+        for (name, reply, enabled, format) in [
+            ("no-feature", "exit 1", false, HttpDenyResponseFormat::Text),
+            (
+                "text",
+                r#"printf '%s' '{"protocols":[2,1],"http_deny_message":true}'"#,
+                true,
+                HttpDenyResponseFormat::Text,
+            ),
+            (
+                "json",
+                r#"printf '%s' '{"protocols":[2,1],"http_deny_json":true}'"#,
+                true,
+                HttpDenyResponseFormat::Json,
+            ),
+        ] {
+            let path = script(dir.path(), name, reply);
+            let selected = select_http_deny_response(&path, &config).await.unwrap();
+            assert_eq!(selected.deny_response, enabled);
+            assert_eq!(selected.deny_response_format, format);
+        }
+        let old = script(dir.path(), "old", "exit 1");
+        config.http_defaults_implicit = Some(false);
+        assert!(select_http_deny_response(&old, &config).await.is_err());
+        config.http_defaults_implicit = Some(true);
+        config.spec.network.http.network_deny_message = Some("explicit message".into());
+        assert!(select_http_deny_response(&old, &config).await.is_err());
     }
 
     #[cfg(unix)]

@@ -305,15 +305,6 @@ pub async fn spawn_sandbox(
     mode: SpawnMode,
     lifecycle_guard: Option<microsandbox_runtime::ipc::SandboxLifecycleGuard>,
 ) -> MicrosandboxResult<(ProcessHandle, PathBuf)> {
-    // Durable configuration stores only host-side source references. Resolve
-    // them into the private runtime configuration before the sandbox process
-    // is spawned.
-    #[cfg(feature = "net")]
-    let resolved_network = config
-        .local_network_config()?
-        .resolve(&EnvNetworkSecretResolver)
-        .map_err(|error| MicrosandboxError::InvalidConfig(error.to_string()))?;
-
     // Resolve the already-layered runtime paths as one compatible pair before launch.
     let global = local.config();
     #[cfg(feature = "embed-binaries")]
@@ -334,7 +325,16 @@ pub async fn spawn_sandbox(
     // effective configuration here for both initial launch and later starts.
     launch_contract.validate_launch_intent(config)?;
     #[cfg(feature = "net")]
-    launch_contract::validate_http_deny_response(&resolved_runtime.msb_path, config).await?;
+    let resolved_network = {
+        let mut network = config.local_network_config()?;
+        network.http =
+            launch_contract::select_http_deny_response(&resolved_runtime.msb_path, config).await?;
+        // Resolve source-backed values only after selecting a supported wire configuration.
+        // No failed mutation is retried through a different launch contract.
+        network
+            .resolve(&EnvNetworkSecretResolver)
+            .map_err(|error| MicrosandboxError::InvalidConfig(error.to_string()))?
+    };
     launch_contract::validate_guest_clock(&resolved_runtime.msb_path, config).await?;
     launch_contract::validate_fs_state_limit(&resolved_runtime.msb_path, global).await?;
     if config.checkpoint_restore.as_ref().is_some_and(|restore| {

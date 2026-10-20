@@ -137,7 +137,12 @@ pub(crate) struct RestoreOverrideIntent {
 /// local SDK/runtime operation state beside that shared contract, such as
 /// registry credentials, replacement flags, and resolved snapshot metadata.
 #[derive(Debug, Clone, Serialize, Deserialize, ConfigPatch)]
+#[serde(remote = "Self")]
 pub struct SandboxConfig {
+    /// Preserve omission through catalog round trips. Older SDKs may omit this additive hint;
+    /// absent historical HTTP documents are implicit, while concrete HTTP choices stay strict.
+    #[serde(default, skip_serializing_if = "http_defaults_are_not_implicit")]
+    pub(crate) http_defaults_implicit: Option<bool>,
     /// Protect the installed source while a local restore builder materializes child-owned files.
     #[cfg(feature = "local")]
     #[serde(skip)]
@@ -353,6 +358,21 @@ pub struct SandboxConfig {
 //--------------------------------------------------------------------------------------------------
 
 impl SandboxConfigPatch {
+    /// A concrete network rebuild must not turn unrelated options into HTTP requests.
+    pub(crate) fn http_defaults_are_implicit(&self) -> bool {
+        self.http_defaults_implicit
+            .unwrap_or_else(|| !self.has_http_override())
+    }
+
+    pub(crate) fn has_http_override(&self) -> bool {
+        let http = &self.spec.network.http;
+        http.deny_response.is_some()
+            || http.deny_response_format.is_some()
+            || http.deny_message.is_some()
+            || http.network_deny_message.is_some()
+            || http.secret_deny_message.is_some()
+    }
+
     /// Convert ordinary backend defaults; host deployment policy is applied during local creation.
     pub(crate) fn from_defaults(global: &GlobalConfigPatch) -> Self {
         let mut patch = Self::from_global(global);
@@ -548,6 +568,18 @@ impl OciSandboxDefaultsPatch {
 }
 
 impl SandboxConfig {
+    /// Only a proven omission with unchanged defaults may select a legacy response behavior.
+    #[cfg(feature = "net")]
+    pub(crate) fn has_implicit_http_defaults(&self) -> bool {
+        let http = &self.spec.network.http;
+        self.http_defaults_implicit == Some(true)
+            && http.deny_response
+            && http.deny_response_format == microsandbox_types::HttpDenyResponseFormat::Json
+            && http.deny_message.is_none()
+            && http.network_deny_message.is_none()
+            && http.secret_deny_message.is_none()
+    }
+
     /// Apply the composed patches, then resolve sandbox defaults that depend on the final values.
     pub(super) fn apply_layers(
         &mut self,
@@ -579,9 +611,11 @@ impl SandboxConfig {
             None => ConfigLayers::unmanaged(),
         };
         let patch = layers.base(image_defaults).options(options).build();
+        let http_defaults_implicit = patch.http_defaults_are_implicit();
         let max_cpus = patch.spec.resources.max_cpus;
         let max_memory_mib = patch.spec.resources.max_memory_mib;
         patch.apply_to(self);
+        self.http_defaults_implicit = Some(http_defaults_implicit);
 
         if let Some(config) = backend_config
             && let RootfsSource::Oci(oci) = &mut self.spec.image
@@ -1060,6 +1094,12 @@ pub(crate) fn network_spec_from_config(
     Ok(serde_json::from_value(serde_json::to_value(config)?)?)
 }
 
+// Explicit settings already serialize their HTTP fields. Only omission needs an additive
+// hint; avoid rewriting legacy concrete documents just to store the equivalent false value.
+fn http_defaults_are_not_implicit(value: &Option<bool>) -> bool {
+    *value != Some(true)
+}
+
 #[cfg(feature = "net")]
 pub(crate) fn network_config_from_spec(
     spec: &microsandbox_types::NetworkSpec,
@@ -1110,9 +1150,33 @@ impl From<SandboxSpec> for SandboxConfig {
     }
 }
 
+// The remote derive supplies the field codec without duplicating this large struct. The
+// trait entry point inspects only presence before defaulting erases historical omissions.
+impl Serialize for SandboxConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        Self::serialize(self, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SandboxConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut value = serde_json::Value::deserialize(deserializer)?;
+        let implicit = value
+            .pointer("/network/http")
+            .is_none_or(|http| http.as_object().is_some_and(serde_json::Map::is_empty));
+        if let Some(object) = value.as_object_mut() {
+            object
+                .entry("http_defaults_implicit")
+                .or_insert(serde_json::Value::Bool(implicit));
+        }
+        Self::deserialize(value).map_err(serde::de::Error::custom)
+    }
+}
+
 impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
+            http_defaults_implicit: None,
             spec: SandboxSpec {
                 resources: SandboxResources {
                     cpus: default_cpus(),
