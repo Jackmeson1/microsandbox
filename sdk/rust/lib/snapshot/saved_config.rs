@@ -14,6 +14,9 @@ mod gateway_inputs;
 #[cfg(test)]
 mod listener_tests;
 mod listeners;
+mod network_assembly;
+#[cfg(test)]
+mod network_assembly_tests;
 mod network_policy;
 #[cfg(test)]
 mod network_policy_tests;
@@ -52,6 +55,7 @@ pub use gateway_inputs::{GatewayInputPlan, select_gateway_inputs};
 pub use listeners::{
     ListenerBindingInput, ListenerInputPlan, ListenerInputSelection, select_listener_inputs,
 };
+pub use network_assembly::{NetworkPolicyConfigurationPlan, prepare_network_policy_configuration};
 pub use network_policy::{
     DestinationNetworkBaseline, NetworkPolicyApproval, NetworkPolicyClear, NetworkPolicySelection,
     select_network_policy_defaults,

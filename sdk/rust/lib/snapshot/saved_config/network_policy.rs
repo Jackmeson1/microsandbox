@@ -576,7 +576,7 @@ fn rate(value: SavedRateLimit) -> RateLimiterConfig {
     }
 }
 
-fn approvals(
+pub(super) fn approvals(
     defaults: &NetworkSpecPatch,
     baseline: &DestinationNetworkBaseline,
 ) -> BTreeSet<NetworkPolicyApproval> {
