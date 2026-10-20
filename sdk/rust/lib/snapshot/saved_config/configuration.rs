@@ -13,6 +13,7 @@ use microsandbox_types::{
     SecurityProfile,
 };
 
+use super::destination_inputs::{SavedDestinationInputs, destination_fields};
 use super::network_inputs::NetworkInputShape;
 use super::{
     BindingDemandContext, BindingDemandPlan, BindingSupplyGaps, ConfigurationBindingInput,
@@ -90,8 +91,10 @@ pub struct SavedConfigurationRequest<'a> {
 
 /// All-or-error preparation with immutable obligations. This deliberately is not a SandboxSpec
 /// or activation permit: materialization, mandatory policy, captured identity, persistent
-/// deferred enforcement and complete native assembly must still finish before launch.
+/// deferred enforcement and destination admission must still finish before launch.
 pub struct SavedConfigurationPlan {
+    destination: SandboxSpec,
+    runtime_context: RuntimeSelectionContext,
     runtime: RuntimeConfigurationPlan,
     resources: ResourceConfigurationPlan,
     execution: ExecutionConfigurationPlan,
@@ -114,6 +117,26 @@ pub struct SavedConfigurationPlan {
 //--------------------------------------------------------------------------------------------------
 
 impl SavedConfigurationPlan {
+    /// Immutable operation facts used by every selected family. Consumers must not reuse
+    /// full-resume inputs as cold-boot inputs, or deferred defaults as an initial command.
+    pub fn context(&self) -> RuntimeSelectionContext {
+        self.runtime_context
+    }
+
+    /// Compose every selected family and retain this plan alongside its native inputs.
+    /// Unknown immediate inputs refuse atomically; future command/init requirements remain
+    /// guarded on the owned plan. This performs no I/O and grants no activation authority.
+    pub fn into_destination_inputs(self) -> MicrosandboxResult<SavedDestinationInputs> {
+        let mut spec = self.destination.clone();
+        spec.resources = self.resources.resources()?;
+        self.execution.apply_to(&mut spec)?;
+        self.runtime
+            .apply_activation_inputs(&mut spec, self.runtime_context)?;
+        spec.network = self.network_inputs()?;
+        self.storage.apply_to(&mut spec)?;
+        Ok(SavedDestinationInputs::new(spec, self))
+    }
+
     /// New-command defaults, exact script backing and retained deferred requirements.
     pub fn runtime(&self) -> &RuntimeConfigurationPlan {
         &self.runtime
@@ -401,6 +424,8 @@ pub fn prepare_saved_configuration(
     // Every family is recomputed from the same immutable inputs. None can observe a changed
     // source or replace another family's prepared value between demand and materialization.
     Ok(SavedConfigurationPlan {
+        destination: destination_fields(request.lower, explicit),
+        runtime_context,
         runtime: prepare_runtime_configuration(
             &saved.runtime,
             request.lower,

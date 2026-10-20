@@ -47,6 +47,32 @@ pub struct PreparedCommandDefaults {
 //--------------------------------------------------------------------------------------------------
 
 impl RuntimeConfigurationPlan {
+    pub(super) fn apply_activation_inputs(
+        &self,
+        target: &mut SandboxSpec,
+        context: RuntimeSelectionContext,
+    ) -> MicrosandboxResult<()> {
+        // Scripts/identity/clock are activation inputs even when no new command runs.
+        // Command and init requirements have different timing and remain on `inputs`.
+        self.inputs.hostname.require_available("runtime.hostname")?;
+        self.inputs
+            .guest_clock
+            .require_available("runtime.guest_clock")?;
+        self.inputs.scripts.require_available("runtime.scripts")?;
+        if context.starts_command {
+            self.require_command_defaults()?;
+        }
+        let init = if context.full_resume {
+            None // Captured PID 1 is authoritative; never replay the cold-boot choice.
+        } else {
+            self.cold_boot_init()?
+        };
+        target.runtime = self.runtime.clone();
+        target.env = self.env.clone();
+        target.init = init;
+        Ok(())
+    }
+
     /// Read the original preparation obligations without mutating readiness after assembly.
     pub fn inputs(&self) -> &RuntimeInputPlan {
         &self.inputs
@@ -61,14 +87,7 @@ impl RuntimeConfigurationPlan {
     /// A later explicit command override must reselect/reprepare from retained references;
     /// this cannot silently bypass missing bindings by using older image defaults.
     pub fn command_defaults(&self) -> MicrosandboxResult<PreparedCommandDefaults> {
-        self.inputs
-            .entrypoint
-            .require_available("runtime.entrypoint")?;
-        self.inputs.cmd.require_available("runtime.cmd")?;
-        self.inputs.env.require_available("runtime.env")?;
-        self.inputs.workdir.require_available("runtime.workdir")?;
-        self.inputs.shell.require_available("runtime.shell")?;
-        self.inputs.user.require_available("runtime.user")?;
+        self.require_command_defaults()?;
         Ok(PreparedCommandDefaults {
             runtime: self.runtime.clone(),
             env: self.env.clone(),
@@ -80,6 +99,20 @@ impl RuntimeConfigurationPlan {
     pub fn cold_boot_init(&self) -> MicrosandboxResult<Option<HandoffInit>> {
         self.inputs.init.require_available("runtime.init")?;
         Ok(self.cold_boot_init.clone())
+    }
+
+    fn require_command_defaults(&self) -> MicrosandboxResult<()> {
+        // Assembly checks readiness without cloning potentially large command/environment
+        // values merely to discard them; both access paths use exactly the same guard.
+        self.inputs
+            .entrypoint
+            .require_available("runtime.entrypoint")?;
+        self.inputs.cmd.require_available("runtime.cmd")?;
+        self.inputs.env.require_available("runtime.env")?;
+        self.inputs.workdir.require_available("runtime.workdir")?;
+        self.inputs.shell.require_available("runtime.shell")?;
+        self.inputs.user.require_available("runtime.user")?;
+        Ok(())
     }
 }
 

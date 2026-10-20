@@ -9,6 +9,9 @@ mod demand;
 #[cfg(test)]
 mod demand_tests;
 mod destination_bindings;
+#[cfg(test)]
+mod destination_input_tests;
+mod destination_inputs;
 mod execution;
 mod execution_assembly;
 #[cfg(test)]
@@ -72,6 +75,7 @@ pub use demand::{
     BindingDemand, BindingDemandContext, BindingDemandPlan, BindingSupplyGaps, plan_binding_demand,
 };
 pub use destination_bindings::ConfigurationBindingInput;
+pub use destination_inputs::SavedDestinationInputs;
 pub use execution::{
     DestinationGuestSecurity, ExecutionDefaultClear, ExecutionDefaultSelection,
     ExecutionRestoreMode, LifetimeDefaultSelection, select_execution_defaults,
