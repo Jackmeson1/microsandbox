@@ -25,7 +25,7 @@ use serde_json::Value;
 use serde_saphyr::granit_parser::{Event, Parser};
 use serde_saphyr::{DuplicateKeyPolicy, MergeKeyPolicy, Options};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "net"))]
 use crate::commands::common::SandboxOpts;
 use crate::commands::common::{
     SandboxConfigKind, SandboxConfigSources, materialize_bind_mount, parse_duration_secs,
@@ -401,6 +401,9 @@ struct NetworkConfigInput {
     tls: Option<TlsInput>,
     strict: Option<bool>,
     trust_host_cas: Option<bool>,
+    // Endpoint and authentication replace together. Do not add nested patch merging:
+    // a higher-priority endpoint must never inherit credentials for the old proxy.
+    proxy: Option<ProxyInput>,
     #[serde(alias = "max_connections")]
     max_tcp_connections: Option<usize>,
     max_udp_connections: Option<usize>,
@@ -408,6 +411,25 @@ struct NetworkConfigInput {
     max_inbound_tcp_connections: Option<usize>,
     #[config_patch(nested)]
     http: Option<HttpInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+// Still parse the strict file shape without `net`; materialization reports unsupported.
+#[cfg_attr(not(feature = "net"), allow(dead_code))]
+enum ProxyInput {
+    Url(String),
+    Object(ProxyObjectInput),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(not(feature = "net"), allow(dead_code))]
+struct ProxyObjectInput {
+    url: String,
+    user_id: Option<String>,
+    username: Option<String>,
+    password_env: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, ConfigPatch)]
@@ -1635,6 +1657,27 @@ fn materialize_network_patch(
         .unwrap_or_default();
     let tls_present = input.tls.is_some();
     let mut patch = NetworkSpecPatch::new();
+    if let Some(proxy) = &input.proxy {
+        let mut options = SandboxOpts::default();
+        match proxy {
+            ProxyInput::Url(url) => options.proxy = Some(url.clone()),
+            ProxyInput::Object(object) => {
+                options.proxy = Some(object.url.clone());
+                options.socks4_user_id = object.user_id.clone();
+                options.socks5_username = object.username.clone();
+                options.socks5_password_env = object.password_env.clone();
+            }
+        }
+        // Keep protocol/auth validation and deferred environment lookup identical to flags.
+        // Resolution must not read a credential simply to parse/merge a configuration file.
+        let proxy = options
+            .build_outbound_proxy()
+            .map_err(|error| anyhow::anyhow!("network.proxy: {error}"))?
+            .ok_or_else(|| anyhow::anyhow!("network.proxy requires a URL"))?;
+        // Network builders and persisted specs use distinct proxy types with the same
+        // serialized contract, as in the SDK's existing network/spec conversion.
+        patch = patch.outbound_proxy(serde_json::from_value(serde_json::to_value(proxy)?)?);
+    }
     let base_policy = input.policy.map(|base| match base {
         NetworkPreset::None => NetworkPolicy::none(),
         NetworkPreset::Public => NetworkPolicy::from_profiles([NetworkProfile::Public]),
@@ -1994,6 +2037,90 @@ mod tests {
             .unwrap()
             .apply_to(&mut network);
         assert_eq!(network.max_inbound_tcp_connections, Some(0));
+    }
+
+    #[cfg(feature = "net")]
+    #[test]
+    fn file_proxy_supports_protocols_and_keeps_credentials_unresolved() {
+        for value in [
+            serde_json::json!("http://127.0.0.1:18080"),
+            serde_json::json!({"url":"socks4://127.0.0.1:1080", "user_id":"guest"}),
+            serde_json::json!({"url":"socks5://127.0.0.1:1080", "username":"guest",
+                              "password_env":"MSB_CONFIG_PROXY_UNREAD_ENV"}),
+        ] {
+            let input: NetworkInput =
+                serde_json::from_value(serde_json::json!({"proxy":value})).unwrap();
+            let mut network = microsandbox_types::NetworkSpec::default();
+            materialize_network_patch(Some(&input), None, None)
+                .unwrap()
+                .apply_to(&mut network);
+            let proxy = serde_json::to_value(network.outbound_proxy.unwrap()).unwrap();
+            match proxy["protocol"].as_str().unwrap() {
+                "http_connect" => {}
+                "socks4" => assert_eq!(proxy["user_id"], "guest"),
+                "socks5" => {
+                    assert_eq!(proxy["credentials"]["username"], "guest");
+                    assert_eq!(proxy["credentials"]["password"]["kind"], "env");
+                    assert_eq!(
+                        proxy["credentials"]["password"]["var"],
+                        "MSB_CONFIG_PROXY_UNREAD_ENV"
+                    );
+                }
+                other => panic!("unexpected protocol {other}"),
+            }
+        }
+    }
+
+    #[cfg(feature = "net")]
+    #[test]
+    fn file_proxy_replacement_does_not_inherit_lower_credentials() {
+        let mut lower: NetworkInput = serde_json::from_value(serde_json::json!({
+            "proxy":{"url":"socks5://127.0.0.1:1080", "username":"old",
+                     "password_env":"OLD_PROXY_PASSWORD"},
+            "dns":{"rebind_protection":false}
+        }))
+        .unwrap();
+        let higher: NetworkInput = serde_json::from_value(serde_json::json!({
+            "proxy":"socks5://127.0.0.1:2080"
+        }))
+        .unwrap();
+        merge_network(&mut lower, higher);
+        let mut network = microsandbox_types::NetworkSpec::default();
+        materialize_network_patch(Some(&lower), None, None)
+            .unwrap()
+            .apply_to(&mut network);
+        let proxy = serde_json::to_value(network.outbound_proxy.unwrap()).unwrap();
+        assert_eq!(proxy["address"], "127.0.0.1:2080");
+        assert!(proxy["credentials"].is_null());
+        assert!(!network.dns.unwrap().rebind_protection);
+    }
+
+    #[cfg(feature = "net")]
+    #[test]
+    fn file_proxy_rejects_incomplete_or_mismatched_authentication() {
+        for value in [
+            serde_json::json!({"url":"socks5://127.0.0.1:1080", "username":"guest"}),
+            serde_json::json!({"url":"socks5://127.0.0.1:1080", "password_env":"PASS"}),
+            serde_json::json!({"url":"socks4://127.0.0.1:1080", "username":"guest", "password_env":"PASS"}),
+            serde_json::json!({"url":"http://127.0.0.1:1080", "user_id":"guest"}),
+            serde_json::json!({"url":"socks5://127.0.0.1:1080", "user_id":"guest"}),
+            serde_json::json!("invalid-proxy"),
+        ] {
+            let input: NetworkInput =
+                serde_json::from_value(serde_json::json!({"proxy":value})).unwrap();
+            let error = materialize_network_patch(Some(&input), None, None).unwrap_err();
+            assert!(error.to_string().contains("network.proxy"));
+        }
+        // Literal password fields and partial credential-only replacements are not part of
+        // this file contract; environment references use the existing destination resolver.
+        for value in [
+            serde_json::json!({"url":"socks5://127.0.0.1:1080", "password":"literal"}),
+            serde_json::json!({"username":"guest", "password_env":"PASS"}),
+        ] {
+            assert!(
+                serde_json::from_value::<NetworkInput>(serde_json::json!({"proxy":value})).is_err()
+            );
+        }
     }
 
     #[cfg(feature = "net")]
