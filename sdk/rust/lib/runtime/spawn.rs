@@ -320,6 +320,8 @@ pub async fn spawn_sandbox(
     let resolved_runtime = crate::setup::resolve_runtime(global)?;
     ensure_sigchld_handler_uses_alt_stack_before_spawn().await?;
     let launch_contract = launch_contract::resolve(&resolved_runtime.msb_path).await?;
+    let retention_supported = launch_contract.machine
+        && launch_contract::supports_configuration_retention(&resolved_runtime.msb_path).await;
     // A stopped sandbox may have been edited without a runtime installed, or
     // the selected executable may have changed since creation. Validate its
     // effective configuration here for both initial launch and later starts.
@@ -636,6 +638,13 @@ pub async fn spawn_sandbox(
     }
     if !launch_contract.machine {
         visible[0] = OsString::from("sandbox");
+    }
+    // Selection happens before the single launch dispatch. Older strict launch decoders never
+    // see the optional metadata; unavailable tracking does not disable their existing operations.
+    if retention_supported {
+        launch.retention_source = Some(microsandbox_runtime::retention::RetentionSource {
+            configuration: serde_json::to_value(config.clone_for_persistence())?,
+        });
     }
     let launch_value = match launch_contract.encode(&launch) {
         Ok(launch) => launch,

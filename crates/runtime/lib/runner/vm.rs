@@ -118,6 +118,9 @@ struct AgentConsoleBackends {
 /// agent relay, lifecycle policies). Passed to [`enter()`].
 #[derive(Debug)]
 pub struct Config {
+    /// Optional private source from a capable launcher; never trusted as guest resource completion.
+    pub retention_source: Option<crate::retention::RetentionSource>,
+
     /// Internal per-boot agent transport policy.
     #[doc(hidden)]
     pub agent_transport: AgentTransportProfile,
@@ -704,10 +707,6 @@ fn run(
     // Set up runtime directory.
     std::fs::create_dir_all(&config.runtime_dir)?;
     std::fs::create_dir_all(config.runtime_dir.join("scripts"))?;
-    crate::checkpoint::recover_runtime_owned_root(&config.runtime_dir, &mut config.vm).map_err(
-        |error| RuntimeError::Custom(format!("recover runtime-owned root disk: {error}")),
-    )?;
-    recover_owned_disk_layers(&config.runtime_dir, &mut config.vm.disks)?;
     // Heartbeats are per boot, while the runtime directory persists across starts.
     heartbeat::clear_stale(&config.runtime_dir)?;
     if config.vm.checkpoint_restore.is_some() {
@@ -744,6 +743,46 @@ fn run(
         let run_db_id = insert_run(&db, config.sandbox_id, pid).await?;
         Ok::<_, RuntimeError>((relay, db, run_db_id))
     })?;
+
+    // This fence is durable before VM construction/activation or recovery can change guest
+    // backing state. It does not change the shared catalog schema or active_config cleanup.
+    let retention = (|| -> RuntimeResult<crate::retention::RetentionJournal> {
+        let owner = tokio_rt.block_on(crate::retention::RetentionOwner::for_run(
+            &db,
+            &config.sandbox_db_path,
+            config.sandbox_id,
+            run_db_id,
+            super::control::RuntimeControlExecutor::new_boot_identity(),
+        ))?;
+        crate::retention::RetentionJournal::begin_start(
+            config.runtime_dir.parent().ok_or_else(|| {
+                RuntimeError::Custom("runtime directory has no sandbox parent".into())
+            })?,
+            owner,
+        )
+        .map_err(RuntimeError::Io)
+    })();
+    let retention = match retention {
+        Ok(retention) => retention,
+        Err(error) => {
+            let _ = tokio_rt.block_on(mark_run_failed(&db, run_db_id));
+            return Err(RuntimeError::Custom(format!(
+                "start refused before guest activation: cannot record configuration transition: {error}"
+            )));
+        }
+    };
+    let recovery =
+        crate::checkpoint::recover_runtime_owned_root(&config.runtime_dir, &mut config.vm)
+            .map_err(|error| {
+                RuntimeError::Custom(format!("recover runtime-owned root disk: {error}"))
+            })
+            .and_then(|()| recover_owned_disk_layers(&config.runtime_dir, &mut config.vm.disks));
+    if let Err(error) = recovery {
+        // Recovery now follows the durable start fence and run insertion. Preserve its
+        // uncertain evidence, but do not leave this failed attempt recorded as a live run.
+        let _ = tokio_rt.block_on(mark_run_failed(&db, run_db_id));
+        return Err(error);
+    }
 
     relay = relay.with_boot_error_log_dir(config.log_dir.clone());
 
@@ -1124,7 +1163,7 @@ fn run(
     // Serve every host-side control operation through one runtime-owned executor and endpoint.
     // Restore constructs the executor now but withholds both public endpoints until the guest has
     // crossed its VMGenID/workload activation barrier.
-    let restore_endpoint_publication = {
+    let (restore_endpoint_publication, activation_control) = {
         let control = vm.control_handle();
         #[cfg(feature = "net")]
         let secrets = _network_secrets_handle.clone();
@@ -1146,6 +1185,7 @@ fn run(
                 .as_mut()
                 .and_then(|agent| agent.inherited_memory.take()),
             owned_directory_checkpoints,
+            retention,
         );
         let context = super::control::ControlContext {
             executor: match executor {
@@ -1158,13 +1198,17 @@ fn run(
                 }
             },
         };
+        let activation_control = Arc::clone(&context.executor);
         if restored_agent.is_some() {
-            Some(RestoreEndpointPublication {
-                agent_sock_path: config.agent_sock_path.clone(),
-                socket_paths: socket_paths.clone(),
-                sandbox_name: config.sandbox_name.clone(),
-                control: context,
-            })
+            (
+                Some(RestoreEndpointPublication {
+                    agent_sock_path: config.agent_sock_path.clone(),
+                    socket_paths: socket_paths.clone(),
+                    sandbox_name: config.sandbox_name.clone(),
+                    control: context,
+                }),
+                activation_control,
+            )
         } else {
             if let Err(error) = publish_control_endpoint(
                 control_sock_path,
@@ -1178,7 +1222,7 @@ fn run(
                 let _ = socket_paths.remove_canonical_artifacts();
                 return Err(error);
             }
-            None
+            (None, activation_control)
         }
     };
 
@@ -1291,6 +1335,7 @@ fn run(
     let restore_runtime_dir = config.runtime_dir.clone();
     let relay_boot_log_dir = config.log_dir.clone();
     let restore_startup_progress = startup_progress.clone();
+    let retention_source = config.retention_source.take();
     tokio_rt.spawn(async move {
         let ready_result = tokio::task::spawn_blocking(move || {
             if let (Some(restored), Some(control)) =
@@ -1305,6 +1350,11 @@ fn run(
             } else {
                 relay.wait_ready()?;
             }
+            // No public Ready is released until confirmation is durable. Failure follows the
+            // existing readiness-failure termination path, including for legacy SDK callers.
+            activation_control
+                .confirm_activation(retention_source)
+                .map_err(RuntimeError::Custom)?;
             Ok::<_, RuntimeError>(relay)
         })
         .await;

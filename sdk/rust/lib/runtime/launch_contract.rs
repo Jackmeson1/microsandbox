@@ -752,6 +752,18 @@ pub(crate) async fn validate_fs_state_limit(
     Ok(())
 }
 
+/// Optional evidence support never gates an otherwise-supported operation on an older runtime.
+/// Read the existing side-effect-free probe before dispatch; a failed/old probe means no handoff.
+pub(crate) async fn supports_configuration_retention(path: &Path) -> bool {
+    bounded_probe(path, "__launch-protocol")
+        .await
+        .ok()
+        .and_then(|output| serde_json::from_slice::<LaunchCapabilities>(&output).ok())
+        .is_some_and(|capabilities| {
+            capabilities.protocols.contains(&2) && capabilities.configuration_retention
+        })
+}
+
 /// Probe only the new combination. Ordinary starts/restores keep their cached,
 /// process-free discovery path, and old runtimes still accept their existing wire.
 pub(crate) async fn require_restore_backing(path: &Path) -> MicrosandboxResult<()> {
@@ -1306,6 +1318,35 @@ mod tests {
             r#"printf '%s' '{"protocols":[2,1],"fs_state_limit":true}'"#,
         );
         validate_fs_state_limit(&path, &global).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn retention_handoff_is_optional_and_selected_before_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!supports_configuration_retention(&dir.path().join("missing")).await);
+        for (index, response) in [
+            "exit 1",
+            r#"printf '%s' '{"protocols":[2,1]}'"#,
+            r#"printf '%s' '{"protocols":[2,1],"configuration_retention":false}'"#,
+            r#"printf '%s' '{"protocols":[2,1],"configuration_retention":"true"}'"#,
+            r#"printf '%s' '{"protocols":[1],"configuration_retention":true}'"#,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let path = script(dir.path(), &format!("old-retention-{index}"), response);
+            assert!(!supports_configuration_retention(&path).await);
+        }
+        let path = script(
+            dir.path(),
+            "supports-retention",
+            r#"test "$1" = __launch-protocol || exit 97; printf '%s' '{"protocols":[2,1],"configuration_retention":true}'"#,
+        );
+        assert!(supports_configuration_retention(&path).await);
+        // Existing strict readers receive no additional property on the unsupported path.
+        let value = serde_json::to_value(LaunchConfig::default()).unwrap();
+        assert!(value.get("retention_source").is_none());
     }
 
     #[cfg(unix)]
