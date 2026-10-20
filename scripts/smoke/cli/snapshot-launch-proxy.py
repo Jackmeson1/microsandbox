@@ -321,6 +321,8 @@ def qualify(args):
         proxy = SocksFixture(b"file-password")
         proxies.append(proxy)
         runner.env[PASSWORD_ENV] = "file-password"
+        # Persist only the environment-variable name. Its value belongs to the child
+        # environment above and must never be copied into the configuration file.
         config.write_text(json.dumps({"image": {"snapshot": "baseline"}, "memory": "256M",
                                       "network": {"dns": {"rebind_protection": True},
                                                   "trust_host_cas": False,
