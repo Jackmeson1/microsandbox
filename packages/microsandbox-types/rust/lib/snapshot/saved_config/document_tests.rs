@@ -512,6 +512,30 @@ fn legacy_user_and_clock_must_agree_without_changing_legacy_encoding() {
 }
 
 #[test]
+fn absent_legacy_clock_still_means_sync_for_saved_projection() {
+    let manifest = descriptor();
+    assert_eq!(manifest.guest_clock().unwrap(), GuestClockPolicy::Sync);
+    let before = manifest.to_canonical_bytes().unwrap();
+    for clock in [
+        saved(json!("sync")),
+        json!({"state":"default"}),
+        json!({"state":"unknown","reason":"not_recorded"}),
+    ] {
+        let mut doc = document();
+        doc["active"]["runtime"]["guest_clock"] = clock;
+        parse(&doc).validate_legacy_projections(&manifest).unwrap();
+    }
+    let mut doc = document();
+    doc["active"]["runtime"]["guest_clock"] = saved(json!("off"));
+    let error = parse(&doc)
+        .validate_legacy_projections(&manifest)
+        .unwrap_err();
+    assert!(error.to_string().contains("SCFG_IDENTITY"));
+    assert!(error.to_string().contains("active.runtime.guest_clock"));
+    assert_eq!(manifest.to_canonical_bytes().unwrap(), before);
+}
+
+#[test]
 fn schema_document_is_still_not_advertised_as_a_supported_extension() {
     assert!(
         !crate::snapshot::manifest::SUPPORTED_REQUIRES.contains(&"microsandbox.sandbox-config")

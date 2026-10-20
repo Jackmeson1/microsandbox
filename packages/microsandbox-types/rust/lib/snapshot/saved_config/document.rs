@@ -179,16 +179,20 @@ impl SavedSandboxConfig {
                 return Err(projection_error("active.runtime.user"));
             }
         }
-        if manifest.extensions.contains_key(GUEST_CLOCK_EXTENSION)
-            && let Some(saved) = &self.active.runtime.guest_clock
-        {
+        if let Some(saved) = &self.active.runtime.guest_clock {
+            // Unlike an unknown optional projection, an absent legacy clock
+            // extension explicitly means Sync. Saved policy must agree with it.
             let legacy = manifest
                 .guest_clock()
                 .map_err(|_| projection_error("active.runtime.guest_clock"))?;
             let agrees = match saved {
                 SavedValue::Value { value, .. } => *value == legacy,
                 SavedValue::Default {} => legacy == GuestClockPolicy::Sync,
-                SavedValue::Unknown { .. } => false,
+                // An unrecorded source remains unknown until destination selection.
+                // Only an explicit legacy record contradicts that unknown projection.
+                SavedValue::Unknown { .. } => {
+                    !manifest.extensions.contains_key(GUEST_CLOCK_EXTENSION)
+                }
             };
             if !agrees {
                 return Err(projection_error("active.runtime.guest_clock"));

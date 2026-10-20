@@ -11,7 +11,9 @@ use microsandbox_types::{
 };
 use serde_json::json;
 
-use super::{BindingDemandContext, plan_binding_demand, select_secret_inputs};
+use super::{
+    BindingDemandContext, plan_binding_demand, prepare_secret_configuration, select_secret_inputs,
+};
 
 //--------------------------------------------------------------------------------------------------
 // Functions
@@ -60,6 +62,68 @@ fn patch(entries: Vec<SecretEntry>) -> SecretsConfigPatch {
 //--------------------------------------------------------------------------------------------------
 // Tests
 //--------------------------------------------------------------------------------------------------
+
+#[test]
+fn keyed_selection_preserves_saved_positions_and_appends_new_destination_order() {
+    let mut saved = source();
+    let SavedValue::Value { value, .. } = &mut saved else {
+        unreachable!()
+    };
+    value.entries.reverse();
+    let before = serde_json::to_vec(&saved).unwrap();
+    let input = patch(vec![
+        secret("TOKEN.Z", "NEW_Z"),
+        secret("TOKEN.A", "PLACEHOLDER_A"),
+        secret("TOKEN.C", "NEW_C"),
+        secret("TOKEN.B", "PLACEHOLDER_B"),
+    ]);
+    for full_resume in [false, true] {
+        let selected = select_secret_inputs(Some(&saved), Some(&input), full_resume).unwrap();
+        let names: Vec<_> = selected
+            .entries
+            .iter()
+            .map(|entry| entry.env_var.as_str())
+            .collect();
+        assert_eq!(names, ["TOKEN.B", "TOKEN.A", "TOKEN.Z", "TOKEN.C"]);
+        assert!(
+            selected
+                .entries
+                .iter()
+                .all(|entry| entry.destination.is_some())
+        );
+        assert!(
+            selected.entries[..2]
+                .iter()
+                .all(|entry| entry.saved.is_some())
+        );
+        assert!(
+            selected.entries[2..]
+                .iter()
+                .all(|entry| entry.saved.is_none())
+        );
+        let plan =
+            prepare_secret_configuration(Some(&saved), Some(&input), &BTreeMap::new(), full_resume)
+                .unwrap();
+        let mut native = SecretsConfig::default();
+        plan.apply_to(&mut native).unwrap();
+        let names: Vec<_> = native
+            .secrets
+            .iter()
+            .map(|entry| entry.env_var.as_str())
+            .collect();
+        assert_eq!(names, ["TOKEN.B", "TOKEN.A", "TOKEN.Z", "TOKEN.C"]);
+    }
+    assert_eq!(serde_json::to_vec(&saved).unwrap(), before);
+    let inherited = select_secret_inputs(Some(&saved), None, false).unwrap();
+    assert_eq!(inherited.entries[0].env_var, "TOKEN.B");
+    let fresh = select_secret_inputs(None, Some(&input), false).unwrap();
+    let names: Vec<_> = fresh
+        .entries
+        .iter()
+        .map(|entry| entry.env_var.as_str())
+        .collect();
+    assert_eq!(names, ["TOKEN.Z", "TOKEN.A", "TOKEN.C", "TOKEN.B"]);
+}
 
 #[test]
 fn keyed_override_retains_other_shared_consumers_without_exporting_credentials() {
