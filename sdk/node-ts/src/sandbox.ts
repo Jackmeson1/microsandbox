@@ -18,6 +18,13 @@ import {
   type SandboxModificationPlan,
 } from "./modify.js";
 import {
+  modificationResultFromJson,
+  resizeOperationsFromJson,
+  resizeOperationsToJson,
+  type ResizeOperation,
+  type SandboxModificationResult,
+} from "./resize.js";
+import {
   napi,
   type NapiAttachOptionsBuilder,
   type NapiExecOptionsBuilder,
@@ -592,6 +599,41 @@ export class Sandbox implements AsyncDisposable {
       this.inner.modify(modifyOptionsToNapi(opts)),
     );
     return modificationPlanFromJson(raw);
+  }
+
+  /** Apply once and retain this call's operation identities; ordinary modify() is unchanged. */
+  async modifyWithResizeTracking(opts?: ModifyOptions): Promise<SandboxModificationResult> {
+    if (typeof this.inner.modifyWithResizeTracking !== "function") {
+      throw new Error("resize operation tracking requires an updated native library");
+    }
+    if ((opts?.ports?.length || opts?.portsRemove?.length) && !napi.supportsPortModification?.()) {
+      throw new Error("published-port modification requires an updated native library");
+    }
+    return modificationResultFromJson(await withMappedErrors(() =>
+      this.inner.modifyWithResizeTracking!(modifyOptionsToNapi(opts)),
+    ));
+  }
+
+  /** Read current operation identities and evidence without changing targets. */
+  async resizeOperations(): Promise<ResizeOperation[]> {
+    if (typeof this.inner.resizeOperations !== "function") {
+      throw new Error("resize operation tracking requires an updated native library");
+    }
+    return resizeOperationsFromJson(await withMappedErrors(() => this.inner.resizeOperations!()));
+  }
+
+  /** Wait for supplied identities. Timeout ends waiting only; later targets cannot replace them. */
+  async waitForResizeOperations(
+    operations: readonly ResizeOperation[], timeoutMs?: number,
+  ): Promise<ResourceResizeStatus[]> {
+    validateResizeTimeout(timeoutMs);
+    const raw = resizeOperationsToJson(operations);
+    if (typeof this.inner.waitForResizeOperations !== "function") {
+      throw new Error("resize operation tracking requires an updated native library");
+    }
+    return resizeStatusFromJson(await withMappedErrors(() =>
+      this.inner.waitForResizeOperations!(raw, timeoutMs),
+    ));
   }
 
   /** Read retained CPU and memory resize status. Rejects a stopped sandbox or unsupported runtime. */

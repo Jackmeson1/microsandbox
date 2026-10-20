@@ -354,6 +354,9 @@ export interface NapiSandbox {
   ping(): Promise<NapiSandboxPingResult>;
   touch(): Promise<NapiSandboxTouchResult>;
   modify(opts?: NapiSandboxModifyOptions): Promise<string>;
+  modifyWithResizeTracking?(opts?: NapiSandboxModifyOptions): Promise<string>;
+  resizeOperations?(): Promise<string>;
+  waitForResizeOperations?(operationsJson: string, timeoutMs?: number): Promise<string>;
   resizeStatus(): Promise<string>;
   waitUntilResized(timeoutMs?: number): Promise<string>;
   compact(layers?: number, dryRun?: boolean, disk?: string, rootDiskOnly?: boolean): Promise<string>;
@@ -403,6 +406,9 @@ export interface NapiSandboxHandle {
   ping(): Promise<NapiSandboxPingResult>;
   touch(): Promise<NapiSandboxTouchResult>;
   modify(opts?: NapiSandboxModifyOptions): Promise<string>;
+  modifyWithResizeTracking?(opts?: NapiSandboxModifyOptions): Promise<string>;
+  resizeOperations?(): Promise<string>;
+  waitForResizeOperations?(operationsJson: string, timeoutMs?: number): Promise<string>;
   resizeStatus(): Promise<string>;
   waitUntilResized(timeoutMs?: number): Promise<string>;
   compact(layers?: number, dryRun?: boolean, disk?: string, rootDiskOnly?: boolean): Promise<string>;

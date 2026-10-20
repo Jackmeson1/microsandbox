@@ -1143,6 +1143,12 @@ export declare class Sandbox {
    * string; the TS wrapper parses it into a `SandboxModificationPlan`.
    */
   modify(options?: SandboxModifyOptions | undefined | null): Promise<string>
+  /** Apply once and retain exact operation identities; older runtimes return no tracking. */
+  modifyWithResizeTracking(options?: SandboxModifyOptions | undefined | null): Promise<string>
+  /** Read current operation identities without changing targets. */
+  resizeOperations(): Promise<string>
+  /** Wait on supplied operation identities without following later requests. */
+  waitForResizeOperations(operationsJson: string, timeoutMs?: number | undefined | null): Promise<string>
   /** Read the current live resize status as a JSON array. */
   resizeStatus(): Promise<string>
   /** Wait for live resizes to settle. Omitted waits without a deadline; `0` checks once. */
@@ -1563,6 +1569,12 @@ export declare class SandboxHandle {
    * string; the TS wrapper parses it into a `SandboxModificationPlan`.
    */
   modify(options?: SandboxModifyOptions | undefined | null): Promise<string>
+  /** Apply once and retain exact operation identities; older runtimes return no tracking. */
+  modifyWithResizeTracking(options?: SandboxModifyOptions | undefined | null): Promise<string>
+  /** Read current operation identities without changing targets. */
+  resizeOperations(): Promise<string>
+  /** Wait on supplied operation identities without following later requests. */
+  waitForResizeOperations(operationsJson: string, timeoutMs?: number | undefined | null): Promise<string>
   /** Read the current live resize status as a JSON array. */
   resizeStatus(): Promise<string>
   /** Wait for live resizes to settle. Omitted waits without a deadline; `0` checks once. */
