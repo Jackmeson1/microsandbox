@@ -231,7 +231,7 @@ pub async fn run(args: ModifyArgs) -> anyhow::Result<()> {
         (builder.apply().await?, None)
     };
     let mut resized = false;
-    if args.wait {
+    if args.wait && !modification_restarted(&applied) {
         let budget = resize_wait_budget(args.timeout);
         let (result, confirmed) = wait_for_resize(
             &handle,
@@ -280,6 +280,15 @@ pub async fn run(args: ModifyArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Restart completion is already awaited by apply. A fresh runtime has no live resize
+/// operation to confirm; waiting on its empty history would turn success into failure.
+fn modification_restarted(plan: &SandboxModificationPlan) -> bool {
+    plan.applied
+        && plan.policy == microsandbox::sandbox::ModificationPolicy::Restart
+        && matches!(plan.status.as_str(), "running" | "draining")
+        && plan_has_restart_required(plan)
+}
+
 fn resize_wait_budget(timeout_secs: Option<u64>) -> Duration {
     Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_RESIZE_WAIT_SECS))
 }
@@ -316,16 +325,22 @@ async fn wait_for_resize(
     (handle.wait_until_resized_with_timeout(budget).await, false)
 }
 
-/// Prefer the wait's last read, falling back to the apply status when no read completed.
+/// Prefer each observed resource, preserving apply acknowledgement for unread resources.
 fn timeout_resize_status(
-    applied: Vec<ResourceResizeStatus>,
+    mut applied: Vec<ResourceResizeStatus>,
     observed: Vec<ResourceResizeStatus>,
 ) -> Vec<ResourceResizeStatus> {
-    if observed.is_empty() {
-        applied
-    } else {
-        observed
+    for status in observed {
+        if let Some(previous) = applied
+            .iter_mut()
+            .find(|entry| entry.resource == status.resource)
+        {
+            *previous = status;
+        } else {
+            applied.push(status);
+        }
     }
+    applied
 }
 
 fn print_resize_timeout(name: &str, timeout: Duration) {
@@ -1242,6 +1257,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn successful_restart_does_not_wait_for_new_runtime_resize_history() {
+        let mut plan = restart_blocked_plan();
+        plan.applied = true;
+        plan.policy = microsandbox::sandbox::ModificationPolicy::Restart;
+        assert!(modification_restarted(&plan));
+        plan.status = "draining".into();
+        assert!(modification_restarted(&plan));
+        plan.status = "stopped".into();
+        assert!(!modification_restarted(&plan));
+        plan.status = "running".into();
+        plan.applied = false;
+        assert!(!modification_restarted(&plan));
+        plan.applied = true;
+        // Merely selecting the restart policy is insufficient: live or unchanged
+        // targets still use operation-specific waiting in the original runtime.
+        plan.changes.clear();
+        assert!(!modification_restarted(&plan));
+    }
+
     fn restart_hints(flags: &[&str]) -> Vec<String> {
         let mut argv = vec!["api"];
         for flag in flags {
@@ -1344,6 +1379,21 @@ mod tests {
         )];
         assert_eq!(timeout_resize_status(applied.clone(), Vec::new()), applied);
         assert_eq!(timeout_resize_status(applied, observed.clone()), observed);
+    }
+
+    #[test]
+    fn partial_timeout_preserves_unread_resource_acknowledgement() {
+        let cpu = resize_entry(ResourceKind::Cpus, ResourceConvergenceState::Accepted);
+        let memory = resize_entry(ResourceKind::Memory, ResourceConvergenceState::Accepted);
+        let observed = resize_entry(ResourceKind::Cpus, ResourceConvergenceState::Applied);
+        assert_eq!(
+            timeout_resize_status(vec![cpu, memory.clone()], vec![observed.clone()]),
+            vec![observed.clone(), memory]
+        );
+        assert_eq!(
+            timeout_resize_status(Vec::new(), vec![observed.clone()]),
+            vec![observed]
+        );
     }
 
     #[test]

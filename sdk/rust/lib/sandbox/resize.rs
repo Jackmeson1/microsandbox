@@ -107,7 +107,7 @@ pub(crate) async fn resize_status(
 /// Poll until every resource is terminal. `None` waits without a deadline.
 ///
 /// A zero timeout performs one check, bounded by the control request deadline.
-/// A timeout carries the last completed read, or an empty list if none completed.
+/// A timeout carries the latest completed read per resource, or an empty list if none completed.
 pub(crate) async fn wait_until_resized(
     backend: &Arc<dyn Backend>,
     name: &str,
@@ -146,18 +146,25 @@ pub(crate) async fn wait_for_operations(
                         }))
                         .await
                         .map_err(MicrosandboxError::ControlClient)?;
-                    current.push(checked_operation(operation, response)?);
+                    let operation = checked_operation(operation, response)?;
+                    // A subsequent resource read can exhaust the deadline. Retain this
+                    // validated reply now, without inventing progress for unread resources.
+                    last.push(operation.status.clone());
+                    current.push(operation);
                 }
                 current
             }
-            None => current_operations(&session).await?,
+            None => {
+                let current = current_operations(&session).await?;
+                last = current
+                    .iter()
+                    .map(|operation| operation.status.clone())
+                    .collect();
+                current
+            }
         };
         loop {
             ensure_same_sandbox(backend, name, identity).await?;
-            last = operations
-                .iter()
-                .map(|operation| operation.status.clone())
-                .collect();
             if operations_settled(&operations)? {
                 return Ok(last.clone());
             }
@@ -165,7 +172,7 @@ pub(crate) async fn wait_for_operations(
                 return Err(resize_timeout(name, timeout, last.clone()));
             };
             tokio::time::sleep(delay).await;
-            for operation in &mut operations {
+            for (index, operation) in operations.iter_mut().enumerate() {
                 let response = session
                     .request(&ManageResize(ResizeRequest::Read {
                         runtime_boot_id: operation.runtime_boot_id.clone(),
@@ -174,6 +181,8 @@ pub(crate) async fn wait_for_operations(
                     .await
                     .map_err(MicrosandboxError::ControlClient)?;
                 *operation = checked_operation(operation, response)?;
+                // Preserve the previous reply for resources not yet read on this pass.
+                last[index] = operation.status.clone();
             }
         }
     };
@@ -622,3 +631,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "resize_wait_tests.rs"]
+mod wait_tests;
