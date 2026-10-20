@@ -84,7 +84,9 @@ class StopTimeoutError(MicrosandboxError, TimeoutError):
 
 
 class ResizeTimeoutError(MicrosandboxError, TimeoutError):
-    """A live resize did not converge within its budget; completion is unconfirmed and the resize is not undone.
+    """A live resize did not converge within its budget; completion is unconfirmed.
+
+    The resize is not undone.
 
     ``status`` is the last observed resize status, empty when no read completed
     before the deadline.
