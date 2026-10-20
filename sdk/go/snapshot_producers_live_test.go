@@ -4,6 +4,7 @@ package microsandbox
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -22,6 +23,7 @@ func TestCheckpointProducerReceiversLive(t *testing.T) {
 	if err := ffi.Load(library); err != nil {
 		t.Fatal(err)
 	}
+	legacy := os.Getenv("MSB_TEST_PRODUCER_LEGACY") == "1"
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	// Register history cleanup before sandbox cleanup, so dependent guests are
@@ -67,15 +69,40 @@ func TestCheckpointProducerReceiversLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.object == nil {
-		t.Fatal("Checkpoint.Create omitted retained receiver")
+	if (created.object == nil) != legacy {
+		t.Fatalf("Checkpoint.Create receiver disagrees with legacy=%v", legacy)
 	}
 	listed, err := Checkpoint.ListDir(ctx, filepath.Join(os.Getenv("MSB_HOME"), "snapshots", "producer-history"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed) != 1 || listed[0].ID() != created.ID() || listed[0].object == nil {
+	if len(listed) != 1 || listed[0].ID() != created.ID() || (listed[0].object == nil) != legacy {
 		t.Fatalf("ListDir lost exact receiver: %+v", listed)
+	}
+	if legacy {
+		for _, checkpoint := range []*SnapshotArtifact{created, listed[0]} {
+			_, spawnErr := checkpoint.SpawnSandbox(ctx, "must-not-start")
+			_, removeErr := checkpoint.Remove(ctx)
+			for _, err := range []error{spawnErr, removeErr} {
+				var unsupported *Error
+				if !errors.As(err, &unsupported) || unsupported.Kind != ErrUnsupportedOperation {
+					t.Fatalf("legacy producer should refuse retained operation: %v", err)
+				}
+			}
+			if _, err := checkpoint.Verify(ctx); err != nil {
+				t.Fatalf("legacy verification: %v", err)
+			}
+		}
+		// Reopening is an explicit caller choice after validating the old producer;
+		// production capture/list routing must never silently reselect its result.
+		created, err = Checkpoint.Open(ctx, created.Path())
+		if err != nil {
+			t.Fatal(err)
+		}
+		listed[0], err = Checkpoint.Open(ctx, listed[0].Path())
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := RemoveSandbox(ctx, source.Name()); err != nil {
 		t.Fatal(err)

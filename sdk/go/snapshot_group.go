@@ -366,7 +366,7 @@ func snapshotSaveOptionsWire(options SnapshotSaveOptions) map[string]any {
 
 func spawnSnapshotReceiver(ctx context.Context, object *ffi.SnapshotObject, name string, progress uint64, opts []RestoreOption) (*ffi.Sandbox, error) {
 	if object == nil {
-		return nil, fmt.Errorf("checkpoint has no retained receiver; reopen it with Checkpoint.Open")
+		return nil, &ffi.Error{Kind: ffi.KindUnsupportedOperation, Message: "checkpoint spawn requires a retained receiver from an updated native library; reopen it with Checkpoint.Open if supported"}
 	}
 	config := RestoreConfig{}
 	for _, configure := range opts {

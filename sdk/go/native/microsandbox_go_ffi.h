@@ -1108,6 +1108,14 @@ char *msb_runtime_setup(uint64_t cancel_id,
                         uintptr_t buf_len);
 
 /**
+ * Advertise retained receivers from the `create_artifact` and `list_dir` producers.
+ *
+ * The symbol is optional for older Go clients. Receiver dispatch alone does not
+ * imply these operations exist, and clients must select capture before mutation.
+ */
+void msb_supports_snapshot_artifact_receivers(void);
+
+/**
  * Execute only the explicitly tagged operation against a retained receiver.
  */
 char *msb_snapshot_object(uint64_t cancel_id,
