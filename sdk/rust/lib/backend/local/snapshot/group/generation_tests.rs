@@ -792,7 +792,7 @@ async fn released_reader_sees_atomic_production_publication_after_crash() {
 
 async fn production_crash_cases(legacy_cli: Option<&Path>) {
     for fresh in [true, false] {
-        for boundary in ["prepared", "exchanged", "committed"] {
+        for boundary in ["linking", "prepared", "exchanged", "committed"] {
             let root = tempfile::tempdir().unwrap();
             let destination = if fresh {
                 group::ensure_import(root.path(), Some("history"))
@@ -836,7 +836,7 @@ async fn production_crash_cases(legacy_cli: Option<&Path>) {
             child.wait().unwrap();
             reader.join().unwrap();
             reached.expect("production publisher did not reach crash boundary");
-            let published = boundary != "prepared";
+            let published = matches!(boundary, "exchanged" | "committed");
             let expected = usize::from(!fresh) + if published { 2 } else { 0 };
             assert_eq!(read_members(&destination, true).unwrap().len(), expected);
             if let Some(executable) = legacy_cli {
@@ -860,6 +860,21 @@ async fn production_crash_cases(legacy_cli: Option<&Path>) {
                 let pending = group::pending_index(&destination).await.unwrap().unwrap();
                 assert_eq!(pending.snapshots.len(), 2);
                 pending.finish().await.unwrap();
+            }
+            {
+                let _admission = group::WriterLease::acquire(&destination).await.unwrap();
+                recover_retired(&destination).unwrap();
+                recover_retired(&destination).unwrap();
+                assert!(
+                    fs::read_dir(root.path()).unwrap().all(|entry| {
+                        !entry
+                            .unwrap()
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".group-generation-")
+                    }),
+                    "fresh={fresh}, boundary={boundary}: recovery left an abandoned generation"
+                );
             }
             // Retry the same batch after recovery; existing members are never duplicated.
             let operation = group::IndexedPublication {
