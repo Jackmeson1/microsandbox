@@ -15,6 +15,9 @@ mod network_policy_tests;
 mod resource_tests;
 mod resources;
 mod runtime;
+#[cfg(test)]
+mod secret_tests;
+mod secrets;
 mod storage;
 #[cfg(test)]
 mod storage_tests;
@@ -41,6 +44,7 @@ pub use resources::{
     ResourceDefaultClear, ResourceDefaultSelection, ResourceRestoreMode, select_resource_defaults,
 };
 pub use runtime::select_runtime_defaults;
+pub use secrets::{SecretInputPlan, SecretInputSelection, select_secret_inputs};
 pub use storage::{
     MountInputSelection, StorageApprovalRequirement, StorageInputSelection, StorageRelaxation,
     VsockInputSelection, select_storage_inputs,
