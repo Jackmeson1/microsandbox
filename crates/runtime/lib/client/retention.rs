@@ -500,16 +500,19 @@ fn write_private_json(directory: &Path, name: &str, value: &impl Serialize) -> i
     sync_directory(directory)
 }
 
-/// Identity of the opened database, including deliberate symlinked catalog paths.
+/// Identity of the catalog pathname, including deliberate symlinked catalog paths.
 pub fn catalog_file_identity(path: &Path) -> io::Result<[u64; 2]> {
-    let file = File::open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(invalid("catalog is not a regular file"));
-    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let metadata = file.metadata()?;
+        // SQLite uses process-owned POSIX record locks. Closing any descriptor for
+        // this inode would release this process's locks, even though its database
+        // connection remains open. stat follows intentional symlinks without opening
+        // another descriptor; do not replace it with File::open(...).metadata().
+        let metadata = fs::metadata(path)?;
+        if !metadata.is_file() {
+            return Err(invalid("catalog is not a regular file"));
+        }
         Ok([metadata.dev(), metadata.ino()])
     }
     #[cfg(windows)]
@@ -518,6 +521,10 @@ pub fn catalog_file_identity(path: &Path) -> io::Result<[u64; 2]> {
         use windows_sys::Win32::Storage::FileSystem::{
             BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
         };
+        let file = File::open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(invalid("catalog is not a regular file"));
+        }
         let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
         // SAFETY: the file owns a live handle and info is valid writable output storage.
         if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
@@ -586,7 +593,101 @@ fn inject_failure(phase: &str) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::{
+        os::{fd::AsRawFd, unix::fs::MetadataExt},
+        process::Command,
+    };
+
     use super::*;
+
+    #[cfg(unix)]
+    fn record_lock() -> libc::flock {
+        // SAFETY: all-zero is valid for the integer fields in flock; set the operation
+        // and range explicitly. POSIX locks, unlike flock locks, are process-owned.
+        let mut lock: libc::flock = unsafe { std::mem::zeroed() };
+        lock.l_type = libc::F_WRLCK as _;
+        lock.l_whence = libc::SEEK_SET as _;
+        lock.l_start = 0x4000_0002; // SQLite's SHARED_FIRST byte.
+        lock.l_len = 1;
+        lock
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "subprocess-only POSIX catalog lock observer"]
+    fn catalog_record_lock_observer() {
+        let path = std::env::var_os("MSB_TEST_CATALOG_LOCK_PATH").expect("lock fixture path");
+        let expected_pid: libc::pid_t = std::env::var("MSB_TEST_CATALOG_LOCK_PID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        let mut lock = record_lock();
+        // SAFETY: the file descriptor and mutable flock output remain live for fcntl.
+        assert_eq!(
+            unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETLK, &mut lock) },
+            0
+        );
+        assert_eq!(
+            lock.l_type,
+            libc::F_WRLCK as libc::c_short,
+            "catalog writer lock was released"
+        );
+        assert_eq!(
+            lock.l_pid, expected_pid,
+            "lock belongs to a different process"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_identity_preserves_existing_posix_record_locks() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("catalog.db");
+        let file = File::create(&path).unwrap();
+        let lock = record_lock();
+        // SAFETY: the file descriptor and immutable input flock are valid for the call.
+        assert_eq!(
+            unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &lock) },
+            0
+        );
+        let observe = || {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "client::retention::tests::catalog_record_lock_observer",
+                    "--nocapture",
+                ])
+                .env("MSB_TEST_CATALOG_LOCK_PATH", &path)
+                .env("MSB_TEST_CATALOG_LOCK_PID", std::process::id().to_string())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        observe();
+        let identity = catalog_file_identity(&path).unwrap();
+        let metadata = file.metadata().unwrap();
+        assert_eq!(identity, [metadata.dev(), metadata.ino()]);
+        observe();
+        // Deliberately symlinked catalog paths keep their established target identity
+        // without opening/closing a second descriptor for the locked database.
+        let alias = directory.path().join("catalog-alias.db");
+        std::os::unix::fs::symlink(&path, &alias).unwrap();
+        assert_eq!(catalog_file_identity(&alias).unwrap(), identity);
+        observe();
+        drop(file);
+    }
 
     fn owner(boot: &str, run: i32) -> RetentionOwner {
         RetentionOwner {
