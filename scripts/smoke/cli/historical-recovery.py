@@ -141,6 +141,7 @@ def qualify(args):
               "test_binary_sha256": history.digest(args.test_binary),
               "legacy_binary_sha256": history.digest(args.legacy_binary),
               "firmware_sha256": history.digest(args.firmware),
+              "agent": history.agent_identity(args.agent),
               "agent_sha256": history.digest(args.agent),
               "harness_sha256": history.digest(Path(__file__)), "cases": [],
               "originals_unchanged": False}
@@ -197,14 +198,13 @@ def qualify(args):
                     candidate.run(label + "-persistent", "exec", sandbox, "--", "sh", "-ec",
                                   "test $(cat /root/historical/recovery-write) = recovery-write; " + history.VERIFY)
                     row["status"] = "passed"
-                except Exception as error:
+                except BaseException as error:
                     row["status"], row["error"] = "failed", str(error)
+                    if not isinstance(error, Exception):
+                        raise
                 finally:
-                    row["cleanup"] = history.cleanup(candidate, label, sandbox) if create_attempted else {}
-                    if any(value != 0 for value in row["cleanup"].values()):
-                        row["status"], row["cleanup_error"] = "failed", "candidate cleanup did not complete"
-                    report["cases"].append(row)
-                    (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+                    history.finish_case(candidate, label, sandbox, row, report,
+                                        args.output, attempted=create_attempted)
         report["catalog_empty"] = catalog_empty(home)
         if any(row["status"] != "passed" for row in report["cases"]) or not report["catalog_empty"]:
             raise RuntimeError("one or more recovery cases or final cleanup failed")
@@ -213,15 +213,13 @@ def qualify(args):
         report["status"], report["error"] = "failed", str(error)
         raise
     finally:
-        report["originals_unchanged"] = history.inventory(originals) == before
-        if not report["originals_unchanged"]:
-            report["status"] = "failed"
-        (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+        history.finish_originals(report, originals, before, args.output)
     if report["status"] != "passed":
         raise RuntimeError("original artifacts changed during recovery qualification")
 
 
 def main():
+    history.install_termination_handler()
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("fixture", "candidate", "test-binary", "legacy-binary", "firmware", "agent", "output"):
         parser.add_argument("--" + name, type=Path, required=True)

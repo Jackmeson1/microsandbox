@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -84,6 +85,67 @@ class HistoricalSnapshotTests(unittest.TestCase):
         self.assertEqual(result["rm"], 0)
         self.assertEqual(runner.run.call_args.args[1:3], ("rm", "owned-fixture"))
 
+    def test_cleanup_attempts_remove_before_propagating_interruption(self):
+        runner = Mock()
+        runner.run.side_effect = [SystemExit(143), 0]
+        with self.assertRaises(SystemExit):
+            smoke.cleanup(runner, "archive", "owned-fixture")
+        self.assertEqual(runner.run.call_args.args[1:3], ("rm", "owned-fixture"))
+
+    def test_producer_cleanup_failure_preserves_primary_error_and_report(self):
+        release = self.root / "release"
+        release.mkdir()
+        for name in ("msb", "firmware", "bundle", "checksums.sha256"):
+            (release / name).write_bytes(b"fixture")
+        args = SimpleNamespace(output=self.root / "produced", release_dir=release,
+                               version="0.7.8", image="unused")
+        runner = Mock(output=args.output / "producer")
+
+        def run(label, *args, **kwargs):
+            if label == "version":
+                runner.output.mkdir()
+                (runner.output / "version.stdout").write_text("msb 0.7.8")
+            if label == "seed":
+                raise ValueError("original seed failure")
+            if "cleanup" in label and args[0] == "stop":
+                raise subprocess.TimeoutExpired("stop", 180)
+            return 0
+        runner.run.side_effect = run
+        with patch.object(smoke.releases, "platform_asset", return_value="bundle"), \
+                patch.object(smoke.releases, "firmware_name", return_value="firmware"), \
+                patch.object(smoke.releases, "unpack_release"), \
+                patch.object(smoke, "Runner", return_value=runner):
+            with self.assertRaisesRegex(ValueError, "original seed failure"):
+                smoke.produce(args)
+        report = json.loads((args.output / "fixture.json").read_text())
+        self.assertEqual(report["error"], "original seed failure")
+        self.assertEqual(report["status"], "failed")
+        self.assertIn("timed out", report["cleanup"]["stop"])
+        self.assertEqual(report["cleanup"]["rm"], 0)
+
+    def test_qualification_identifies_explicit_or_embedded_agent(self):
+        fixture = self.root / "fixture"
+        originals = fixture / "originals"
+        (originals / "artifact").mkdir(parents=True)
+        (originals / "fixture.msb").write_bytes(b"archive")
+        (originals / "artifact/snapshot.json").write_text("{}")
+        (fixture / "fixture.json").write_text(json.dumps({
+            "status": "produced", "producer_version": "0.7.8",
+            "originals": smoke.inventory(originals)}))
+        binary = self.root / "binary"
+        binary.write_bytes(b"selected bytes")
+        for agent in (None, binary):
+            args = SimpleNamespace(fixture=fixture, candidate=binary, firmware=binary,
+                                   agent=agent, output=self.root / ("embedded" if agent is None else "explicit"))
+            with patch.object(smoke, "Runner", return_value=Mock(run=Mock(return_value=0))):
+                smoke.qualify(args)
+            report = json.loads((args.output / "report.json").read_text())
+            if agent:
+                self.assertEqual(report["agent"], {
+                    "source": "explicit", "path": str(binary.resolve()), "sha256": smoke.digest(binary)})
+            else:
+                self.assertEqual(report["agent"], {"source": "embedded"})
+
     def test_interrupted_command_reaps_its_owned_process_group(self):
         runner = smoke.Runner(Path(sys.executable), {}, self.root / "logs")
         with patch.object(smoke.subprocess, "Popen") as spawn, patch.object(smoke.os, "killpg") as kill:
@@ -96,6 +158,36 @@ class HistoricalSnapshotTests(unittest.TestCase):
         self.assertEqual(child.wait.call_count, 2)
         self.assertTrue(spawn.call_args.kwargs["start_new_session"])
         self.assertEqual(spawn.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
+
+    def test_interruption_during_cleanup_retains_case_and_attempts_removal(self):
+        originals = self.root / "fixture/originals"
+        (originals / "artifact").mkdir(parents=True)
+        (originals / "fixture.msb").write_bytes(b"archive")
+        (originals / "artifact/snapshot.json").write_text("{}")
+        (originals.parent / "fixture.json").write_text(json.dumps({
+            "status": "produced", "producer_version": "0.7.8",
+            "originals": smoke.inventory(originals)}))
+        binary = self.root / "binary"
+        binary.write_bytes(b"selected bytes")
+        args = SimpleNamespace(fixture=originals.parent, candidate=binary, firmware=binary,
+                               agent=None, output=self.root / "out")
+        runner = Mock()
+
+        def run(label, *args, **kwargs):
+            if label == "archive-cleanup-stop":
+                raise SystemExit(143)
+            return 0
+        runner.run.side_effect = run
+        with patch.object(smoke, "Runner", return_value=runner):
+            with self.assertRaises(SystemExit):
+                smoke.qualify(args)
+        report = json.loads((args.output / "report.json").read_text())
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["error"], "143")
+        self.assertEqual(report["cases"][0]["status"], "failed")
+        self.assertEqual(report["cases"][0]["cleanup"], {"stop": "143", "rm": 0})
+        self.assertTrue(report["originals_unchanged"])
 
 
 if __name__ == "__main__":

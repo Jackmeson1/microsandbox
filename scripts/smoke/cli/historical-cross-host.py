@@ -85,6 +85,7 @@ def qualify(args):
         "destination_architecture": destination,
         "candidate_sha256": history.digest(args.candidate),
         "agent_sha256": history.digest(args.agent),
+        "agent": history.agent_identity(args.agent),
         "firmware_sha256": history.digest(args.firmware),
         "harness_sha256": history.digest(Path(__file__)),
         "cases": [], "status": "running",
@@ -120,19 +121,29 @@ def qualify(args):
                 else:
                     # Disk snapshots may boot a native agent while their saved binaries cannot
                     # execute. Reaching that agent is not evidence of a usable restored guest.
+                    verify = history.VERIFY
+                    if label == "full-078":
+                        # cp1 is generation one of the real full-memory fixture.
+                        # Disk contents alone would also pass after a cold boot.
+                        verify += ("\ntest $(cat /dev/shm/history-generation) = 1; "
+                                   "sha256sum -c /root/historical/ram-checksum\n")
                     code = runner.run("guest", "exec", "cross-host", "--", "sh", "-ec",
-                                      history.VERIFY, required=False)
+                                      verify, required=False)
                     row["launch"] = "guest-verified" if code == 0 else "guest-execution-failed"
                     if code:
                         raise RuntimeError("foreign disk was admitted but guest contents could not be verified")
                 installed.require_unchanged(home, "transferred", state)
                 row["status"] = "passed"
-            except Exception as error:
+            except BaseException as error:
                 row["status"], row["error"] = "failed", str(error)
+                if not isinstance(error, Exception):
+                    raise
             finally:
-                audit_cleanup(runner, row)
-                report["cases"].append(row)
-                save_report(args.output, report)
+                try:
+                    audit_cleanup(runner, row)
+                finally:
+                    report["cases"].append(row)
+                    save_report(args.output, report)
 
         # Both archives use the same image reference but pin different platform content.
         # Refusing the incoming cache metadata must not disturb the existing group/guest.
@@ -174,37 +185,70 @@ def qualify(args):
                        "--from-snapshot", "native", "--pull", "never")
             runner.run("native-guest", "exec", "cross-host", "--", "sh", "-ec", history.VERIFY)
             row["status"] = "passed"
-        except Exception as error:
+        except BaseException as error:
             row["status"], row["error"] = "failed", str(error)
+            if not isinstance(error, Exception):
+                raise
         finally:
-            audit_cleanup(runner, row)
-            report["cases"].append(row)
+            try:
+                audit_cleanup(runner, row)
+            finally:
+                report["cases"].append(row)
+    except BaseException as error:
+        report["error"] = str(error)
+        raise
     finally:
-        report["archives_unchanged"] = all(history.digest(path) == digest for path, digest in inputs)
+        try:
+            report["archives_unchanged"] = all(history.digest(path) == digest for path, digest in inputs)
+        except Exception as error:
+            report["archives_unchanged"], report["archives_error"] = False, str(error)
         report["status"] = ("passed" if len(report["cases"]) == 4
                             and all(row["status"] == "passed" for row in report["cases"])
-                            and report["archives_unchanged"] else "failed")
+                            and report["archives_unchanged"] and "error" not in report else "failed")
         save_report(args.output, report)
     if report["status"] != "passed":
         raise RuntimeError("cross-host qualification has failures; inspect report.json")
 
 
 def audit_cleanup(runner, row):
+    errors, interrupted = [], None
+    sandboxes = None
     try:
         runner.run("before-cleanup", "list", "--format", "json")
         sandboxes = json.loads((runner.output / "before-cleanup.stdout").read_text())
+        if not isinstance(sandboxes, list):
+            raise RuntimeError("sandbox audit did not return a list")
         row["before_cleanup"] = sandboxes
-        # Clean up even if a failed create left a stopped catalog row.
-        if sandboxes:
-            row["cleanup"] = history.cleanup(runner, "cross-host", "cross-host")
+    except BaseException as error:
+        sandboxes = None
+        errors.append(str(error))
+        if not isinstance(error, Exception):
+            interrupted = error
+    # A failed audit is not evidence of absence. Always try the name this harness
+    # owns when state is unknown, including a failed create with a residual row.
+    if sandboxes is None or sandboxes:
+        row["cleanup"] = {}
+        try:
+            history.cleanup(runner, "cross-host", "cross-host", row["cleanup"])
             if any(code != 0 for code in row["cleanup"].values()):
                 raise RuntimeError("sandbox cleanup failed")
+        except BaseException as error:
+            errors.append(str(error))
+            if not isinstance(error, Exception):
+                interrupted = error
+    try:
         runner.run("after-cleanup", "list", "--format", "json")
         if json.loads((runner.output / "after-cleanup.stdout").read_text()) != []:
             raise RuntimeError("sandbox catalog is not empty")
         row["catalog_empty"] = True
-    except Exception as error:
-        row["status"], row["cleanup_error"] = "failed", str(error)
+    except BaseException as error:
+        errors.append(str(error))
+        if not isinstance(error, Exception):
+            interrupted = error
+    if errors:
+        row["status"], row["cleanup_error"] = "failed", "; ".join(errors)
+    if interrupted is not None:
+        raise interrupted
 
 
 def save_report(output, report):
@@ -212,6 +256,7 @@ def save_report(output, report):
 
 
 def main():
+    history.install_termination_handler()
     parser = argparse.ArgumentParser(description=__doc__)
     for option in ("transferred", "native-fixture", "candidate", "firmware", "agent", "output"):
         parser.add_argument("--" + option, type=Path, required=True)

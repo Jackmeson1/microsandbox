@@ -11,7 +11,6 @@ import json
 import os
 from pathlib import Path
 import platform
-import shutil
 import signal
 import subprocess
 import tempfile
@@ -67,6 +66,21 @@ def environment(binary, firmware, home, agent=None):
     return env
 
 
+def agent_identity(agent):
+    """Identify the selected guest implementation independently of the CLI."""
+    return ({"source": "explicit", "path": str(agent.resolve()), "sha256": digest(agent)}
+            if agent else {"source": "embedded"})
+
+
+def install_termination_handler():
+    def terminate(signum, _frame):
+        # Unwind once through process/VM cleanup. A second TERM must not interrupt
+        # that cleanup; a supervisor can still enforce its hard-kill deadline.
+        signal.signal(signum, signal.SIG_IGN)
+        raise SystemExit(128 + signum)
+    signal.signal(signal.SIGTERM, terminate)
+
+
 class Runner:
     def __init__(self, binary, env, output):
         self.binary, self.env, self.output = binary, env, output
@@ -80,22 +94,28 @@ class Runner:
         # Persistent VMs have a separate lifecycle and are stopped in finally below.
         # No fixture command is interactive: never let a CLI consume the SSH shell
         # script from inherited stdin and silently skip the remaining matrix.
-        with (self.output / f"{label}.stdout").open("w") as stdout, (self.output / f"{label}.stderr").open("w") as stderr:
-            with subprocess.Popen(command, env=self.env, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
-                                  start_new_session=True) as child:
-                try:
-                    code = child.wait(timeout=180)
-                except BaseException:
+        row = {"label": label, "command": command, "exit": None}
+        try:
+            with (self.output / f"{label}.stdout").open("w") as stdout, (self.output / f"{label}.stderr").open("w") as stderr:
+                with subprocess.Popen(command, env=self.env, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
+                                      start_new_session=True) as child:
                     try:
-                        os.killpg(child.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    child.wait()
-                    raise
-        row = {"label": label, "command": command, "exit": code,
-               "seconds": round(time.monotonic() - start, 3)}
-        self.commands.append(row)
-        (self.output / "commands.json").write_text(json.dumps(self.commands, indent=2) + "\n")
+                        row["exit"] = child.wait(timeout=180)
+                    except BaseException:
+                        try:
+                            os.killpg(child.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass  # The command exited between interruption and kill.
+                        row["exit"] = child.wait()
+                        raise
+        except BaseException as error:
+            row["error"], row["error_type"] = str(error), type(error).__name__
+            raise
+        finally:
+            row["seconds"] = round(time.monotonic() - start, 3)
+            self.commands.append(row)
+            (self.output / "commands.json").write_text(json.dumps(self.commands, indent=2) + "\n")
+        code = row["exit"]
         print(f"{label}: exit {code}", flush=True)
         if required and code:
             raise RuntimeError(f"{label} failed; see {self.output / (label + '.stderr')}")
@@ -121,16 +141,49 @@ def verify_descriptor_preservation(original, working):
     return retained
 
 
-def cleanup(runner, prefix, sandbox):
-    """Attempt both lifecycle operations even when the first command times out."""
-    result = {}
+def cleanup(runner, prefix, sandbox, result=None):
+    """Attempt both lifecycle operations before propagating an interruption."""
+    result = {} if result is None else result
+    interrupted = None
     for operation in ("stop", "rm"):
         try:
             result[operation] = runner.run(prefix + "-cleanup-" + operation,
                                            operation, sandbox, required=False)
-        except Exception as error:
+        except BaseException as error:
             result[operation] = str(error)
+            if not isinstance(error, Exception):
+                interrupted = error
+    if interrupted is not None:
+        raise interrupted
     return result
+
+
+def finish_case(runner, prefix, sandbox, row, report, output, attempted=True):
+    """Retain cleanup and case evidence even when termination arrives in cleanup."""
+    row["cleanup"] = {}
+    try:
+        if attempted:
+            cleanup(runner, prefix, sandbox, row["cleanup"])
+        if any(value != 0 for value in row["cleanup"].values()):
+            row["status"], row["cleanup_error"] = "failed", "candidate cleanup did not complete"
+    except BaseException as error:
+        row["status"], row["cleanup_error"] = "failed", str(error)
+        raise
+    finally:
+        report["cases"].append(row)
+        (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+
+
+def finish_originals(report, originals, before, output):
+    """Keep the primary failure and a readable report if the final audit also fails."""
+    try:
+        report["originals_unchanged"] = inventory(originals) == before
+    except Exception as error:
+        report["originals_unchanged"], report["originals_error"] = False, str(error)
+    finally:
+        if not report["originals_unchanged"]:
+            report["status"] = "failed"
+        (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
 
 
 def produce(args):
@@ -182,9 +235,14 @@ def produce(args):
         report["status"], report["error"] = "failed", str(error)
         raise
     finally:
-        # Stop even after a seed/capture failure, without touching another fixture's home.
-        runner.run("cleanup-stop", "stop", "historical-source", required=False)
-        (args.output / "fixture.json").write_text(json.dumps(report, indent=2) + "\n")
+        # The successful path already removed its source. Failed production must
+        # attempt both operations without losing its original error or report.
+        report["cleanup"] = {}
+        try:
+            if report["status"] != "produced":
+                cleanup(runner, "producer", "historical-source", report["cleanup"])
+        finally:
+            (args.output / "fixture.json").write_text(json.dumps(report, indent=2) + "\n")
 
 
 def qualify(args):
@@ -200,7 +258,8 @@ def qualify(args):
     report = {"producer_version": fixture["producer_version"], "home": str(home),
               "harness_sha256": digest(Path(__file__)),
               "candidate_sha256": digest(args.candidate), "firmware_sha256": digest(args.firmware),
-              "cases": [], "originals_unchanged": False}
+              "agent": agent_identity(args.agent),
+              "cases": [], "status": "running", "originals_unchanged": False}
     failed = False
     try:
         runner.run("version", "--version")
@@ -225,24 +284,26 @@ def qualify(args):
                 if kind == "directory":
                     row["retained_descriptor"] = verify_descriptor_preservation(originals / "artifact", source)
                 row["status"] = "passed"
-            except Exception as error:
+            except BaseException as error:
                 row["status"], row["error"] = "failed", str(error)
                 failed = True
+                if not isinstance(error, Exception):
+                    raise
             finally:
-                row["cleanup"] = cleanup(runner, kind, sandbox)
-                if row["status"] == "passed" and any(value != 0 for value in row["cleanup"].values()):
-                    row["status"], row["error"] = "failed", "candidate cleanup did not complete"
-                    failed = True
-                report["cases"].append(row)
-                (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+                finish_case(runner, kind, sandbox, row, report, args.output)
+        failed |= any(row["status"] != "passed" for row in report["cases"])
+        report["status"] = "failed" if failed else "passed"
+    except BaseException as error:
+        report["status"], report["error"] = "failed", str(error)
+        raise
     finally:
-        report["originals_unchanged"] = inventory(originals) == before
-        (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+        finish_originals(report, originals, before, args.output)
     if failed or not report["originals_unchanged"]:
         raise RuntimeError(f"historical restore qualification failed: {args.output / 'report.json'}")
 
 
 def main():
+    install_termination_handler()
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="mode", required=True)
     producer = commands.add_parser("produce")

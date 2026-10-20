@@ -37,6 +37,8 @@ Use the Linux firmware path on Linux. Omit `--agent` only when the candidate has
 
 The harness stops/removes its candidate sandboxes after each case. It retains private homes and logs for inspection; it never operates on the caller's normal home. Non-interactive stdin is explicit so commands cannot consume a surrounding SSH script. Commands have bounded timeouts and their own process groups. Interrupted supervisors are reaped; persistent runtime cleanup is attempted in the fixture's `finally` paths. Inspect cleanup results before deleting diagnostic homes after a failure.
 
+Candidate reports identify an explicit agent by absolute path and SHA-256, or record that the candidate's embedded agent was selected. The historical harness entry points unwind on SIGTERM, reap their owned CLI/worker process groups and attempt both stop and removal for test-owned sandboxes. Interrupted commands and cases remain failed in the saved report; a cleanup or final inventory failure does not erase the original failure. Cross-host cleanup still attempts the known sandbox when its initial catalog audit fails, then performs a separate final audit. A cross-host full-memory success must verify the captured RAM generation and checksum as well as disk contents.
+
 ## Evidence and remaining cells
 
 Keep `fixture.json`, original archives/directories, all command logs, and `report.json`. Each case records its own pass/fail result; a failed archive case does not silently skip the directory attempt. Record the exact candidate commit separately from the binary hash. Mac and Linux fixtures are separate producers; same-host passes do not prove cross-host transfer.

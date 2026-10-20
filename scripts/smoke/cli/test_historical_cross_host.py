@@ -75,8 +75,14 @@ class CrossHostTests(unittest.TestCase):
                     text = "archive could not be parsed"
                 if self.mode == "guest-failure" and output.name.startswith("disk"):
                     code = 0
+                if self.mode == "lost-ram" and output.name == "full-078":
+                    code = 0
             if label == "guest" and self.mode == "guest-failure":
                 code, text = 126, "Exec format error"
+            if label == "guest" and self.mode == "lost-ram" and "ram-checksum" in args[-1]:
+                code, text = 1, "captured RAM is missing"
+            if label == "before-cleanup" and self.mode == "audit-failure":
+                raise TimeoutError("initial list timed out")
             if label == "foreign-load":
                 code, text = 1, "cache target already exists with different content"
                 if self.mode == "partial-publication":
@@ -84,7 +90,10 @@ class CrossHostTests(unittest.TestCase):
             if label == "native-guest" and self.mode == "native-corruption":
                 code, text = 1, "checksum mismatch"
             (output / (label + ".stderr")).write_text(text)
-            (output / (label + ".stdout")).write_text("[]")
+            stdout = "[]"
+            if label == "before-cleanup" and self.mode == "invalid-audit":
+                stdout = "{}"
+            (output / (label + ".stdout")).write_text(stdout)
             if required and code:
                 raise RuntimeError(text)
             return code
@@ -143,6 +152,39 @@ class CrossHostTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "qualification has failures"):
             self.qualify()
         self.assertEqual(self.report()["cases"][-1]["error"], "checksum mismatch")
+
+    def test_full_memory_success_requires_captured_ram(self):
+        self.mode = "lost-ram"
+        with self.assertRaisesRegex(RuntimeError, "qualification has failures"):
+            self.qualify()
+        row = self.report()["cases"][2]
+        self.assertEqual(row["status"], "failed")
+        verify = next(args[-1] for kind, label, args in self.commands
+                      if kind == "full-078" and label == "guest")
+        self.assertIn("/dev/shm/history-generation", verify)
+        self.assertIn("ram-checksum", verify)
+
+    def test_initial_audit_failure_still_cleans_known_sandbox_and_rechecks(self):
+        self.mode = "audit-failure"
+        with self.assertRaisesRegex(RuntimeError, "qualification has failures"):
+            self.qualify()
+        for row in self.report()["cases"]:
+            self.assertEqual(row["status"], "failed")
+            self.assertIn("initial list timed out", row["cleanup_error"])
+            self.assertTrue(row["catalog_empty"])
+        for kind in ("disk-060", "disk-078", "full-078", "cache-conflict"):
+            labels = [label for group, label, _ in self.commands if group == kind]
+            self.assertIn("cross-host-cleanup-stop", labels)
+            self.assertIn("cross-host-cleanup-rm", labels)
+            self.assertIn("after-cleanup", labels)
+
+    def test_non_list_audit_cannot_skip_cleanup(self):
+        self.mode = "invalid-audit"
+        with self.assertRaisesRegex(RuntimeError, "qualification has failures"):
+            self.qualify()
+        for row in self.report()["cases"]:
+            self.assertIn("did not return a list", row["cleanup_error"])
+            self.assertEqual(row["cleanup"], {"stop": 0, "rm": 0})
 
     def test_corrupted_transfer_is_rejected_before_cli_dispatch(self):
         (self.args.transferred / "disk-060/fixture.msb").write_bytes(b"substituted")

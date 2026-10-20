@@ -114,9 +114,12 @@ def produce(args):
         report["status"], report["error"] = "failed", str(error)
         raise
     finally:
-        if report["status"] != "produced":
-            report["cleanup"] = history.cleanup(runner, "producer", "chain-source")
-        (args.output / "fixture.json").write_text(json.dumps(report, indent=2) + "\n")
+        report["cleanup"] = {}
+        try:
+            if report["status"] != "produced":
+                history.cleanup(runner, "producer", "chain-source", report["cleanup"])
+        finally:
+            (args.output / "fixture.json").write_text(json.dumps(report, indent=2) + "\n")
 
 
 def qualify(args):
@@ -140,6 +143,7 @@ def qualify(args):
     archives = [inputs / member["archive"] for member in members]
     report = {"producer_version": fixture["producer_version"], "kind": fixture["kind"], "home": str(home),
               "candidate_sha256": history.digest(args.candidate), "firmware_sha256": history.digest(args.firmware),
+              "agent": history.agent_identity(args.agent),
               "harness_sha256": history.digest(Path(__file__)), "cases": [], "status": "running", "originals_unchanged": False}
 
     def restore(kind, sources, cow=False, generation=3):
@@ -161,11 +165,7 @@ def qualify(args):
             row["status"], row["error"] = "failed", str(error)
             raise
         finally:
-            row["cleanup"] = history.cleanup(runner, kind, sandbox)
-            if any(value != 0 for value in row["cleanup"].values()):
-                row["status"] = "failed"
-            report["cases"].append(row)
-            (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+            history.finish_case(runner, kind, sandbox, row, report, args.output)
         if row["status"] != "passed":
             raise RuntimeError("restored historical child cleanup failed")
 
@@ -207,15 +207,13 @@ def qualify(args):
         report["status"], report["error"] = "failed", str(error)
         raise
     finally:
-        report["originals_unchanged"] = history.inventory(originals) == before
-        if not report["originals_unchanged"]:
-            report["status"] = "failed"
-        (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+        history.finish_originals(report, originals, before, args.output)
     if report["status"] != "passed":
         raise RuntimeError("historical chain originals changed")
 
 
 def main():
+    history.install_termination_handler()
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="mode", required=True)
     producer = commands.add_parser("produce")

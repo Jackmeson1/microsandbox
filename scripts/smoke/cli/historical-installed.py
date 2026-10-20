@@ -47,6 +47,7 @@ def qualify(args):
     report = {"producer_version": fixture["producer_version"], "home": str(home),
               "candidate_sha256": history.digest(args.candidate),
               "firmware_sha256": history.digest(args.firmware),
+              "agent": history.agent_identity(args.agent),
               "harness_sha256": history.digest(Path(__file__)),
               "cases": [], "status": "running", "originals_unchanged": False}
     archive = args.output / "input.msb"
@@ -101,14 +102,12 @@ def qualify(args):
                 runner.run(kind + "-persistent", "exec", sandbox, "--", "sh", "-ec",
                            "test $(cat /root/historical/installed-write) = installed-write; " + history.VERIFY)
                 row["status"] = "passed"
-            except Exception as error:
+            except BaseException as error:
                 row["status"], row["error"] = "failed", str(error)
+                if not isinstance(error, Exception):
+                    raise
             finally:
-                row["cleanup"] = history.cleanup(runner, kind, sandbox)
-                if any(value != 0 for value in row["cleanup"].values()):
-                    row["status"], row["cleanup_error"] = "failed", "candidate cleanup did not complete"
-                report["cases"].append(row)
-                (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+                history.finish_case(runner, kind, sandbox, row, report, args.output)
         require_unchanged(home, group, state)
         if any(row["status"] != "passed" for row in report["cases"]):
             raise RuntimeError("one or more installed historical selectors failed")
@@ -122,15 +121,13 @@ def qualify(args):
         for sandbox in owned:
             if sandbox not in completed:
                 report.setdefault("interrupted_cleanup", {})[sandbox] = history.cleanup(runner, "interrupted-" + sandbox, sandbox)
-        report["originals_unchanged"] = history.inventory(originals) == before
-        if not report["originals_unchanged"]:
-            report["status"] = "failed"
-        (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+        history.finish_originals(report, originals, before, args.output)
     if report["status"] != "passed":
         raise RuntimeError("historical originals changed during qualification")
 
 
 def main():
+    history.install_termination_handler()
     parser = argparse.ArgumentParser(description=__doc__)
     for option in ("fixture", "candidate", "firmware", "output"):
         parser.add_argument("--" + option, type=Path, required=True)
