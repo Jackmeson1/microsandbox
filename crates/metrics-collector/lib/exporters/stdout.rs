@@ -186,6 +186,7 @@ mod tests {
                 memory_bytes_reported: true,
                 memory_total_bytes: None,
                 guest_memory_observation: None,
+                guest_memory_validity: None,
                 memory_available_bytes: Some(13 * 1024 * 1024),
                 memory_host_resident_bytes: Some(12 * 1024 * 1024),
                 memory_limit_bytes: 512 * 1024 * 1024,

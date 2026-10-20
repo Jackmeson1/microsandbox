@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::GuestMemoryObservation;
+use crate::{GuestMemoryObservation, GuestMemoryValidity};
 
 //--------------------------------------------------------------------------------------------------
 // Types
@@ -52,6 +52,8 @@ pub struct LiveMetric {
     pub memory_total_bytes: Option<u64>,
     /// Original guest receipt retained through buffering; absent for legacy writers.
     pub guest_memory_observation: Option<GuestMemoryObservation>,
+    /// Allocation/lifecycle validation retained through collection and retries.
+    pub guest_memory_validity: Option<GuestMemoryValidity>,
     /// Guest-available memory in bytes when reported by the guest.
     pub memory_available_bytes: Option<u64>,
     /// Host-resident guest memory in bytes for capacity diagnostics.
@@ -92,6 +94,8 @@ pub struct SandboxMetrics {
     pub memory_total_bytes: Option<u64>,
     /// Original guest receipt retained through buffering; absent for legacy writers.
     pub guest_memory_observation: Option<GuestMemoryObservation>,
+    /// Allocation/lifecycle validation retained through collection and retries.
+    pub guest_memory_validity: Option<GuestMemoryValidity>,
     /// Guest-available memory in bytes when reported by the guest.
     pub memory_available_bytes: Option<u64>,
     /// Host-resident guest memory in bytes for capacity diagnostics.
@@ -142,8 +146,12 @@ impl SandboxMetrics {
     /// Recheck the original guest receipt, not collection or export time. Legacy
     /// writers have no receipt contract, so their existing behavior is preserved.
     pub fn guest_memory_is_fresh_at(&self, now: Option<Duration>) -> bool {
-        self.guest_memory_observation
-            .is_none_or(|report| now.is_some_and(|now| report.is_fresh_at(now)))
+        self.guest_memory_validity
+            .as_ref()
+            .is_none_or(GuestMemoryValidity::is_current)
+            && self
+                .guest_memory_observation
+                .is_none_or(|report| now.is_some_and(|now| report.is_fresh_at(now)))
     }
 
     /// Remove expired guest-derived values before export/retry. Keep the receipt
@@ -176,6 +184,7 @@ impl From<LiveMetric> for SandboxMetricSnapshot {
                 memory_bytes_reported: live.memory_bytes_reported,
                 memory_total_bytes: live.memory_total_bytes,
                 guest_memory_observation: live.guest_memory_observation,
+                guest_memory_validity: live.guest_memory_validity,
                 memory_available_bytes: live.memory_available_bytes,
                 memory_host_resident_bytes: live.memory_host_resident_bytes,
                 memory_limit_bytes: live.memory_limit_bytes,

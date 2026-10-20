@@ -89,6 +89,7 @@ pub(crate) fn collection(seq: i32) -> MetricsCollection {
                 memory_bytes_reported: true,
                 memory_total_bytes: None,
                 guest_memory_observation: None,
+                guest_memory_validity: None,
                 memory_available_bytes: Some(2),
                 memory_host_resident_bytes: Some(3),
                 memory_limit_bytes: 2,

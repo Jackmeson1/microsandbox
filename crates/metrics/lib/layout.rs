@@ -61,7 +61,8 @@
 //! |  0x130 memory_guest_total AU64                                 |
 //! |  0x138 memory_received_ns AU64 host monotonic receipt time      |
 //! |  0x140 memory_interval_ns AU64 guest reporting cadence          |
-//! |  0x148 _tail            [u8; 184]                               |
+//! |  0x148 memory_epoch     AU64 lifecycle invalidation stamp      |
+//! |  0x150 _tail            [u8; 176]                               |
 //! +-----------------------------------------------------------------+ 0x300
 //! | SLOT 1 ... SLOT capacity-1                                      |
 //! ~                                                                 ~
@@ -171,6 +172,8 @@ pub const SAMPLE_FLAG_MEMORY_LIMIT_LIVE: u32 = 1 << 7;
 pub const SAMPLE_FLAG_GUEST_MEMORY_OBSERVATION: u32 = 1 << 8;
 /// The tail and available-memory field contain one complete guest report.
 pub const SAMPLE_FLAG_GUEST_MEMORY_VALID: u32 = 1 << 9;
+/// Writer maintains a lifecycle stamp for retained observation validation.
+pub const SAMPLE_FLAG_GUEST_MEMORY_LIFECYCLE: u32 = 1 << 10;
 
 //--------------------------------------------------------------------------------------------------
 // Types
@@ -268,6 +271,8 @@ pub struct Slot {
     pub memory_received_ns: AtomicU64,
     /// Guest reporting cadence in nanoseconds.
     pub memory_interval_ns: AtomicU64,
+    /// Lifecycle invalidation stamp; meaningful only with the lifecycle flag.
+    pub memory_epoch: AtomicU64,
     /// Padding to round the struct up to `SLOT_SIZE`.
     _tail: [u8; SLOT_TAIL_PAD],
 }
@@ -282,7 +287,8 @@ pub struct Slot {
 //   upper_used_bytes(8) + upper_free_bytes(8) + upper_host_allocated(8)      = +24  -> 168
 //   name_len(2) + _pad1(6) + name_bytes(NAME_BYTES)                         = +8 + NAME_BYTES
 //   memory_guest_total(8) + memory_received_ns(8) + memory_interval_ns(8) = +24
-const SLOT_BASE_BYTES: usize = 176 + NAME_BYTES + 24;
+//   memory_epoch(8)                                                      = +8
+const SLOT_BASE_BYTES: usize = 176 + NAME_BYTES + 32;
 
 const SLOT_TAIL_PAD: usize = SLOT_SIZE - SLOT_BASE_BYTES;
 
@@ -294,6 +300,7 @@ const _: () = {
     assert!(std::mem::offset_of!(Slot, memory_guest_total_bytes) == 0x130);
     assert!(std::mem::offset_of!(Slot, memory_received_ns) == 0x138);
     assert!(std::mem::offset_of!(Slot, memory_interval_ns) == 0x140);
+    assert!(std::mem::offset_of!(Slot, memory_epoch) == 0x148);
 };
 
 //--------------------------------------------------------------------------------------------------
