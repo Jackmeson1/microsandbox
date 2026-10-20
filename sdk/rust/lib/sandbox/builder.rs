@@ -1521,6 +1521,26 @@ impl SandboxBuilder {
                 "managed settings conflict with the snapshot's captured root disk layout".into(),
             ));
         }
+        // Growth is a transient operation, so ordinary root-disk layering cannot
+        // enforce its capacity later: the private-disk worker would overwrite the
+        // managed value. Compare against managed policy itself (not ordinary defaults
+        // or the captured disk's old size) before staging or replacement begins.
+        if let Some(requested) = sandbox.snapshot_root_growth_mib
+            && let Some(required) = backend_config.and_then(|settings| {
+                match settings.root_disk_layers().build().into_config().root_disk {
+                    Some(
+                        microsandbox_types::RootDisk::Managed { size_mib }
+                        | microsandbox_types::RootDisk::Flat { size_mib, .. },
+                    ) => size_mib,
+                    _ => None,
+                }
+            })
+            && requested != required
+        {
+            return Err(MicrosandboxError::InvalidConfig(format!(
+                "snapshot root capacity {requested} MiB conflicts with managed root capacity {required} MiB"
+            )));
+        }
         sandbox.restore_overrides = restore_overrides;
         self.materialize_config_scripts(&mut sandbox);
         self.validate(&mut sandbox)?;
@@ -3267,6 +3287,78 @@ mod tests {
             SandboxConfigPatch::from_present_fields(config).snapshot_root_growth_mib,
             Some(512)
         );
+    }
+
+    #[test]
+    fn snapshot_root_growth_respects_managed_capacity_without_promoting_defaults() {
+        use microsandbox_types::RootDisk;
+
+        for (disk, policy) in [
+            (
+                RootDisk::managed(256),
+                serde_json::json!({"root_disk": {"kind": "managed", "size_mib": 512}}),
+            ),
+            (
+                RootDisk::managed(256),
+                serde_json::json!({"upper_size_mib": 512}),
+            ),
+            (
+                RootDisk::Flat {
+                    size_mib: Some(256),
+                    fstype: Some("ext4".into()),
+                    clone: Default::default(),
+                },
+                serde_json::json!({"root_disk": {"kind": "flat", "size_mib": 512}}),
+            ),
+        ] {
+            let patch: GlobalConfigPatch =
+                serde_json::from_value(serde_json::json!({"sandbox_defaults": {"oci": policy}}))
+                    .unwrap();
+            let make = |requested| {
+                let mut config = SandboxConfig::default();
+                config.spec.name = "growth-policy".into();
+                config.spec.image = RootfsSource::oci("alpine");
+                let RootfsSource::Oci(image) = &mut config.spec.image else {
+                    unreachable!()
+                };
+                image.root_disk = Some(disk.clone());
+                config.snapshot_parent = Some("captured".into());
+                config.snapshot_root_growth_mib = Some(requested);
+                SandboxBuilder::from(config)
+            };
+            let managed = BackendConfig::new(Default::default(), patch.clone());
+            let error = make(1024).finish(Some(&managed), None).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("1024 MiB conflicts with managed root capacity 512 MiB"),
+                "{error}"
+            );
+            assert_eq!(
+                make(512)
+                    .finish(Some(&managed), None)
+                    .unwrap()
+                    .snapshot_root_growth_mib,
+                Some(512)
+            );
+
+            // User defaults and the captured 256 MiB disk are not administrator constraints.
+            let ordinary = BackendConfig::new(patch, Default::default());
+            assert_eq!(
+                make(1024)
+                    .finish(Some(&ordinary), None)
+                    .unwrap()
+                    .snapshot_root_growth_mib,
+                Some(1024)
+            );
+            assert_eq!(
+                make(1024)
+                    .finish(None, None)
+                    .unwrap()
+                    .snapshot_root_growth_mib,
+                Some(1024)
+            );
+        }
     }
 
     #[test]

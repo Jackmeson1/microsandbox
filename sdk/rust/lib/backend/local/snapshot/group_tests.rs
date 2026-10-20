@@ -1457,3 +1457,115 @@ async fn live_public_group_capture_head_and_spawn_after_source_deletion() {
     })
     .await;
 }
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires MSB_TEST_GROWTH_POLICY_ARCHIVE and matching native runtime; fixture contains /root/checksum and 500 files"]
+async fn live_snapshot_root_growth_preserves_managed_policy_and_running_destination() {
+    let archive = std::path::PathBuf::from(
+        std::env::var_os("MSB_TEST_GROWTH_POLICY_ARCHIVE").expect("archive fixture"),
+    );
+    let layout =
+        std::env::var("MSB_TEST_GROWTH_POLICY_LAYOUT").unwrap_or_else(|_| "managed".into());
+    assert!(matches!(layout.as_str(), "managed" | "flat"));
+    let home = tempfile::Builder::new()
+        .prefix("msb-growth-policy-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let policy = serde_json::json!({"overrides": {"sandbox_defaults": {"oci": {"root_disk": {
+        "kind": layout, "size_mib": 512,
+    }}}}});
+    fs::write(
+        home.path().join("managed.json"),
+        serde_json::to_vec(&policy).unwrap(),
+    )
+    .unwrap();
+    // Match production's managed-policy permissions regardless of the test host umask.
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(
+        home.path().join("managed.json"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let backend = Arc::new(
+        crate::test_support::local_backend_builder(home.path())
+            .build()
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        serde_json::to_value(&backend.config().sandbox_defaults.oci.root_disk).unwrap()["size_mib"],
+        512
+    );
+    let digest = microsandbox_image::checkpoint::sparse_file_integrity(&archive)
+        .unwrap()
+        .root;
+    // Full checkpoint fixtures need explicit cold boot; disk archives already cold boot.
+    let disk_only =
+        std::env::var("MSB_TEST_GROWTH_POLICY_DISK_ONLY").is_ok_and(|value| value == "1");
+    let request = |size| {
+        crate::sandbox::SandboxBuilder::new("growth-child")
+            .override_snapshot(archive.to_string_lossy())
+            .snapshot_launch_options(disk_only, false)
+            .root_disk(size)
+            .memory(256_u32)
+            .cpus(1)
+            .replace()
+    };
+    let sandbox = backend
+        .create_sandbox(
+            backend.clone(),
+            request(512_u32),
+            crate::runtime::SpawnMode::Attached,
+            None,
+        )
+        .await
+        .unwrap();
+    // Keep every fallible assertion inside a result, then stop/remove the owned
+    // sandbox before reporting failure. The original source archive stays read-only.
+    let outcome: crate::MicrosandboxResult<()> = async {
+        let seeded = sandbox.exec("sh", ["-ec", "sha256sum -c /root/checksum; test $(find /root/many -type f | wc -l) = 500; test $(df -k /root | tail -1 | awk '{print $2}') -gt 400000; printf retained > /root/policy-marker; dd if=/dev/zero of=/root/policy-growth bs=1M count=300 2>/dev/null; sync"]).await?;
+        if !seeded.status().success {
+            return Err(crate::MicrosandboxError::Custom("grown guest contents/capacity failed validation".into()));
+        }
+        match backend.create_sandbox(backend.clone(), request(1024_u32), crate::runtime::SpawnMode::Attached, None).await {
+            Err(error) if error.to_string().contains("1024 MiB conflicts with managed root capacity 512 MiB") => {},
+            Err(error) => return Err(error),
+            Ok(unexpected) => {
+                // A regressed implementation may have started a replacement. Reap
+                // that handle too, instead of deleting its home beneath a live VM.
+                let stop = unexpected.kill().await;
+                let remove = unexpected.remove_persisted().await;
+                stop?;
+                remove?;
+                return Err(crate::MicrosandboxError::Custom("conflicting growth replaced the live destination".into()));
+            },
+        }
+        let retained = sandbox.exec("sh", ["-ec", "test $(cat /root/policy-marker) = retained; test $(stat -c %s /root/policy-growth) = 314572800; sha256sum -c /root/checksum"]).await?;
+        if !retained.status().success {
+            return Err(crate::MicrosandboxError::Custom("policy refusal changed the running destination".into()));
+        }
+        Ok(())
+    }.await;
+    let stop = sandbox.kill().await;
+    let remove = sandbox.remove_persisted().await;
+    stop.unwrap();
+    remove.unwrap();
+    outcome.unwrap();
+    assert_eq!(
+        microsandbox_image::checkpoint::sparse_file_integrity(&archive)
+            .unwrap()
+            .root,
+        digest
+    );
+    assert!(
+        !fs::read_dir(backend.sandboxes_dir())
+            .unwrap()
+            .any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".snapshot-grow-"))
+    );
+}

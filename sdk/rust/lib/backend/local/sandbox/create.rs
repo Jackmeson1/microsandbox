@@ -2911,6 +2911,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn snapshot_root_growth_policy_refuses_before_staging_or_replacement() {
+        // Keep policy admission ahead of the unrelated Unix socket path-length guard.
+        #[cfg(unix)]
+        let temp = tempfile::Builder::new()
+            .prefix("msb-growth-policy-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        #[cfg(not(unix))]
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("home");
+        fs::create_dir(&home).unwrap();
+        fs::write(
+            home.join("managed.json"),
+            r#"{"overrides":{"sandbox_defaults":{"oci":{"root_disk":{"kind":"managed","size_mib":512}}}}}"#,
+        )
+        .unwrap();
+        // Managed policy is security-sensitive; do not depend on the host's umask.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::set_permissions(home.join("managed.json"), fs::Permissions::from_mode(0o600))
+                .unwrap();
+        }
+        let backend = Arc::new(
+            crate::test_support::local_backend_builder(&home)
+                .build()
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            serde_json::to_value(&backend.config().sandbox_defaults.oci.root_disk).unwrap()["size_mib"],
+            512
+        );
+        let pools = backend.db().await.unwrap();
+        let mut config = test_config_with_rootfs(
+            "protected",
+            RootfsSource::oci("example.invalid/saved:latest"),
+        );
+        let RootfsSource::Oci(image) = &mut config.spec.image else {
+            unreachable!()
+        };
+        image.root_disk = Some(crate::sandbox::RootDisk::managed(256));
+        config.spec.pull_policy = PullPolicy::Never;
+        let id = LocalBackend::insert_sandbox_record_with_status(
+            pools.write(),
+            &config,
+            SandboxStatus::Stopped,
+        )
+        .await
+        .unwrap();
+        let original = sandbox_entity::Entity::find_by_id(id)
+            .one(pools.read())
+            .await
+            .unwrap()
+            .unwrap();
+        let directory = backend.sandboxes_dir().join("protected");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("keep"), b"existing destination").unwrap();
+
+        // The policy check must win before even opening a snapshot disk. An invalid
+        // sentinel makes accidental filesystem preparation fail with a different error.
+        let source = temp.path().join("sealed.raw");
+        fs::write(&source, b"sealed source must not be opened for growth").unwrap();
+        config.snapshot_parent = Some("captured".into());
+        config.snapshot_upper_layers = vec![microsandbox_runtime::launch::RootfsUpperLayerConfig {
+            path: source.clone(),
+            format: "raw".into(),
+        }];
+        config.snapshot_root_growth_mib = Some(1024);
+        config.replace_existing = true;
+        let error = match backend
+            .create_sandbox(backend.clone(), config, SpawnMode::Attached, None)
+            .await
+        {
+            Ok(_) => panic!("managed disk policy must reject conflicting growth"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("1024 MiB conflicts with managed root capacity 512 MiB"),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read(&source).unwrap(),
+            b"sealed source must not be opened for growth"
+        );
+        assert_eq!(
+            fs::read(directory.join("keep")).unwrap(),
+            b"existing destination"
+        );
+        assert_eq!(
+            sandbox_entity::Entity::find_by_id(id)
+                .one(pools.read())
+                .await
+                .unwrap()
+                .unwrap(),
+            original
+        );
+        assert_eq!(
+            fs::read_dir(backend.sandboxes_dir()).unwrap().count(),
+            1,
+            "policy refusal must not create a private staging directory"
+        );
+    }
+
+    #[tokio::test]
     async fn test_create_local_missing_snapshot_descriptor_preserves_replace_target() {
         let temp = tempdir().unwrap();
         let backend = Arc::new(
