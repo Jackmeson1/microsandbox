@@ -19,6 +19,7 @@ use crate::{MicrosandboxError, MicrosandboxResult, snapshot::Manifest};
 
 /// Destination-owned inputs. The variant declares the requested resource kind, not proof that
 /// a path exists, has that kind or satisfies captured identity and destination policy.
+#[derive(Clone)]
 pub enum StorageBindingInput {
     /// Host file exported through virtiofs.
     FilesystemFile(PathBuf),
@@ -52,7 +53,7 @@ struct InputBudget(usize);
 //--------------------------------------------------------------------------------------------------
 
 impl StorageBindingInput {
-    fn kind(&self) -> SavedBindingKind {
+    pub(super) fn kind(&self) -> SavedBindingKind {
         match self {
             Self::FilesystemFile(_) => SavedBindingKind::FilesystemFile,
             Self::FilesystemDirectory(_) => SavedBindingKind::FilesystemDirectory,
