@@ -195,10 +195,9 @@ def test_restore_init_reuses_create_validation(method, value):
 ])
 async def test_restore_boot_controls_reach_source_validation(tmp_path, method, init):
     with pytest.raises(FileNotFoundError):
-        result = getattr(Sandbox, method)(
-            tmp_path / "missing", name="boot-controls", init=init, hostname="child", disk_only=True,
-        )
+        options = {"name": "boot-controls", "init": init, "hostname": "child", "disk_only": True}
         if method == "restore":
-            await result
+            await Sandbox.restore(tmp_path / "missing", **options)
         else:
-            await result.result()
+            progress = Sandbox.restore_with_progress(tmp_path / "missing", **options)
+            await progress.result()
