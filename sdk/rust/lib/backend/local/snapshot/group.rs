@@ -14,8 +14,6 @@ mod transaction;
 #[cfg(windows)]
 mod txf;
 
-use super::writer::WriterLease;
-
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod generation;
 
@@ -37,6 +35,7 @@ use microsandbox_utils::process_lock;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 
+use super::writer::WriterLease;
 use crate::db::entity::sandbox;
 use crate::{MicrosandboxError, MicrosandboxResult, SnapshotImportOutcome};
 
