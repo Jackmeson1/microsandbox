@@ -549,7 +549,7 @@ Like create/run, modify accepts `-c`/`--cpus`, `-m`/`--memory`, `-e`/`--env`, an
 
 Set `--max-cpus` and `--max-memory` at creation to leave room for live growth. They default to the initial CPU and memory allocation; increasing the ceilings requires a restart.
 
-Resize can take time. The output and JSON `resize_status` report `applied`, `converging`, `guest-refused`, or `failed`. With `guest-refused`, the host still enforces the new limit.
+Resize can take time. The immediate output and JSON `resize_status` report `accepted` after the runtime accepts a target. The plan's `applied` field means the modification request was applied; it does not confirm usable guest capacity. Equal reported quantities, or current memory above a shrink target, do not prove guest completion.
 
 Env and workdir changes on a running sandbox apply to future execs only; running processes keep their current environment. The plan reports this as a warning.
 

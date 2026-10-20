@@ -2042,7 +2042,7 @@ async fn apply(self) -> MicrosandboxResult<SandboxModificationPlan>
 
 Apply the changes. Live changes are made to the running sandbox first, and the new config is saved only after they succeed, so a failed apply leaves the old config in place. Changes for a stopped sandbox, or requested with [`next_start()`](#modification-next_start), are saved and take effect on the next start. With [`restart()`](#modification-restart), `apply()` stops and starts the sandbox so that restart-required changes take effect.
 
-A live CPU or memory resize can take a moment to settle. The returned plan's `resize_status` reports progress per resource; see [`ResourceResizeStatus`](#resourceresizestatus).
+A live CPU or memory resize can take a moment to settle. The immediate result's `resize_status` is `Accepted` after the runtime accepts each target; it does not confirm guest completion. `plan.applied` means the modification request was applied, not that the guest has usable capacity. See [`ResourceResizeStatus`](#resourceresizestatus).
 
 <p className="msb-label">Returns</p>
 
@@ -3186,7 +3186,7 @@ When or whether a planned change can take effect. Serializes as the quoted strin
 
 <p className="msb-backref">Used by <a href="#sandboxmodificationplan">SandboxModificationPlan.resize_status</a></p>
 
-Runtime convergence status for a live resource resize. Enforcement applies immediately; the guest converges asynchronously (onlining CPUs, plugging memory blocks).
+Resource status for a live resize. The immediate modification result reports `Accepted`; its existing requested, actual and enforced quantities do not establish operation-bound guest completion. In particular, plugged memory can still be offline, and memory above a shrink target does not mean the shrink finished.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -3200,7 +3200,7 @@ Runtime convergence status for a live resource resize. Enforcement applies immed
 |-------|-------------|
 | `Accepted` | The runtime accepted the request |
 | `Converging` | The guest and VMM are still converging on the requested state |
-| `Applied` | Desired, actual, and enforced state match |
+| `Applied` | Guest completion has been confirmed for the operation; not produced by the immediate target acknowledgement |
 | `GuestRefused` | The guest would not cooperate; the host enforces the new limit anyway |
 | `Failed` | The resize failed |
 

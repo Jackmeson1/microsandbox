@@ -660,7 +660,7 @@ The returned [`SandboxModificationPlan`](#sandboxmodificationplan) is a typed di
 | `warnings` | `list[dict]` | Non-fatal warnings (`field` + `message`), e.g. the future-execs-only env caveat |
 | `resize_status` | `list[ResourceResizeStatus]` | Live resize outcomes after apply, using [`ResourceKind`](#resourcekind) and [`ResourceConvergenceState`](#resourceconvergencestate). Omitted when no live resize ran |
 
-A live CPU or memory resize can take a moment to settle. The new limits are enforced immediately, and `resize_status` reports when the sandbox has finished adjusting.
+A live CPU or memory resize can take a moment to settle. The immediate result's `resize_status` reports `accepted` after the runtime accepts each target; it does not confirm guest completion. The plan's `applied` field describes applying the modification request, not usable guest capacity.
 
 <p className="msb-label">Parameters</p>
 
@@ -2110,7 +2110,7 @@ Observed convergence state for an accepted live resize.
 |--------|-------|-------------|
 | `ResourceConvergenceState.ACCEPTED` | `"accepted"` | Runtime accepted the request |
 | `ResourceConvergenceState.CONVERGING` | `"converging"` | Guest and VMM are still converging |
-| `ResourceConvergenceState.APPLIED` | `"applied"` | Desired, actual, and enforced values match |
+| `ResourceConvergenceState.APPLIED` | `"applied"` | Guest completion has been confirmed for the operation; not produced by the immediate target acknowledgement |
 | `ResourceConvergenceState.GUEST_REFUSED` | `"guest-refused"` | Guest refused or failed to cooperate |
 | `ResourceConvergenceState.FAILED` | `"failed"` | Resize failed |
 
