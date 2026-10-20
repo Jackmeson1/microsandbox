@@ -62,3 +62,24 @@ The candidate product tree `2e9553feaaf446f626391f157f7b937784feef3d` passed the
 | 0.7.8 | Pass | Pass | Pass | Pass | Original `snapshot.json` unchanged |
 
 The complete CLI harness unit suite passed 124 tests on each host, including seven new historical-harness checks. Earlier diagnostic runs exposed inherited SSH stdin consuming later commands; the final harness uses `DEVNULL` and verifies this behavior. Existing Python SQLite resource warnings remain in the broad harness output. This evidence establishes these baseline cells, not the additional scenarios listed above. It demonstrates that no new converter is necessary for these specific historical artifacts.
+
+## Installed historical histories
+
+`historical-installed.py` consumes the same exact-release fixtures and tests their imported group head and stable checkpoint ID. It also tests the local name when the archive records one; an older unnamed archive is reported as having no name selector, rather than receiving an invented alias. It checks idempotent import retries, malformed multi-archive batches into existing and new groups, subsequent successful retries, and whole-group verification. Failed batches must preserve installed members and head and must not publish the new group.
+
+```sh
+python3 scripts/smoke/cli/historical-installed.py \
+  --fixture /tmp/msb-historical-fixture-060 \
+  --candidate /absolute/path/to/msb \
+  --firmware /absolute/path/to/libkrunfw.5.dylib \
+  --agent /absolute/path/to/matching/agentd \
+  --output /tmp/msb-historical-installed-060
+```
+
+The harness deletes its working archive inputs before any restored sandbox starts. Each supported selector must pass the guest checksum, filesystem-metadata and persistent-write-across-restart checks with `--pull never`, followed by successful stop/removal. Original fixture bytes remain untouched. `--temp-root` selects an existing short directory for private homes; use a disk-backed directory on Linux when `/tmp` has a quota. This qualification covers installed historical selectors and import retry/failure behavior, not dependent chains, cross-host movement, image-cache collision repair or the complete migration/downgrade matrix. `--pull never` alone is not proof that the host network was disabled; record any network isolation separately in the run evidence.
+
+### Installed/offline qualification on 2026-10-20
+
+The integrated product tree `fbb19f49b184797559128625fdb8e42598b32580` passes 11 installed-selector restores and 112 CLI calls on each host. Every selected release passes group-head and checkpoint-ID restore; 0.7.8 additionally passes its recorded checkpoint name. The tested 0.6 archives contain no local member name, so no name-selector pass is claimed for them. Each run also passes duplicate import, malformed batch refusal into existing/new groups, retry, whole-group integrity verification, guest checksums/metadata, persistent writes across restart, unchanged originals and cleanup. All ten offline fixture catalogs contain zero sandbox rows afterward.
+
+Mac runs inherit a per-process sandbox profile denying outbound IP traffic; IPv4 and IPv6 connection probes both fail with `EPERM`. Linux runs execute as `ubuntu` in a private network namespace with no external route; the connection probe fails with `ENETUNREACH`. The host networking configuration is unchanged. Both hosts pass 129 CLI harness tests, including five new failure-accounting checks. An initial harness assumption that every archive has a member-name file was corrected after the real 0.6.0 import; it was not a product failure. These results complete these installed/offline cells, not the remaining historical matrix above.
