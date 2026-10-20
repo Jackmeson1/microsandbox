@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
+mod resize;
+
 //--------------------------------------------------------------------------------------------------
 // Types
 //--------------------------------------------------------------------------------------------------
@@ -199,6 +201,10 @@ pub enum MicrosandboxError {
         /// Last observed resize status; empty when no read completed before the deadline.
         status: Vec<microsandbox_types::modify::ResourceResizeStatus>,
     },
+
+    /// An accepted resize could not be confirmed, with a structured reason and original cause.
+    #[error(transparent)]
+    ResizeWait(Box<ResizeWaitError>),
 
     /// The sandbox process exited before the agent relay became
     /// available. Carries the sandbox name and the structured
@@ -891,3 +897,9 @@ mod tests {
         );
     }
 }
+
+//--------------------------------------------------------------------------------------------------
+// Re-Exports
+//--------------------------------------------------------------------------------------------------
+
+pub use resize::{ResizeWaitError, ResizeWaitFailure};

@@ -2,6 +2,7 @@ package microsandbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -173,6 +174,8 @@ const (
 	ErrSandboxStopTimedOut
 	// ErrResizeTimeout indicates a live resize did not converge before its deadline.
 	ErrResizeTimeout
+	// ErrResizeWait indicates observation failed without proving a final resize outcome.
+	ErrResizeWait
 )
 
 func (k ErrorKind) String() string {
@@ -197,6 +200,8 @@ func (k ErrorKind) String() string {
 		return "ExecTimeout"
 	case ErrStopTimeout:
 		return "StopTimeout"
+	case ErrResizeWait:
+		return "ResizeWait"
 	case ErrResizeTimeout:
 		return "ResizeTimeout"
 	case ErrExecFailed:
@@ -379,6 +384,13 @@ func wrapFFI(err error) error {
 				Recovery: recovery, err: &Error{Kind: ErrSnapshotSourceRecovery, Message: fe.Message},
 			}
 		}
+		if fe.Kind == ffi.KindResizeWait {
+			var details ResizeWaitError
+			if json.Unmarshal(fe.ResizeWait, &details) == nil && details.Reason != "" {
+				details.err = &Error{Kind: ErrResizeWait, Message: fe.Message}
+				return &details
+			}
+		}
 		if fe.Kind == ffi.KindResizeTimeout {
 			status := []ResourceResizeStatus{}
 			if len(fe.ResizeStatus) > 0 {
@@ -418,6 +430,8 @@ func kindFromFFI(kind string) ErrorKind {
 		return ErrExecTimeout
 	case ffi.KindStopTimeout:
 		return ErrStopTimeout
+	case ffi.KindResizeWait:
+		return ErrResizeWait
 	case ffi.KindResizeTimeout:
 		return ErrResizeTimeout
 	case ffi.KindNoDefaultCommand:

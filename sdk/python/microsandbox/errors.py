@@ -100,6 +100,31 @@ class ResizeTimeoutError(MicrosandboxError, TimeoutError):
         self.status: list[ResourceResizeStatus] = list(status) if status is not None else []
 
 
+ResizeWaitFailure = Literal[
+    "superseded", "interrupted", "history_unavailable",
+    "invalid_response", "observation_unavailable",
+]
+
+
+class ResizeWaitError(MicrosandboxError):
+    """Observation failed; this does not undo a resize or establish its final outcome."""
+    code = "resize-wait"
+
+    def __init__(
+        self, message: str, *, reason: ResizeWaitFailure, sandbox: str | None = None,
+        operation_id: str | None = None, status: list[ResourceResizeStatus] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.sandbox = sandbox
+        self.operation_id = operation_id
+        self.status = list(status) if status is not None else []
+
+    @classmethod
+    def _from_native(cls, payload: dict) -> ResizeWaitError:
+        return cls(**payload)
+
+
 class ExecFailedError(MicrosandboxError):
     """Command execution failed."""
     code = "exec-failed"

@@ -63,6 +63,27 @@ pub fn to_py_err(err: microsandbox::MicrosandboxError) -> PyErr {
             };
         }
 
+        if let ResizeWait(details) = &err {
+            let instance = (|| -> PyResult<Bound<'_, PyAny>> {
+                let payload = serde_json::to_string(details).map_err(|error| {
+                    pyo3::exceptions::PyRuntimeError::new_err(error.to_string())
+                })?;
+                let payload = py.import("json")?.call_method1("loads", (payload,))?;
+                let payload = payload.downcast::<pyo3::types::PyDict>()?;
+                // Match ordinary resize results: Python callers receive enums, not JSON strings.
+                let status = serde_json::to_value(&details.status).map_err(|error| {
+                    pyo3::exceptions::PyRuntimeError::new_err(error.to_string())
+                })?;
+                payload.set_item("status", crate::sandbox::resize_statuses_to_py(py, status)?)?;
+                errors_mod
+                    .getattr("ResizeWaitError")?
+                    .call_method1("_from_native", (payload,))
+            })();
+            if let Ok(instance) = instance {
+                return PyErr::from_value(instance);
+            }
+        }
+
         if let ResizeTimeout { status, .. } = &err {
             let instance = (|| -> PyResult<Bound<'_, PyAny>> {
                 let status = serde_json::to_value(status).map_err(|error| {

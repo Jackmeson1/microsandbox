@@ -23,6 +23,7 @@ export type MicrosandboxErrorCode =
   | "execTimeout"
   | "stopTimeout"
   | "resizeTimeout"
+  | "resizeWait"
   | "terminal"
   | "sandboxFsOps"
   | "imageNotFound"
@@ -189,6 +190,24 @@ export class ResizeTimeoutError extends MicrosandboxError {
     options?: ErrorOptions,
   ) {
     super("resizeTimeout", message, options);
+  }
+}
+
+export type ResizeWaitFailure =
+  | "superseded" | "interrupted" | "history_unavailable"
+  | "invalid_response" | "observation_unavailable";
+
+/** Observation failed; no rollback or successful completion is implied. */
+export class ResizeWaitError extends MicrosandboxError {
+  constructor(
+    message: string,
+    readonly reason: ResizeWaitFailure,
+    readonly sandbox: string | null,
+    readonly operationId: string | null,
+    readonly status: ResourceResizeStatus[],
+    options?: ErrorOptions,
+  ) {
+    super("resizeWait", message, options);
   }
 }
 

@@ -1315,6 +1315,7 @@ type Error struct {
 	Kind         string                         `json:"kind"`
 	Message      string                         `json:"message"`
 	Recovery     *SnapshotSourceRecoveryDetails `json:"recovery,omitempty"`
+	ResizeWait   json.RawMessage                `json:"resize_wait,omitempty"`
 	ResizeStatus json.RawMessage                `json:"resize_status,omitempty"`
 	// Local volume errors retain host errno/Win32 identity. Older libraries omit it.
 	OSError *int32 `json:"os_error,omitempty"`
@@ -1353,6 +1354,7 @@ const (
 	KindExecTimeout            = "exec_timeout"
 	KindStopTimeout            = "stop_timeout"
 	KindResizeTimeout          = "resize_timeout"
+	KindResizeWait             = "resize_wait"
 	KindNoDefaultCommand       = "no_default_command"
 	KindInvalidConfig          = "invalid_config"
 	KindInvalidArgument        = "invalid_argument"

@@ -468,6 +468,8 @@ export {
   ExecTimeoutError,
   StopTimeoutError,
   ResizeTimeoutError,
+  ResizeWaitError,
+  type ResizeWaitFailure,
   HttpError,
   ImageError,
   ImageInUseError,

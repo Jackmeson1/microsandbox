@@ -8,7 +8,10 @@ use napi::Status;
 /// Convert a `MicrosandboxError` into a `napi::Error` with a typed code string.
 pub fn to_napi_error(err: MicrosandboxError) -> napi::Error {
     let code = error_type_str(&err);
-    if let Some(payload) = source_recovery_payload(&err).or_else(|| resize_timeout_payload(&err)) {
+    if let Some(payload) = source_recovery_payload(&err)
+        .or_else(|| resize_timeout_payload(&err))
+        .or_else(|| resize_wait_payload(&err))
+    {
         return napi::Error::new(Status::GenericFailure, format!("[{code}] {payload}"));
     }
     napi::Error::new(Status::GenericFailure, format!("[{code}] {err}"))
@@ -29,6 +32,13 @@ fn resize_timeout_payload(err: &MicrosandboxError) -> Option<String> {
     };
     let status = serde_json::to_value(status).ok()?;
     Some(serde_json::json!({ "message": err.to_string(), "status": status }).to_string())
+}
+
+fn resize_wait_payload(err: &MicrosandboxError) -> Option<String> {
+    let MicrosandboxError::ResizeWait(details) = err else {
+        return None;
+    };
+    serde_json::to_string(details).ok()
 }
 
 /// Return a string tag for the error variant, used as the JS error `code` field.
@@ -69,6 +79,7 @@ fn error_type_str(err: &MicrosandboxError) -> &'static str {
         MicrosandboxError::ExecTimeout(_) => "ExecTimeout",
         MicrosandboxError::StopTimeout { .. } => "StopTimeout",
         MicrosandboxError::ResizeTimeout { .. } => "ResizeTimeout",
+        MicrosandboxError::ResizeWait(_) => "ResizeWait",
         MicrosandboxError::ExecFailed(_) => "ExecFailed",
         MicrosandboxError::Terminal(_) => "Terminal",
         MicrosandboxError::SandboxFsOps(_) => "SandboxFsOps",
@@ -104,6 +115,25 @@ mod tests {
     use microsandbox::RestoreKind;
 
     use super::*;
+
+    #[test]
+    fn resize_wait_payload_keeps_reason_and_omits_internal_cause() {
+        let error = MicrosandboxError::ResizeWait(Box::new(microsandbox::ResizeWaitError {
+            reason: microsandbox::ResizeWaitFailure::HistoryUnavailable,
+            sandbox: Some("box".into()),
+            operation_id: Some("selected".into()),
+            status: vec![],
+            message: "missing history".into(),
+            cause: Some(Box::new(MicrosandboxError::Runtime("raw cause".into()))),
+        }));
+        let value: serde_json::Value =
+            serde_json::from_str(&resize_wait_payload(&error).unwrap()).unwrap();
+        let details = &value;
+        assert_eq!(details["reason"], "history_unavailable");
+        assert_eq!(details["operation_id"], "selected");
+        assert_eq!(details["status"], serde_json::json!([]));
+        assert!(details.get("cause").is_none());
+    }
 
     #[test]
     fn missing_restore_bindings_keep_the_invalid_config_code() {

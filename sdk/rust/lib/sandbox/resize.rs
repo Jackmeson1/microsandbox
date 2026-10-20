@@ -2,7 +2,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use microsandbox_control_client::{DEFAULT_REQUEST_TIMEOUT, ManageResize};
+use microsandbox_control_client::{ControlClientError, DEFAULT_REQUEST_TIMEOUT, ManageResize};
 use microsandbox_protocol::resize::{
     ResizeObservation, ResizeOperation, ResizeOutcome, ResizeRequest, ResizeResponse, ResizeTarget,
     ResizeTracking,
@@ -11,7 +11,7 @@ use microsandbox_types::modify::{ResourceConvergenceState, ResourceKind, Resourc
 use tokio::time::Instant;
 
 use crate::backend::{Backend, ControlSession, sandbox::SandboxIdentity};
-use crate::error::{Operation, UnsupportedReason};
+use crate::error::{Operation, ResizeWaitError, ResizeWaitFailure, UnsupportedReason};
 use crate::{MicrosandboxError, MicrosandboxResult};
 
 use super::{Sandbox, SandboxId, SandboxStatus};
@@ -145,6 +145,7 @@ pub(crate) async fn wait_for_operations(
 ) -> MicrosandboxResult<Vec<ResourceResizeStatus>> {
     let started = Instant::now();
     let mut last = Vec::new();
+    let mut reading_id = None;
     let wait = async {
         let session = open_session(backend, name, identity).await?;
         // Bind once. A later request, including an identical target, must not
@@ -158,6 +159,7 @@ pub(crate) async fn wait_for_operations(
                     return Err(invalid_resize_response());
                 }
                 for operation in operations {
+                    reading_id = Some(operation.id.clone());
                     let response = session
                         .request(&ManageResize(ResizeRequest::Read {
                             runtime_boot_id: operation.runtime_boot_id.clone(),
@@ -170,6 +172,7 @@ pub(crate) async fn wait_for_operations(
                     // validated reply now, without inventing progress for unread resources.
                     last.push(operation.status.clone());
                     current.push(operation);
+                    reading_id = None;
                 }
                 current
             }
@@ -192,6 +195,7 @@ pub(crate) async fn wait_for_operations(
             };
             tokio::time::sleep(delay).await;
             for (index, operation) in operations.iter_mut().enumerate() {
+                reading_id = Some(operation.id.clone());
                 let response = session
                     .request(&ManageResize(ResizeRequest::Read {
                         runtime_boot_id: operation.runtime_boot_id.clone(),
@@ -202,14 +206,17 @@ pub(crate) async fn wait_for_operations(
                 *operation = checked_operation(operation, response)?;
                 // Preserve the previous reply for resources not yet read on this pass.
                 last[index] = operation.status.clone();
+                reading_id = None;
             }
         }
     };
-    let Some(budget) = timeout.map(wait_budget) else {
-        return wait.await;
+    let result = match timeout.map(wait_budget) {
+        Some(budget) => tokio::time::timeout(budget, wait)
+            .await
+            .unwrap_or_else(|_| Err(resize_timeout(name, timeout, last.clone()))),
+        None => wait.await,
     };
-    let result = tokio::time::timeout(budget, wait).await;
-    result.unwrap_or_else(|_| Err(resize_timeout(name, timeout, last)))
+    result.map_err(|error| contextualize_wait_error(name, reading_id, last, error))
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -354,6 +361,9 @@ async fn current_operations(session: &ControlSession) -> MicrosandboxResult<Vec<
     {
         return Err(invalid_resize_response());
     }
+    for operation in &response.operations {
+        validate_completion_observation(operation)?;
+    }
     Ok(response.operations)
 }
 
@@ -376,11 +386,27 @@ fn checked_operation(
     {
         return Err(invalid_resize_response());
     }
+    // Reject contradictory completion before callers retain this reply as last-known progress.
+    validate_completion_observation(&operation)?;
     Ok(operation)
 }
 
 fn invalid_resize_response() -> MicrosandboxError {
-    MicrosandboxError::Runtime("resize response did not match the selected operation".into())
+    MicrosandboxError::ResizeWait(Box::new(ResizeWaitError::new(
+        ResizeWaitFailure::InvalidResponse,
+        MicrosandboxError::Runtime("resize response did not match the selected operation".into()),
+    )))
+}
+
+/// Completion is meaningful only with an available observation and matching resource state.
+fn validate_completion_observation(operation: &ResizeOperation) -> MicrosandboxResult<()> {
+    if operation.outcome == ResizeOutcome::Applied
+        && (operation.observation != ResizeObservation::Available
+            || operation.status.state != ResourceConvergenceState::Applied)
+    {
+        return Err(invalid_resize_response());
+    }
+    Ok(())
 }
 
 fn operations_settled(operations: &[ResizeOperation]) -> MicrosandboxResult<bool> {
@@ -394,24 +420,68 @@ fn operations_settled(operations: &[ResizeOperation]) -> MicrosandboxResult<bool
     }
     for operation in operations {
         if operation.outcome == ResizeOutcome::Superseded {
-            return Err(MicrosandboxError::Runtime(format!(
-                "resize operation {} was superseded by a later request",
-                operation.id
-            )));
+            let mut error = ResizeWaitError::new(
+                ResizeWaitFailure::Superseded,
+                MicrosandboxError::Runtime(format!(
+                    "resize operation {} was superseded by a later request",
+                    operation.id
+                )),
+            );
+            error.operation_id = Some(operation.id.clone());
+            return Err(MicrosandboxError::ResizeWait(Box::new(error)));
         }
-        if operation.outcome == ResizeOutcome::Applied {
-            if operation.observation != ResizeObservation::Available
-                || operation.status.state != ResourceConvergenceState::Applied
-            {
-                return Err(invalid_resize_response());
-            }
-        } else if operation.observation == ResizeObservation::Unsupported {
+        validate_completion_observation(operation)?;
+        if operation.outcome != ResizeOutcome::Applied
+            && operation.observation == ResizeObservation::Unsupported
+        {
             return Err(resize_status_unsupported());
         }
     }
     Ok(operations
         .iter()
         .all(|operation| operation.outcome == ResizeOutcome::Applied))
+}
+
+/// Enrich errors only at the wait boundary. Apply failures retain their delivery semantics,
+/// and an unrecognized peer code must not become a guessed terminal operation outcome.
+fn contextualize_wait_error(
+    name: &str,
+    reading_id: Option<String>,
+    status: Vec<ResourceResizeStatus>,
+    error: MicrosandboxError,
+) -> MicrosandboxError {
+    let mut failure = match error {
+        MicrosandboxError::ResizeWait(failure) => failure,
+        error => {
+            let reason = match &error {
+                MicrosandboxError::SandboxNotRunning(_)
+                | MicrosandboxError::SandboxNotFound(_)
+                | MicrosandboxError::SandboxReplaced { .. } => ResizeWaitFailure::Interrupted,
+                MicrosandboxError::ControlClient(cause) => match cause.as_ref() {
+                    ControlClientError::RuntimeChanged => ResizeWaitFailure::Interrupted,
+                    ControlClientError::Peer { error: peer, .. } => match peer.code.as_str() {
+                        "runtime_changed" => ResizeWaitFailure::Interrupted,
+                        "resize_history_unavailable" => ResizeWaitFailure::HistoryUnavailable,
+                        _ => return error,
+                    },
+                    ControlClientError::Client(_) => ResizeWaitFailure::ObservationUnavailable,
+                    ControlClientError::InvalidResponse { .. }
+                    | ControlClientError::InvalidJsonResponse { .. } => {
+                        ResizeWaitFailure::InvalidResponse
+                    }
+                    _ => return error,
+                },
+                _ => return error,
+            };
+            Box::new(ResizeWaitError::new(reason, error))
+        }
+    };
+    failure.sandbox = Some(name.into());
+    if failure.operation_id.is_none() {
+        failure.operation_id = reading_id;
+    }
+    failure.status = status;
+    MicrosandboxError::ResizeWait(failure)
 }
 
 fn ensure_same_identity(
@@ -599,6 +669,140 @@ mod tests {
             checked_operation(&expected, reply(vec![applied.clone()])).unwrap(),
             applied
         );
+    }
+
+    #[test]
+    fn contradictory_completion_is_rejected_before_retaining_progress() {
+        let expected = operation(ResizeOutcome::Pending, ResizeObservation::Available);
+        for observation in [
+            ResizeObservation::Unavailable,
+            ResizeObservation::Paused,
+            ResizeObservation::Unsupported,
+        ] {
+            let response = ResizeResponse {
+                tracking: ResizeTracking {
+                    runtime_boot_id: "boot".into(),
+                    max_retained: 256,
+                },
+                operations: vec![operation(ResizeOutcome::Applied, observation)],
+            };
+            assert!(matches!(
+                checked_operation(&expected, response),
+                Err(MicrosandboxError::ResizeWait(_))
+            ));
+        }
+        let mut inconsistent = operation(ResizeOutcome::Applied, ResizeObservation::Available);
+        inconsistent.status.state = ResourceConvergenceState::Accepted;
+        assert!(validate_completion_observation(&inconsistent).is_err());
+    }
+
+    #[test]
+    fn structured_peer_codes_preserve_unknown_codes_and_original_frames() {
+        use microsandbox_protocol::{
+            codec::RawFrame,
+            control::{ControlError, ErrorEffect},
+            wire::Envelope,
+        };
+        use microsandbox_protocol_client::Message;
+
+        for (code, expected) in [
+            ("runtime_changed", Some(ResizeWaitFailure::Interrupted)),
+            (
+                "resize_history_unavailable",
+                Some(ResizeWaitFailure::HistoryUnavailable),
+            ),
+            ("future_peer_code", None),
+        ] {
+            let source = Arc::new(ControlClientError::Peer {
+                error: ControlError {
+                    code: code.into(),
+                    message: "peer detail".into(),
+                    effect: ErrorEffect::None,
+                },
+                response: Box::new(Message::new(
+                    RawFrame {
+                        id: 7,
+                        flags: 0,
+                        body: vec![9, 8, 7],
+                    },
+                    Envelope {
+                        v: 2,
+                        t: "control.error".into(),
+                        p: vec![],
+                    },
+                )),
+            });
+            let error = contextualize_wait_error(
+                "box",
+                Some("selected".into()),
+                vec![],
+                MicrosandboxError::ControlClient(source.clone()),
+            );
+            match (expected, error) {
+                (Some(reason), MicrosandboxError::ResizeWait(details)) => {
+                    assert_eq!(details.reason, reason);
+                    let Some(cause) = details.cause else {
+                        panic!("lost cause")
+                    };
+                    let MicrosandboxError::ControlClient(actual) = *cause else {
+                        panic!("changed cause")
+                    };
+                    assert!(Arc::ptr_eq(&actual, &source));
+                }
+                (None, MicrosandboxError::ControlClient(actual)) => {
+                    assert!(Arc::ptr_eq(&actual, &source))
+                }
+                _ => panic!("misclassified peer code"),
+            }
+        }
+    }
+
+    #[test]
+    fn wait_errors_preserve_cause_identity_and_only_verified_status() {
+        use std::error::Error;
+
+        let confirmed = operation(ResizeOutcome::Applied, ResizeObservation::Available).status;
+        let original =
+            MicrosandboxError::ControlClient(Arc::new(ControlClientError::RuntimeChanged));
+        let diagnostic = original.to_string();
+        let wrapped = contextualize_wait_error(
+            "box",
+            Some("selected".into()),
+            vec![confirmed.clone()],
+            original,
+        );
+        let MicrosandboxError::ResizeWait(details) = wrapped else {
+            panic!("missing details")
+        };
+        assert_eq!(details.reason, ResizeWaitFailure::Interrupted);
+        assert_eq!(details.sandbox.as_deref(), Some("box"));
+        assert_eq!(details.operation_id.as_deref(), Some("selected"));
+        assert_eq!(details.status, vec![confirmed]);
+        assert_eq!(details.to_string(), diagnostic);
+        assert!(details.source().is_some());
+        let payload = serde_json::to_value(details).unwrap();
+        assert_eq!(payload["reason"], "interrupted");
+        assert!(payload.get("cause").is_none());
+
+        let superseded = operation(ResizeOutcome::Superseded, ResizeObservation::Available);
+        let error = operations_settled(&[superseded]).unwrap_err();
+        let MicrosandboxError::ResizeWait(details) =
+            contextualize_wait_error("box", None, vec![], error)
+        else {
+            panic!("missing supersession")
+        };
+        assert_eq!(details.reason, ResizeWaitFailure::Superseded);
+        assert_eq!(details.operation_id.as_deref(), Some("first"));
+        assert!(details.status.is_empty());
+        assert!(matches!(
+            contextualize_wait_error("box", None, vec![], resize_status_unsupported()),
+            MicrosandboxError::Unsupported { .. }
+        ));
+        let timeout = resize_timeout("box", Some(Duration::ZERO), vec![]);
+        assert!(matches!(
+            contextualize_wait_error("box", None, vec![], timeout),
+            MicrosandboxError::ResizeTimeout { .. }
+        ));
     }
 
     #[test]

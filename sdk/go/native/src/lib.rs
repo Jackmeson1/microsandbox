@@ -37,6 +37,7 @@
 
 mod creation_progress;
 mod exec_adapter;
+mod ffi_error;
 mod jobs;
 mod resize;
 mod resize_operations;
@@ -496,6 +497,7 @@ struct FfiError {
     message: String,
     recovery: Option<Box<microsandbox::SnapshotSourceRecoveryError>>,
     resize_status: Option<Vec<microsandbox::sandbox::ResourceResizeStatus>>,
+    resize_wait: Option<serde_json::Value>,
     os_error: Option<i32>,
 }
 
@@ -507,104 +509,6 @@ struct BranchManyRequest {
     guest_flush: microsandbox::snapshot::GuestFlush,
     #[serde(default)]
     volumes: HashMap<String, MountSpec>,
-}
-
-impl FfiError {
-    fn new(kind: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            kind,
-            message: message.into(),
-            recovery: None,
-            resize_status: None,
-            os_error: None,
-        }
-    }
-
-    fn invalid_argument(message: impl Into<String>) -> Self {
-        Self::new(error_kind::INVALID_ARGUMENT, message)
-    }
-
-    fn invalid_handle(handle: Handle) -> Self {
-        Self::new(
-            error_kind::INVALID_HANDLE,
-            format!("unknown sandbox handle: {handle}"),
-        )
-    }
-
-    fn internal(message: impl Into<String>) -> Self {
-        Self::new(error_kind::INTERNAL, message)
-    }
-
-    /// Serialize to the JSON payload returned by the error C string.
-    fn to_json(&self) -> String {
-        let mut payload = serde_json::json!({ "kind": self.kind, "message": self.message });
-        if let Some(os_error) = self.os_error {
-            payload["os_error"] = os_error.into();
-        }
-        if let Some(recovery) = &self.recovery
-            && let Ok(recovery) = serde_json::to_value(recovery)
-        {
-            payload["recovery"] = recovery;
-        }
-        if let Some(status) = &self.resize_status
-            && let Ok(status) = serde_json::to_value(status)
-        {
-            payload["resize_status"] = status;
-        }
-        payload.to_string()
-    }
-}
-
-impl From<MicrosandboxError> for FfiError {
-    fn from(e: MicrosandboxError) -> Self {
-        let kind = match &e {
-            MicrosandboxError::SandboxNotFound(_) => error_kind::SANDBOX_NOT_FOUND,
-            MicrosandboxError::SandboxStillRunning(_) => error_kind::SANDBOX_STILL_RUNNING,
-            MicrosandboxError::SandboxNotRunning(_) => error_kind::SANDBOX_NOT_RUNNING,
-            MicrosandboxError::SandboxAlreadyExists(_) => error_kind::SANDBOX_ALREADY_EXISTS,
-            MicrosandboxError::SandboxReplaced { .. } => error_kind::SANDBOX_REPLACED,
-            MicrosandboxError::SandboxStopTimedOut { .. } => error_kind::SANDBOX_STOP_TIMED_OUT,
-            MicrosandboxError::VolumeNotFound(_) => error_kind::VOLUME_NOT_FOUND,
-            MicrosandboxError::VolumeAlreadyExists(_) => error_kind::VOLUME_ALREADY_EXISTS,
-            MicrosandboxError::ExecTimeout(_) => error_kind::EXEC_TIMEOUT,
-            MicrosandboxError::StopTimeout { .. } => error_kind::STOP_TIMEOUT,
-            MicrosandboxError::ResizeTimeout { .. } => error_kind::RESIZE_TIMEOUT,
-            MicrosandboxError::NoDefaultCommand => error_kind::NO_DEFAULT_COMMAND,
-            MicrosandboxError::InvalidConfig(_)
-            | MicrosandboxError::MissingRestoreBindings { .. } => error_kind::INVALID_CONFIG,
-            MicrosandboxError::SandboxFsOps(_) => error_kind::FILESYSTEM,
-            MicrosandboxError::ImageNotFound(_) => error_kind::IMAGE_NOT_FOUND,
-            MicrosandboxError::ImageInUse(_) => error_kind::IMAGE_IN_USE,
-            MicrosandboxError::SnapshotNotFound(_) => error_kind::SNAPSHOT_NOT_FOUND,
-            MicrosandboxError::SnapshotAlreadyExists(_) => error_kind::SNAPSHOT_ALREADY_EXISTS,
-            MicrosandboxError::SnapshotSandboxRunning(_) => error_kind::SNAPSHOT_SANDBOX_RUNNING,
-            MicrosandboxError::SnapshotImageMissing(_) => error_kind::SNAPSHOT_IMAGE_MISSING,
-            MicrosandboxError::SnapshotIntegrity(_) => error_kind::SNAPSHOT_INTEGRITY,
-            MicrosandboxError::SnapshotMigration { .. } => error_kind::SNAPSHOT_MIGRATION,
-            MicrosandboxError::SnapshotSourceRecovery(_) => error_kind::SNAPSHOT_SOURCE_RECOVERY,
-            MicrosandboxError::PatchFailed(_) => error_kind::PATCH_FAILED,
-            MicrosandboxError::MetricsDisabled(_) => error_kind::METRICS_DISABLED,
-            MicrosandboxError::MetricsUnavailable(_) => error_kind::METRICS_UNAVAILABLE,
-            MicrosandboxError::Unsupported { .. } => error_kind::UNSUPPORTED_OPERATION,
-            MicrosandboxError::RuntimeNotInstalled(_) => "runtime_not_installed",
-            MicrosandboxError::RuntimeIncomplete(_) => "runtime_incomplete",
-            MicrosandboxError::Io(_) => error_kind::IO,
-            _ => error_kind::INTERNAL,
-        };
-        let message = e.to_string();
-        let (recovery, resize_status) = match e {
-            MicrosandboxError::SnapshotSourceRecovery(recovery) => (Some(recovery), None),
-            MicrosandboxError::ResizeTimeout { status, .. } => (None, Some(status)),
-            _ => (None, None),
-        };
-        Self {
-            kind,
-            message,
-            recovery,
-            resize_status,
-            os_error: None,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
