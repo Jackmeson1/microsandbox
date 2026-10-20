@@ -117,3 +117,24 @@ python3 scripts/smoke/cli/historical-cross-host.py \
 Use producer fixtures from the other CPU architecture and a native 0.7.8 disk fixture for `--native-fixture`. Each transferred archive must import, inspect and verify before launch is tested. A precise architecture refusal is recorded separately from a working guest. A native agent answering requests while the saved guest binaries fail to execute is a failed restore, not compatibility. Arbitrary parse errors or missing image failures do not count as architecture refusal.
 
 The populated-cache case installs the native fixture, rewrites only the representation of image metadata JSON, and reimports it. Equivalent local metadata bytes must remain unchanged, the group membership/head must remain stable, and imported VMDK extents must resolve inside the destination cache. Importing the foreign image under the same reference must then report the specific content conflict without publishing a new group or replacing the native metadata. Finally, the native snapshot must still verify and restore its guest checksums, files, links and permissions. All sandbox catalogs must be empty after cleanup, and all input archive bytes must be unchanged. These checks use private homes and `--pull never`; apply and record external network isolation separately when claiming an offline run.
+
+## Interrupted legacy descriptor migration and downgrade
+
+`historical-recovery.py` uses genuine 0.6.0 or 0.6.6 fixtures and the SDK test executable built from the candidate tree (`cargo test -p microsandbox --lib --no-run --message-format=json` reports its path). The candidate CLI and guest agent must match each other. The test executable exposes an ignored subprocess driver; the pause hooks exist only under `cfg(test)` and are absent from shipped libraries.
+
+```sh
+python3 scripts/smoke/cli/historical-recovery.py \
+  --fixture /tmp/msb-historical-fixture-060 \
+  --candidate /absolute/path/to/msb \
+  --test-binary /absolute/path/to/microsandbox-test-executable \
+  --legacy-binary /absolute/path/to/released/v0.6.0/msb \
+  --firmware /absolute/path/to/libkrunfw \
+  --agent /absolute/path/to/matching/agentd \
+  --output /tmp/historical-recovery-060
+```
+
+The harness runs nine separate cases: four upgrade boundaries (planned, descriptor publication, index publication, legacy retirement) and five downgrade boundaries (planned, canonical backup, legacy descriptor publication, legacy index publication, canonical retirement). Each case starts from an independent sparse copy of the original. The child runs the actual migration implementation, acknowledges its selected phase only after flushing a PID/action/phase marker, and then receives `SIGKILL`. A missing, stale or mismatched marker is a test failure, not evidence of a crash at the requested point.
+
+Recovery reruns the operation against the same database and artifact, checks SQLite integrity and descriptor/index identity, then retries again to establish idempotence. Exact original legacy descriptor bytes and disk payload bytes must survive. Downgraded artifacts are inspected with `--verify` by the exact producer CLI before the candidate restores from a separate copy. Every successful case also verifies the actual guest's checksums, files, links and permissions, then writes data and checks its persistence across stop/start. Cleanup failures and changed original fixtures fail qualification. Reports and private working directories remain available for diagnosis.
+
+These are process-crash tests of the `manifest.json` translation family. They do not simulate power loss, prove filesystem durability on other filesystems, qualify rollback of the CLI binary/database schema, or cover interrupted archive import and every later descriptor family. Downgrade inspection by the original CLI proves that reader path; it does not claim the old runtime was used to boot the recovered artifact. Apply and verify external IP isolation separately when reporting offline execution.
