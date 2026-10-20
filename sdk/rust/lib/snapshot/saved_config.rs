@@ -39,6 +39,9 @@ mod runtime_assembly_tests;
 #[cfg(test)]
 mod runtime_input_tests;
 mod runtime_inputs;
+mod secret_preparation;
+#[cfg(test)]
+mod secret_preparation_tests;
 #[cfg(test)]
 mod secret_tests;
 mod secrets;
@@ -84,6 +87,9 @@ pub use runtime_assembly::{
 pub use runtime_inputs::{
     PreparedRuntimeInit, PreparedRuntimeScript, PreparedRuntimeValue, RuntimeBindingInput,
     RuntimeInputPlan, prepare_runtime_inputs,
+};
+pub use secret_preparation::{
+    SecretBindingInput, SecretConfigurationPlan, prepare_secret_configuration,
 };
 pub use secrets::{SecretInputPlan, SecretInputSelection, select_secret_inputs};
 pub use storage::{
