@@ -1193,7 +1193,10 @@ fn open_root_no_symlink(root_dir: &Path) -> io::Result<File> {
 //--------------------------------------------------------------------------------------------------
 
 pub use builder::PassthroughFsBuilder;
-pub use runtime_scripts::{CapturedRuntimeScripts, RuntimeScriptLimits, RuntimeScriptMetadata};
+pub use runtime_scripts::{
+    CapturedRuntimeScripts, RuntimeBootScript, RuntimeScriptLimits, RuntimeScriptMetadata,
+    stage_runtime_boot_scripts,
+};
 
 //--------------------------------------------------------------------------------------------------
 // Tests

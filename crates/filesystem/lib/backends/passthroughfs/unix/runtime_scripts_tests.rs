@@ -4,7 +4,10 @@ use std::{
     collections::BTreeSet,
     ffi::CString,
     fs::{self, File},
-    os::unix::{ffi::OsStrExt, fs::symlink},
+    os::unix::{
+        ffi::OsStrExt,
+        fs::{PermissionsExt, symlink},
+    },
     path::Path,
     process::Command,
 };
@@ -13,7 +16,10 @@ use cap_std::fs::Dir;
 use tempfile::TempDir;
 
 use super::PassthroughFs;
-use super::runtime_scripts::{CapturedRuntimeScripts, RuntimeScriptLimits};
+use super::runtime_scripts::{
+    CapturedRuntimeScripts, RuntimeBootScript, RuntimeScriptLimits, stage_boot_scripts_with_check,
+    stage_runtime_boot_scripts,
+};
 
 //--------------------------------------------------------------------------------------------------
 // Functions
@@ -50,9 +56,209 @@ fn permissions(path: &Path, uid: u32, gid: u32, mode: u16) {
         .unwrap();
 }
 
+fn boot_limits() -> RuntimeScriptLimits {
+    RuntimeScriptLimits {
+        max_entries: 4,
+        max_script_bytes: 64,
+        max_total_bytes: 128,
+    }
+}
+
 //--------------------------------------------------------------------------------------------------
 // Tests
 //--------------------------------------------------------------------------------------------------
+
+#[test]
+fn boot_staging_preserves_exact_bytes_and_guest_modes_without_a_source() {
+    let parent = tempfile::tempdir().unwrap();
+    let content = "#!/bin/sh\r\nprintf 'λ'\r\n\0";
+    let inputs = [
+        RuntimeBootScript {
+            name: "private",
+            content,
+            mode: 0,
+        },
+        RuntimeBootScript {
+            name: "task",
+            content,
+            mode: 0o751,
+        },
+    ];
+    let staged = stage_runtime_boot_scripts(parent.path(), &inputs, boot_limits()).unwrap();
+    let path = staged.path().to_owned();
+    for input in &inputs {
+        let file = path.join("scripts").join(input.name);
+        assert_eq!(fs::read(&file).unwrap(), content.as_bytes());
+        let guest = PassthroughFs::runtime_backing_stat(&File::open(&file).unwrap()).unwrap();
+        assert_eq!((guest.st_uid, guest.st_gid), (0, 0));
+        assert_eq!((guest.st_mode & 0o7777) as u16, input.mode);
+        assert_eq!(fs::metadata(file).unwrap().permissions().mode() & 0o077, 0);
+        assert!(!format!("{input:?}").contains(content));
+        assert!(!format!("{input:?}").contains(input.name));
+    }
+    for relative in ["", "scripts"] {
+        let dir = path.join(relative);
+        let guest = PassthroughFs::runtime_backing_stat(&File::open(&dir).unwrap()).unwrap();
+        assert_eq!(
+            (guest.st_uid, guest.st_gid, guest.st_mode & 0o7777),
+            (0, 0, 0o755)
+        );
+        assert_eq!(fs::metadata(dir).unwrap().permissions().mode() & 0o077, 0);
+    }
+    drop(staged);
+    assert!(!path.exists());
+}
+
+#[test]
+fn boot_staging_refuses_invalid_input_before_creating_files() {
+    let parent = tempfile::tempdir().unwrap();
+    for name in [
+        "../SENSITIVE",
+        "nested/SENSITIVE",
+        "\\SENSITIVE",
+        ".",
+        "",
+        "bad\0name",
+    ] {
+        let error = stage_runtime_boot_scripts(
+            parent.path(),
+            &[RuntimeBootScript {
+                name,
+                content: "CONTENT_SENTINEL",
+                mode: 0o755,
+            }],
+            boot_limits(),
+        )
+        .unwrap_err();
+        assert!(!error.to_string().contains("SENSITIVE"));
+        assert!(!error.to_string().contains("CONTENT_SENTINEL"));
+        assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0);
+    }
+    for (names, content, mode, limits) in [
+        (
+            vec!["same", "same"],
+            "value".to_owned(),
+            0o755,
+            boot_limits(),
+        ),
+        (
+            vec!["a", "b", "c", "d", "e"],
+            "value".to_owned(),
+            0o755,
+            boot_limits(),
+        ),
+        (vec!["large"], "x".repeat(65), 0o755, boot_limits()),
+        (vec!["a", "b", "c"], "x".repeat(64), 0o755, boot_limits()),
+        (
+            vec!["privileged"],
+            "value".to_owned(),
+            0o4755,
+            boot_limits(),
+        ),
+        (
+            vec!["bad-limit"],
+            "value".to_owned(),
+            0o755,
+            RuntimeScriptLimits {
+                max_script_bytes: usize::MAX,
+                ..boot_limits()
+            },
+        ),
+    ] {
+        let inputs: Vec<_> = names
+            .iter()
+            .map(|name| RuntimeBootScript {
+                name,
+                content: &content,
+                mode,
+            })
+            .collect();
+        assert!(stage_runtime_boot_scripts(parent.path(), &inputs, limits).is_err());
+        assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0);
+    }
+}
+
+#[test]
+fn boot_staging_never_overwrites_existing_paths_or_case_aliases() {
+    let parent = tempfile::tempdir().unwrap();
+    let protected = parent.path().join("protected");
+    fs::write(&protected, "UNCHANGED").unwrap();
+    assert!(stage_runtime_boot_scripts(&protected, &[], boot_limits()).is_err());
+    assert_eq!(fs::read_to_string(&protected).unwrap(), "UNCHANGED");
+
+    // Respect the actual destination filesystem: macOS volumes need not be case-sensitive.
+    let probe = parent.path().join("CaseProbe");
+    fs::write(&probe, "probe").unwrap();
+    let aliases_case = parent.path().join("caseprobe").exists();
+    fs::remove_file(probe).unwrap();
+    let inputs = [
+        RuntimeBootScript {
+            name: "Job",
+            content: "FIRST",
+            mode: 0o640,
+        },
+        RuntimeBootScript {
+            name: "job",
+            content: "SECOND",
+            mode: 0o755,
+        },
+    ];
+    let result = stage_runtime_boot_scripts(parent.path(), &inputs, boot_limits());
+    if aliases_case {
+        assert!(
+            result.is_err(),
+            "case aliases must not replace the first file"
+        );
+    } else {
+        let staged = result.unwrap();
+        for input in inputs {
+            assert_eq!(
+                fs::read_to_string(staged.path().join("scripts").join(input.name)).unwrap(),
+                input.content
+            );
+        }
+    }
+    assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 1);
+    assert_eq!(fs::read_to_string(protected).unwrap(), "UNCHANGED");
+}
+
+#[test]
+fn boot_staging_discards_partial_files_and_detects_namespace_or_metadata_changes() {
+    let parent = tempfile::tempdir().unwrap();
+    for fault in 0..6 {
+        let inputs = [RuntimeBootScript {
+            name: "task",
+            content: "exact",
+            mode: 0o640,
+        }];
+        let mut reached = false;
+        let result = stage_boot_scripts_with_check(parent.path(), &inputs, boot_limits(), |path| {
+            reached = true;
+            let file = path.join("scripts/task");
+            assert_eq!(fs::read(&file).unwrap(), b"exact");
+            match fault {
+                0 => return Err(std::io::Error::other("SECRET_FAILURE_SENTINEL")),
+                1 => fs::write(file, "different").unwrap(),
+                2 => permissions(&file, 0, 0, 0o755),
+                3 => permissions(&path.join("scripts"), 0, 0, 0o700),
+                4 => {
+                    fs::rename(path.join("scripts"), path.join("old-scripts")).unwrap();
+                    fs::create_dir(path.join("scripts")).unwrap();
+                }
+                5 => {
+                    fs::remove_file(&file).unwrap();
+                    symlink("/outside/SENSITIVE", file).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            Ok(())
+        });
+        assert!(reached, "must test failure after files exist");
+        let error = result.unwrap_err().to_string();
+        assert!(!error.contains("SENSITIVE") && !error.contains("SECRET_FAILURE_SENTINEL"));
+        assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0);
+    }
+}
 
 #[test]
 fn exact_script_staging_preserves_guest_zero_mode_ownership_and_directory_metadata() {
@@ -309,12 +515,15 @@ fn relative_staging_worker() {
     // Only this dedicated subprocess changes cwd; the parallel test harness is unaffected.
     std::env::set_current_dir(root.path().join("a")).unwrap();
     let staged = captured.stage_exact(Path::new("alias/../stage")).unwrap();
+    let boot_staged =
+        stage_runtime_boot_scripts(Path::new("alias/../stage"), &[], boot_limits()).unwrap();
     assert!(staged.path().is_absolute());
+    assert!(boot_staged.path().is_absolute());
     assert_eq!(
         fs::read_dir(root.path().join("actual/stage"))
             .unwrap()
             .count(),
-        1
+        2
     );
     assert_eq!(
         fs::read_dir(root.path().join("a/stage")).unwrap().count(),
@@ -322,7 +531,9 @@ fn relative_staging_worker() {
     );
     std::env::set_current_dir(root.path().join("b")).unwrap();
     assert!(staged.path().join("scripts").is_dir());
+    assert!(boot_staged.path().join("scripts").is_dir());
     drop(staged);
+    drop(boot_staged);
     assert_eq!(
         fs::read_dir(root.path().join("actual/stage"))
             .unwrap()

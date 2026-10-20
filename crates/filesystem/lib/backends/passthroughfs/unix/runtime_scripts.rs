@@ -42,6 +42,19 @@ pub struct RuntimeScriptMetadata {
     pub mode: u16,
 }
 
+/// Exact cold-boot script input, already normalized by the caller.
+///
+/// This has no source path or captured-handle identity. Staging these bytes cannot
+/// establish compatibility with files held open by a resumed guest.
+pub struct RuntimeBootScript<'a> {
+    /// One registered filename, not a guest or host path.
+    pub name: &'a str,
+    /// UTF-8 bytes to write without shell wrapping or newline conversion.
+    pub content: &'a str,
+    /// Guest permission bits; host access remains private.
+    pub mode: u16,
+}
+
 /// Pinned observations of registered files and their runtime/scripts directories.
 ///
 /// The caller must hold the source's coherent capture/mutation guard through publication.
@@ -257,9 +270,119 @@ impl fmt::Debug for CapturedRuntimeScripts {
     }
 }
 
+impl fmt::Debug for RuntimeBootScript<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RuntimeBootScript").finish_non_exhaustive()
+    }
+}
+
 //--------------------------------------------------------------------------------------------------
 // Functions
 //--------------------------------------------------------------------------------------------------
+
+/// Materialize exact scripts for a new boot beneath a private caller-owned staging parent.
+///
+/// All input bounds and names are checked before creating files. The returned temporary
+/// runtime owns cleanup; it is neither installed nor executed. New guest files/directories
+/// belong to root, with supplied file modes and 0755 directory modes. Full resume must use
+/// independently validated captured backing instead of this cold-boot operation.
+pub fn stage_runtime_boot_scripts(
+    parent: &Path,
+    inputs: &[RuntimeBootScript<'_>],
+    limits: RuntimeScriptLimits,
+) -> io::Result<TempDir> {
+    stage_boot_scripts_with_check(parent, inputs, limits, |_| Ok(()))
+}
+
+pub(super) fn stage_boot_scripts_with_check(
+    parent: &Path,
+    inputs: &[RuntimeBootScript<'_>],
+    limits: RuntimeScriptLimits,
+    after_files: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<TempDir> {
+    if inputs.len() > limits.max_entries || limits.max_script_bytes == usize::MAX {
+        return Err(error("SCFG_LIMIT", "invalid script count or byte limit"));
+    }
+    let mut names = BTreeSet::new();
+    let mut total = 0usize;
+    for input in inputs {
+        validate_name(input.name)?;
+        if !names.insert(input.name.to_owned()) || input.mode > 0o777 {
+            return Err(error("SCFG_BACKING", "duplicate name or unsupported mode"));
+        }
+        total = total
+            .checked_add(input.content.len())
+            .ok_or_else(|| error("SCFG_LIMIT", "combined scripts are too large"))?;
+        if input.content.len() > limits.max_script_bytes || total > limits.max_total_bytes {
+            return Err(error("SCFG_LIMIT", "script inputs are too large"));
+        }
+    }
+
+    // Keep symlink/parent semantics while anchoring TempDir's later cleanup to this call.
+    let parent = if parent.is_absolute() {
+        parent.to_path_buf()
+    } else {
+        std::env::current_dir().map_err(io_error)?.join(parent)
+    };
+    let staged = tempfile::Builder::new()
+        .prefix(".runtime-scripts-")
+        .tempdir_in(parent)
+        .map_err(io_error)?;
+    let runtime =
+        Dir::open_ambient_dir(staged.path(), cap_std::ambient_authority()).map_err(io_error)?;
+    runtime.create_dir("scripts").map_err(io_error)?;
+    let scripts = scripts_directory(&runtime)?;
+    for input in inputs {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true).mode(0o600);
+        options._cap_fs_ext_follow(cap_primitives::fs::FollowSymlinks::No);
+        let mut file = scripts
+            .open_with(input.name, &options)
+            .map_err(io_error)?
+            .into_std();
+        file.write_all(input.content.as_bytes()).map_err(io_error)?;
+        set_metadata(
+            &file,
+            RuntimeScriptMetadata {
+                uid: 0,
+                gid: 0,
+                mode: input.mode,
+            },
+        )?;
+        file.sync_all().map_err(io_error)?;
+    }
+    let directory_metadata = RuntimeScriptMetadata {
+        uid: 0,
+        gid: 0,
+        mode: 0o755,
+    };
+    set_directory_metadata(&scripts, directory_metadata)?;
+    set_directory_metadata(&runtime, directory_metadata)?;
+    let (scripts_stamp, _) = directory_observation(&scripts)?;
+    after_files(staged.path()).map_err(io_error)?;
+
+    let scripts = scripts_directory(&runtime)?;
+    let (current_stamp, current_metadata) = directory_observation(&scripts)?;
+    if !same_inode(&scripts_stamp, &current_stamp)
+        || current_metadata != directory_metadata
+        || directory_observation(&runtime)?.1 != directory_metadata
+    {
+        return Err(error("SCFG_INTEGRITY", "staged script directory differs"));
+    }
+    // Reopen by name: verifying only a still-open writer would miss a replaced file.
+    for input in inputs {
+        let actual = observe_file(&scripts, input.name, limits.max_script_bytes)?;
+        let expected = RuntimeScriptMetadata {
+            uid: 0,
+            gid: 0,
+            mode: input.mode,
+        };
+        if actual.content.as_bytes() != input.content.as_bytes() || actual.metadata != expected {
+            return Err(error("SCFG_INTEGRITY", "staged script backing differs"));
+        }
+    }
+    Ok(staged)
+}
 
 fn observe_file(directory: &Dir, name: &str, max_bytes: usize) -> io::Result<ScriptObservation> {
     let mut options = OpenOptions::new();
