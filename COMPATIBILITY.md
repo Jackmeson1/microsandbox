@@ -586,3 +586,9 @@ The optional `msb_snapshot_object_owned` native entry point returns an allocated
 ## Go snapshot producer capabilities
 
 The optional `msb_supports_snapshot_artifact_receivers` symbol advertises `create_artifact` and `list_dir` operations that return retained checkpoint receivers. General snapshot-object dispatch predates those operations and is not sufficient evidence of support. New Go clients select the retained producer only when the marker and receiver entry points exist; older libraries continue through the existing capture/list ABI. This routing is selected before dispatch and never retries capture after a native error or uncertain outcome. Results from legacy producers retain their existing operations; new exact-receiver spawn/removal methods report unsupported when no receiver was returned. Existing symbols, older Go callers, snapshot bytes and runtime protocols remain unchanged.
+
+## CLI configuration proxy input
+
+The additive `network.proxy` file field (or unwrapped `proxy` in `--net-conf`) accepts the existing CLI proxy URL protocols and optional protocol-specific authentication. Endpoint and authentication replace as one value across file layers; explicit proxy flags replace that complete value too. SOCKS5 passwords remain destination environment references and use the existing resolver. Parsing files does not read them, and literal password fields are rejected.
+
+Files omitting this field keep their existing behavior. Older CLI parsers reject files containing the new field; their error may identify the enclosing network configuration rather than naming the field. Callers using those binaries must keep using their existing supported proxy flags. This adds no runtime/agent protocol, SDK native symbol, persisted sandbox field, catalog migration or snapshot extension. It uses the existing `NetworkSpec.outbound_proxy` contract and backend support checks. It does not enable portable saved-config capture or restore.

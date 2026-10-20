@@ -736,9 +736,9 @@ enum CopyKind {
 //--------------------------------------------------------------------------------------------------
 
 impl SandboxOpts {
-    /// Builds the protocol-specific proxy selected by the CLI flags.
+    /// Builds the protocol-specific proxy selected by flags or an atomic file input.
     #[cfg(feature = "net")]
-    fn build_outbound_proxy(&self) -> anyhow::Result<Option<OutboundProxy>> {
+    pub(crate) fn build_outbound_proxy(&self) -> anyhow::Result<Option<OutboundProxy>> {
         let Some(raw) = self.proxy.as_deref() else {
             if self.socks4_user_id.is_some()
                 || self.socks5_username.is_some()
