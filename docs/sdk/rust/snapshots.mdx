@@ -1735,6 +1735,14 @@ fn network_policy(mut self, policy: NetworkPolicy) -> Self
 Replace host traffic filtering; guest DNS and TLS settings stay unchanged.
 
 
+#### <span className="msb-recv">restore.</span><span className="msb-hn">proxy()</span>
+
+```rust
+fn proxy<P: OutboundProxyConfig>(self, configure: impl FnOnce(OutboundProxyBuilder) -> P) -> Self
+```
+
+Select the destination host proxy before disk boot or full-memory resume. This preserves the captured guest interface and does not inject guest trust material. SOCKS5 passwords use destination environment references; resolved passwords are not saved in snapshot configuration.
+
 #### <span className="msb-recv">restore.</span><span className="msb-hn">max_connections()</span>
 
 ```rust

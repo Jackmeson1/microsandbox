@@ -19,8 +19,8 @@ use tokio::{
 
 use super::snapshot_group::RubyGroup;
 use super::{
-    RubySandbox, RubySnapshot, argument_error, keyword, reject_unknown_keywords, run, string_value,
-    symbol,
+    RubyOutboundProxy, RubyOutboundProxyConfig, RubySandbox, RubySnapshot, argument_error, keyword,
+    reject_unknown_keywords, run, string_value, symbol,
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -203,6 +203,7 @@ fn destination(ruby: &Ruby, args: &[Value], local: bool) -> Result<RestoreBuilde
             "max_cpus",
             "max_memory",
             "network",
+            "proxy",
             "disable_network",
             "security",
             "max_duration",
@@ -231,6 +232,29 @@ fn destination(ruby: &Ruby, args: &[Value], local: bool) -> Result<RestoreBuilde
     let mut builder = Sandbox::restore_ref(microsandbox_core::SnapshotReference::auto(""));
     if let Some(v) = keyword::<String>(options, "name")? {
         builder = builder.name(v);
+    }
+    if let Some(proxy) = keyword::<&RubyOutboundProxy>(options, "proxy")? {
+        builder = match proxy.inner.borrow().clone() {
+            RubyOutboundProxyConfig::HttpConnect { address } => {
+                builder.proxy(|proxy| proxy.http_connect(address))
+            }
+            RubyOutboundProxyConfig::Socks4 {
+                address,
+                user_id: Some(user_id),
+            } => builder.proxy(|proxy| proxy.socks4(address).user_id(user_id)),
+            RubyOutboundProxyConfig::Socks4 {
+                address,
+                user_id: None,
+            } => builder.proxy(|proxy| proxy.socks4(address)),
+            RubyOutboundProxyConfig::Socks5 {
+                address,
+                credentials: Some((username, password)),
+            } => builder.proxy(|proxy| proxy.socks5(address).credentials(username, password)),
+            RubyOutboundProxyConfig::Socks5 {
+                address,
+                credentials: None,
+            } => builder.proxy(|proxy| proxy.socks5(address)),
+        };
     }
     if let Some(v) = keyword::<u8>(options, "cpus")? {
         builder = builder.cpus(v);
