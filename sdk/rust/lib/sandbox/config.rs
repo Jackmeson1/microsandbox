@@ -151,6 +151,9 @@ pub struct SandboxConfig {
     /// not guest observation; older catalogs omit it and must not gain inferred provenance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) init_provenance: Option<InitProvenance>,
+    /// Builder-only guard: an older resolved init path cannot reveal its original selection.
+    #[serde(skip)]
+    pub(crate) init_provenance_unknown: bool,
     /// Private evidence distinguishing reusable CMD from a detached one-shot invocation.
     /// The existing runtime CMD is unchanged; older records have no such evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -687,9 +690,11 @@ impl SandboxConfig {
                 self.spec.runtime.cmd.clone(),
             ));
         }
-        // This is a fresh builder resolution, not deserialization/restart of an old catalog.
-        // A retained valid hint survives builder reconstruction; explicit setters replace it.
-        if self
+        // Fresh declarations can establish intent; reconstructing an older resolved path
+        // cannot. A retained valid hint survives, and explicit setters replace it.
+        if self.init_provenance_unknown {
+            self.init_provenance = None;
+        } else if self
             .init_provenance
             .as_ref()
             .is_none_or(|origin| !origin.matches(self.spec.init.as_ref()))
@@ -926,9 +931,9 @@ impl SandboxConfig {
         if init.cmd != HANDOFF_INIT_AUTO {
             return;
         }
-        // A still-literal auto request is positive evidence even when discovery remains in
-        // the guest. Do not infer explicit-path intent when reading an older resolved config.
-        self.init_provenance = Some(InitProvenance::Auto {
+        // Resolution changes the launch spelling, but must not repair missing historical
+        // evidence. Explicit new auto requests retain their intent throughout resolution.
+        self.init_provenance = (!self.init_provenance_unknown).then(|| InitProvenance::Auto {
             configured: HANDOFF_INIT_AUTO.into(),
         });
         let Some(entrypoint) = image_entrypoint else {
@@ -944,12 +949,12 @@ impl SandboxConfig {
 
         // Preserve the literal auto request before replacing the launch spelling. The guest
         // will independently report which executable it selected; this only records intent.
-        let resolved_origin = InitProvenance::Auto {
+        let resolved_origin = (!self.init_provenance_unknown).then(|| InitProvenance::Auto {
             configured: init_path.to_string(),
-        };
+        });
 
         if !inherited_entrypoint {
-            self.init_provenance = Some(resolved_origin);
+            self.init_provenance = resolved_origin;
             let init = self
                 .spec
                 .init
@@ -963,7 +968,7 @@ impl SandboxConfig {
         let Some(entrypoint) = self.spec.runtime.entrypoint.take() else {
             return;
         };
-        self.init_provenance = Some(resolved_origin);
+        self.init_provenance = resolved_origin;
         let mut workload_entrypoint = entrypoint.clone();
         if workload_entrypoint
             .first()
@@ -1323,6 +1328,14 @@ impl<'de> Deserialize<'de> for SandboxConfig {
         // Matching evidence remains usable, but absent origins must stay unknown even
         // when callers reconstruct a sparse patch directly instead of using From.
         config.environment_provenance_unknown = true;
+        config.command_provenance_unknown = config
+            .command_provenance
+            .as_ref()
+            .is_none_or(|origin| !origin.matches(&config.spec.runtime.cmd));
+        config.init_provenance_unknown = config
+            .init_provenance
+            .as_ref()
+            .is_none_or(|origin| !origin.matches(config.spec.init.as_ref()));
         if let Some(presence) = &mut config.field_presence {
             presence.retain_recorded_parents(resources_recorded, network_recorded);
             presence.retain_matching(&config.spec);
@@ -1336,6 +1349,7 @@ impl Default for SandboxConfig {
         Self {
             http_defaults_implicit: None,
             init_provenance: None,
+            init_provenance_unknown: false,
             command_provenance: None,
             command_provenance_unknown: false,
             environment_provenance: None,

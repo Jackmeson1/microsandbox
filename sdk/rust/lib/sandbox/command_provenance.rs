@@ -151,6 +151,31 @@ mod tests {
     }
 
     #[test]
+    fn retained_overlay_preserves_missing_command_intent() {
+        let original = build(Some(vec!["private-invocation"]), Some(vec!["reusable"]));
+        for recorded in [false, true] {
+            let mut raw = serde_json::to_value(original.clone_for_persistence()).unwrap();
+            if !recorded {
+                raw.as_object_mut().unwrap().remove("command_provenance");
+            }
+            for _ in 0..2 {
+                let retained: SandboxConfig = serde_json::from_value(raw).unwrap();
+                let rebuilt = SandboxBuilder::new("replacement")
+                    .cmd(["private-invocation"])
+                    .overlay(SandboxConfigPatch::from_present_fields(retained))
+                    .finish(None, None)
+                    .unwrap();
+                assert_eq!(rebuilt.spec.runtime.cmd, original.spec.runtime.cmd);
+                assert_eq!(
+                    rebuilt.command_provenance,
+                    recorded.then(|| original.command_provenance.clone().unwrap())
+                );
+                raw = serde_json::to_value(rebuilt.clone_for_persistence()).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn explicit_same_value_cmd_replaces_invocation_origin() {
         let config = build(Some(vec!["one-shot"]), Some(vec!["image"]));
         for builder in [
