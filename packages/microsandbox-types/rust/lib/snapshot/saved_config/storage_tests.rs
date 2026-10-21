@@ -289,6 +289,67 @@ fn owned_references_must_match_the_complete_authoritative_inventory() {
 }
 
 #[test]
+fn pending_owned_declaration_does_not_claim_backing_or_active_demand() {
+    let mut inventory = saved(json!([requested_owned("/future")]));
+    inventory["origin"] = json!("configured");
+    let storage = json!({"mounts":inventory});
+    let parsed = parse(&storage);
+    assert!(parsed.binding_uses().unwrap().is_empty());
+    assert!(
+        parsed
+            .validate_active()
+            .unwrap_err()
+            .to_string()
+            .contains("pending storage")
+    );
+    assert!(
+        parsed
+            .validate_owned_projection(&super::document_tests::descriptor())
+            .is_err()
+    );
+    let mut doc = super::document_tests::document();
+    doc["pending"] = json!({"storage":storage});
+    let document = parse_doc(&doc);
+    document
+        .validate_legacy_projections(&super::document_tests::descriptor())
+        .unwrap();
+    assert!(
+        !serde_json::to_string(&document.pending)
+            .unwrap()
+            .contains("mount_id")
+    );
+    doc["active"]["storage"] = doc["pending"]["storage"].clone();
+    assert!(doc_error(&doc).contains("pending storage"));
+}
+
+#[test]
+fn pending_owned_declaration_rejects_false_observation_and_invalid_policies() {
+    let mut inventory = saved(json!([requested_owned("/future")]));
+    reject(&json!({"mounts":inventory}), "configured origin");
+    inventory["origin"] = json!("configured");
+    let base = json!({"mounts":inventory});
+    for (field, value) in [
+        ("host", json!("PRIVATE_PATH")),
+        ("mount_id", json!("PRIVATE_ID")),
+        ("storage", json!({"kind":"disk","capacity_mib":0})),
+        ("guest", json!("/not/../canonical")),
+    ] {
+        let mut invalid = base.clone();
+        invalid["mounts"]["value"][0][field] = value;
+        let error = reject(&invalid, "SCFG_");
+        assert!(!error.contains("PRIVATE_"));
+    }
+    let mut invalid = base.clone();
+    invalid["mounts"]["value"][0]["options"]["override_uid"] = json!(1000);
+    reject(&invalid, "paired");
+    let mut disk = base;
+    disk["mounts"]["value"][0]["storage"] = json!({"kind":"disk","capacity_mib":64});
+    parse(&disk);
+    disk["mounts"]["value"][0]["host_permissions"] = json!("mirror");
+    reject(&disk, "disk storage");
+}
+
+#[test]
 fn document_projection_checks_do_not_allow_external_replacement_of_owned_backing() {
     let mut manifest = super::document_tests::descriptor();
     manifest
@@ -449,6 +510,13 @@ fn disk_owned_and_tmpfs_projection_preserves_semantics_without_host_backing_copy
 //--------------------------------------------------------------------------------------------------
 // Functions
 //--------------------------------------------------------------------------------------------------
+
+// Pending declarations use the same bounded guest policy, but never a payload identifier.
+fn requested_owned(guest: &str) -> Value {
+    json!({"kind":"requested_owned", "guest":guest,
+        "storage":{"kind":"directory","quota_mib":0}, "options":options(),
+        "stat_virtualization":"strict", "host_permissions":"private"})
+}
 
 fn options() -> Value {
     json!({"readonly":false,"noexec":false,"nosuid":false,"nodev":false})

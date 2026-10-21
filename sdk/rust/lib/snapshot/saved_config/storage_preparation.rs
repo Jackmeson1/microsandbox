@@ -339,7 +339,7 @@ fn prepare_mount(
             size_mib: *size_mib,
             options: (*options).into(),
         },
-        SavedMount::Owned { .. } => {
+        SavedMount::Owned { .. } | SavedMount::RequestedOwned { .. } => {
             return Err(error(
                 "SCFG_IDENTITY",
                 "owned mount needs its captured inventory",
