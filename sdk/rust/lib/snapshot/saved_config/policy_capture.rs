@@ -69,7 +69,16 @@ impl RuntimeCaptureSource<'_> {
                 *max_memory_mib,
             )),
             thp: Some(recorded(
-                self.recorded.pointer("/resources/thp").is_some(),
+                self.recorded.pointer("/resources/thp").is_some()
+                    || (self
+                        .recorded
+                        .get("resources")
+                        .is_some_and(serde_json::Value::is_object)
+                        && self
+                            .config
+                            .field_presence
+                            .as_ref()
+                            .is_some_and(|presence| presence.knows_thp(&self.config.spec))),
                 *thp,
             )),
         };

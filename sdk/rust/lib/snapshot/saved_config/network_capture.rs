@@ -98,25 +98,46 @@ impl RuntimeCaptureSource<'_> {
             proxy: proxy_bindings,
         } = bindings;
         let raw = self.recorded.get("network").unwrap_or(&Value::Null);
+        // Only a matching explicit absence may complete an omitted optional field. This
+        // does not certify missing descendants of a present historical subdocument.
+        let recorded_field = |field: &str| {
+            raw.get(field).or_else(|| {
+                (raw.is_object()
+                    && self.config.field_presence.as_ref().is_some_and(|presence| {
+                        presence.knows_absent_network(field, &self.config.spec)
+                    }))
+                .then_some(&Value::Null)
+            })
+        };
 
-        let dns = project_optional(raw, "dns", dns.as_ref(), !resolvers.is_empty(), |source| {
-            SavedDnsConfig::from_source(source, resolvers).map_err(manifest_error)
-        })?;
-        let tls = project_optional(raw, "tls", tls.as_ref(), tls_bindings.is_some(), |source| {
-            let bindings = tls_bindings.unwrap_or_default();
-            // The shared constructor requires identities when needed; also reject an
-            // extra identity when the source has no active/configured interception CA.
-            if !source.enabled
-                && source.intercept_ca.cert_path.is_none()
-                && source.intercept_ca.key_path.is_none()
-                && bindings.intercept_ca.is_some()
-            {
-                return Err(unused("tls"));
-            }
-            SavedTlsConfig::from_source(source, bindings).map_err(manifest_error)
-        })?;
+        let dns = project_optional(
+            recorded_field("dns"),
+            "dns",
+            dns.as_ref(),
+            !resolvers.is_empty(),
+            |source| SavedDnsConfig::from_source(source, resolvers).map_err(manifest_error),
+        )?;
+        let tls = project_optional(
+            recorded_field("tls"),
+            "tls",
+            tls.as_ref(),
+            tls_bindings.is_some(),
+            |source| {
+                let bindings = tls_bindings.unwrap_or_default();
+                // The shared constructor requires identities when needed; also reject an
+                // extra identity when the source has no active/configured interception CA.
+                if !source.enabled
+                    && source.intercept_ca.cert_path.is_none()
+                    && source.intercept_ca.key_path.is_none()
+                    && bindings.intercept_ca.is_some()
+                {
+                    return Err(unused("tls"));
+                }
+                SavedTlsConfig::from_source(source, bindings).map_err(manifest_error)
+            },
+        )?;
         let secrets = project_optional(
-            raw,
+            recorded_field("secrets"),
             "secrets",
             secrets.as_ref(),
             !secret_bindings.is_empty(),
@@ -125,7 +146,7 @@ impl RuntimeCaptureSource<'_> {
             },
         )?;
         let outbound_proxy = project_optional(
-            raw,
+            recorded_field("outbound_proxy"),
             "outbound_proxy",
             outbound_proxy.as_ref(),
             proxy_bindings.is_some(),
@@ -169,7 +190,7 @@ impl RuntimeCaptureSource<'_> {
             enabled: Some(recorded(raw, "enabled", *enabled)),
             strict: Some(recorded(raw, "strict", *strict)),
             policy: Some(project_optional(
-                raw,
+                recorded_field("policy"),
                 "policy",
                 policy.as_ref(),
                 false,
@@ -179,24 +200,23 @@ impl RuntimeCaptureSource<'_> {
             tls: Some(tls),
             secrets: Some(secrets),
             max_tcp_connections: Some(optional_scalar(
-                raw.get("max_connections")
-                    .or_else(|| raw.get("max_tcp_connections")),
+                recorded_field("max_connections").or_else(|| raw.get("max_tcp_connections")),
                 max_tcp_connections.map(|value| value as u64),
             )),
             max_inbound_tcp_connections: Some(optional_scalar(
-                raw.get("max_inbound_tcp_connections"),
+                recorded_field("max_inbound_tcp_connections"),
                 max_inbound_tcp_connections.map(|value| value as u64),
             )),
             max_udp_connections: Some(optional_scalar(
-                raw.get("max_udp_connections"),
+                recorded_field("max_udp_connections"),
                 max_udp_connections.map(|value| value as u64),
             )),
             tcp_accept_queue_size: Some(optional_scalar(
-                raw.get("tcp_accept_queue_size"),
+                recorded_field("tcp_accept_queue_size"),
                 *tcp_accept_queue_size,
             )),
             rate_limiter: Some(project_optional(
-                raw,
+                recorded_field("rate_limiter"),
                 "rate_limiter",
                 rate_limiter.as_ref(),
                 false,
@@ -224,13 +244,13 @@ impl RuntimeCaptureSource<'_> {
 //--------------------------------------------------------------------------------------------------
 
 fn project_optional<S, T>(
-    raw: &Value,
+    raw: Option<&Value>,
     field: &str,
     source: Option<&S>,
     supplied: bool,
     project: impl FnOnce(&S) -> MicrosandboxResult<T>,
 ) -> MicrosandboxResult<SavedValue<T>> {
-    match raw.get(field) {
+    match raw {
         Some(Value::Null) => {
             if supplied {
                 return Err(unused(field));
