@@ -29,6 +29,7 @@ use crate::config::{
 };
 
 use super::command_provenance::CommandProvenance;
+use super::environment_provenance::EnvironmentProvenance;
 use super::init_provenance::InitProvenance;
 use super::types::{MountOptions, RootDisk, RootfsSource, VolumeMount};
 use crate::snapshot::SnapshotReference;
@@ -157,6 +158,12 @@ pub struct SandboxConfig {
     /// This guard is local to building; omission in persisted data is still represented by None.
     #[serde(skip)]
     pub(crate) command_provenance_unknown: bool,
+    /// Optional host-private origin evidence; absence in an older record means unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) environment_provenance: Option<EnvironmentProvenance>,
+    /// Builder-only guard against turning historical values into new literal declarations.
+    #[serde(skip)]
+    pub(crate) environment_provenance_unknown: bool,
     /// Protect the installed source while a local restore builder materializes child-owned files.
     #[cfg(feature = "local")]
     #[serde(skip)]
@@ -699,6 +706,15 @@ impl SandboxConfig {
                 inherited_entrypoint,
             );
         }
+        // Init auto-selection may inherit environment from the workload. Resolve origins only
+        // after that merge so host-forwarded values cannot become literal init defaults.
+        self.environment_provenance
+            .get_or_insert_with(Default::default)
+            .resolve(
+                &self.spec.env,
+                self.spec.init.as_ref(),
+                self.environment_provenance_unknown,
+            );
     }
 
     /// Resolve the effective metrics sampling interval, accounting for the disable override.
@@ -719,6 +735,9 @@ impl SandboxConfig {
     /// transient launch markers and any workload argv routed through an inherited init are removed.
     pub(crate) fn clone_for_persistence(&self) -> Self {
         let mut config = self.clone();
+        if let Some(origin) = &mut config.environment_provenance {
+            origin.retain_matching(&config.spec.env, config.spec.init.as_ref());
+        }
         if config
             .init_provenance
             .as_ref()
@@ -1268,6 +1287,8 @@ impl Default for SandboxConfig {
             init_provenance: None,
             command_provenance: None,
             command_provenance_unknown: false,
+            environment_provenance: None,
+            environment_provenance_unknown: false,
             spec: SandboxSpec {
                 resources: SandboxResources {
                     cpus: default_cpus(),
@@ -1381,6 +1402,14 @@ mod tests {
             .unwrap()
             .remove("command_provenance");
         merged.as_object_mut().unwrap().remove("command_provenance");
+        layered
+            .as_object_mut()
+            .unwrap()
+            .remove("environment_provenance");
+        merged
+            .as_object_mut()
+            .unwrap()
+            .remove("environment_provenance");
         assert_eq!(layered, merged);
     }
 

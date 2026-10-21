@@ -20,6 +20,7 @@ pub(crate) mod config;
 mod control_pipe;
 #[cfg(feature = "local")]
 mod creation_cleanup;
+mod environment_provenance;
 pub mod exec;
 #[cfg(feature = "local")]
 mod exit;

@@ -87,6 +87,21 @@ impl CapturedSandboxConfiguration {
                 "captured command provenance contradicts its source configuration",
             ));
         }
+        if captured
+            .configuration
+            .environment_provenance
+            .as_ref()
+            .is_some_and(|origin| {
+                !origin.matches(
+                    &captured.configuration.spec.env,
+                    captured.configuration.spec.init.as_ref(),
+                )
+            })
+        {
+            return Err(invalid(
+                "captured environment provenance contradicts its source configuration",
+            ));
+        }
         captured.validate_init_observation()?;
         captured.validate_script_inventory()?;
         Ok(Some(captured))
@@ -1031,5 +1046,26 @@ mod tests {
             .remove("cmd");
         valid["source"]["source"]["command_provenance"]["configured"] = serde_json::Value::Null;
         assert!(fixture.read(&valid).is_err());
+    }
+    #[test]
+    fn captured_environment_origin_requires_matching_values_and_redacts_failures() {
+        let fixture = Fixture::new();
+        let config = crate::sandbox::SandboxBuilder::new("env-capture")
+            .image("alpine")
+            .host_env("HOST".into(), "PRIVATE_ORIGINAL".into())
+            .finish(None, None)
+            .unwrap();
+        let mut value = fixture.value.clone();
+        value["source"]["source"] = serde_json::to_value(config).unwrap();
+        assert!(fixture.read(&value).unwrap().is_some());
+        value["source"]["source"]["env"][0]["value"] = serde_json::json!("PRIVATE_CHANGED");
+        let error = fixture.read(&value).err().unwrap().to_string();
+        assert!(error.contains("environment provenance"));
+        assert!(!error.contains("PRIVATE_"));
+        value["source"]["source"]
+            .as_object_mut()
+            .unwrap()
+            .remove("env");
+        assert!(fixture.read(&value).is_err());
     }
 }
