@@ -70,7 +70,7 @@ pub enum RuntimeCaptureAction {
 //--------------------------------------------------------------------------------------------------
 
 impl RuntimeCaptureTarget {
-    fn field(&self) -> &'static str {
+    pub(super) fn field(&self) -> &'static str {
         match self {
             Self::Workdir => "runtime.workdir",
             Self::Shell => "runtime.shell",
@@ -85,7 +85,7 @@ impl RuntimeCaptureTarget {
         }
     }
 
-    fn whole_field(&self) -> bool {
+    pub(super) fn whole_field(&self) -> bool {
         !matches!(
             self,
             Self::EntrypointArg(_)
@@ -136,21 +136,13 @@ pub fn apply_runtime_capture_controls(
     controls: &BTreeMap<RuntimeCaptureTarget, RuntimeCaptureAction>,
     full_state: bool,
 ) -> SnapshotManifestResult<SavedSandboxConfig> {
-    count(controls.len(), "capture.runtime")?;
+    validate_controls(controls)?;
     let mut removed_candidates = runtime_binding_ids(&draft.active.runtime);
     if let Some(pending) = &draft.pending {
         removed_candidates.extend(runtime_binding_ids(&pending.runtime));
     }
     for (target, action) in controls {
-        if controls.keys().any(|other| {
-            other != target
-                && other.field() == target.field()
-                && (other.whole_field() || target.whole_field())
-        }) {
-            return invalid("SCFG_VALUE", target.field(), "overlapping capture controls");
-        }
         if let RuntimeCaptureAction::Bind(id) = action {
-            binding(id, target.field())?;
             if draft
                 .bindings
                 .get(id)
@@ -337,4 +329,46 @@ fn runtime_binding_ids(runtime: &SavedRuntimeConfig) -> BTreeSet<String> {
         }
     }
     ids
+}
+
+pub(super) fn validate_controls(
+    controls: &BTreeMap<RuntimeCaptureTarget, RuntimeCaptureAction>,
+) -> SnapshotManifestResult<()> {
+    use RuntimeCaptureTarget as T;
+    count(controls.len(), "capture.runtime")?;
+    for (target, action) in controls {
+        if controls.keys().any(|other| {
+            other != target
+                && other.field() == target.field()
+                && (other.whole_field() || target.whole_field())
+        }) {
+            return invalid("SCFG_VALUE", target.field(), "overlapping capture controls");
+        }
+        match action {
+            RuntimeCaptureAction::Bind(id) => {
+                binding(id, target.field())?;
+                if target.whole_field() {
+                    return invalid(
+                        "SCFG_BINDING",
+                        target.field(),
+                        "capture binding requires an individual text or script selector",
+                    );
+                }
+            }
+            RuntimeCaptureAction::Omit
+                if matches!(
+                    target,
+                    T::EntrypointArg(_) | T::CmdArg(_) | T::InitArg(_) | T::InitEnvKey(_)
+                ) =>
+            {
+                return invalid(
+                    "SCFG_BINDING",
+                    target.field(),
+                    "excluded positional or init input needs a binding",
+                );
+            }
+            RuntimeCaptureAction::Omit => {}
+        }
+    }
+    Ok(())
 }

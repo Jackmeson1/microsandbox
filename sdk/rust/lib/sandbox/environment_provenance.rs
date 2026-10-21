@@ -145,6 +145,15 @@ impl EnvironmentProvenance {
         });
     }
 
+    /// Portable projection may copy only a positively classified, unchanged literal.
+    /// Missing, host-derived and invalidated entries all require a binding or exclusion.
+    pub(crate) fn is_literal(&self, key: &str, value: &str, init: bool) -> bool {
+        let entries = if init { &self.init_env } else { &self.env };
+        entries
+            .get(key)
+            .is_some_and(|entry| entry.origin == EnvironmentOrigin::Literal && entry.matches(value))
+    }
+
     pub(crate) fn matches(&self, env: &[EnvVar], init: Option<&HandoffInit>) -> bool {
         let mut retained = self.clone();
         retained.retain_matching(env, init);

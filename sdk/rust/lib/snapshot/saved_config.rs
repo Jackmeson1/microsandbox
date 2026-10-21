@@ -44,6 +44,10 @@ mod runtime;
 mod runtime_assembly;
 #[cfg(test)]
 mod runtime_assembly_tests;
+#[cfg(feature = "local")]
+mod runtime_capture;
+#[cfg(all(test, feature = "local"))]
+mod runtime_capture_tests;
 #[cfg(test)]
 mod runtime_input_tests;
 mod runtime_inputs;
@@ -106,6 +110,8 @@ pub use runtime::select_runtime_defaults;
 pub use runtime_assembly::{
     PreparedCommandDefaults, RuntimeConfigurationPlan, prepare_runtime_configuration,
 };
+#[cfg(feature = "local")]
+pub use runtime_capture::RuntimeCaptureSource;
 pub use runtime_inputs::{
     PreparedRuntimeInit, PreparedRuntimeScript, PreparedRuntimeValue, RuntimeBindingInput,
     RuntimeInputPlan, prepare_runtime_inputs,

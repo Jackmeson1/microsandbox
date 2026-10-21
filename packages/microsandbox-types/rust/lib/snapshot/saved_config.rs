@@ -14,6 +14,7 @@ mod network_capture;
 mod network_validation;
 mod resources;
 mod runtime;
+mod runtime_capture;
 mod storage;
 mod storage_capture;
 mod storage_validation;
@@ -28,6 +29,8 @@ mod document_tests;
 mod gateway_capture_tests;
 #[cfg(test)]
 mod network_tests;
+#[cfg(test)]
+mod runtime_capture_tests;
 #[cfg(test)]
 mod storage_tests;
 #[cfg(test)]
@@ -53,6 +56,10 @@ pub use inventory::{
 pub use network::*;
 pub use resources::SavedResourcesConfig;
 pub use runtime::{SavedHostname, SavedInit, SavedInitSelection, SavedRuntimeConfig, SavedScript};
+pub use runtime_capture::{
+    RuntimeCaptureInit, RuntimeCaptureInput, RuntimeCaptureProjection, RuntimeCaptureScript,
+    RuntimeCaptureText, project_runtime_capture,
+};
 pub use storage::{
     SavedBindRootKind, SavedMount, SavedMountOptions, SavedNamedStorage, SavedStorageConfig,
     SavedVsockRoute,
