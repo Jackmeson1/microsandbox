@@ -6,17 +6,15 @@ release is qualified. Keep its JSON report and original artifacts with failures.
 """
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
 import platform
-import signal
 import subprocess
 import tempfile
-import time
 
 import previous_release_upgrade as releases
+from lifecycle_evidence import Runner, cleanup, digest, environment, install_termination_handler
 
 
 VERSIONS = ("0.6.0", "0.6.6", "0.6.7", "0.6.18", "0.7.8")
@@ -43,11 +41,6 @@ cat marker
 """
 
 
-def digest(path):
-    with path.open("rb") as source:
-        return hashlib.file_digest(source, "sha256").hexdigest()
-
-
 def inventory(root):
     """Hash originals without following a substituted symlink outside the fixture."""
     return {str(path.relative_to(root)): {"symlink": os.readlink(path)} if path.is_symlink()
@@ -55,71 +48,10 @@ def inventory(root):
             for path in sorted(root.rglob("*")) if path.is_symlink() or path.is_file()}
 
 
-def environment(binary, firmware, home, agent=None):
-    env = {key: value for key, value in os.environ.items()
-           if not key.startswith("MSB_") and key not in ("LD_PRELOAD", "DYLD_INSERT_LIBRARIES")}
-    env.update(MSB_HOME=str(home), MSB_PATH=str(binary), MSB_BACKEND="local",
-               MSB_CONFIG_PATH=str(home / "config.json"), MSB_LIBKRUNFW_PATH=str(firmware),
-               NO_COLOR="1")
-    if agent:
-        env["MSB_AGENTD_PATH"] = str(agent)
-    return env
-
-
 def agent_identity(agent):
     """Identify the selected guest implementation independently of the CLI."""
     return ({"source": "explicit", "path": str(agent.resolve()), "sha256": digest(agent)}
             if agent else {"source": "embedded"})
-
-
-def install_termination_handler():
-    def terminate(signum, _frame):
-        # Unwind once through process/VM cleanup. A second TERM must not interrupt
-        # that cleanup; a supervisor can still enforce its hard-kill deadline.
-        signal.signal(signum, signal.SIG_IGN)
-        raise SystemExit(128 + signum)
-    signal.signal(signal.SIGTERM, terminate)
-
-
-class Runner:
-    def __init__(self, binary, env, output):
-        self.binary, self.env, self.output = binary, env, output
-        self.commands = []
-        output.mkdir(parents=True, exist_ok=True)
-
-    def run(self, label, *args, required=True):
-        start = time.monotonic()
-        command = [str(self.binary), *map(str, args)]
-        # Bound each supervisor and reap its owned process group on interruption.
-        # Persistent VMs have a separate lifecycle and are stopped in finally below.
-        # No fixture command is interactive: never let a CLI consume the SSH shell
-        # script from inherited stdin and silently skip the remaining matrix.
-        row = {"label": label, "command": command, "exit": None}
-        try:
-            with (self.output / f"{label}.stdout").open("w") as stdout, (self.output / f"{label}.stderr").open("w") as stderr:
-                with subprocess.Popen(command, env=self.env, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
-                                      start_new_session=True) as child:
-                    try:
-                        row["exit"] = child.wait(timeout=180)
-                    except BaseException:
-                        try:
-                            os.killpg(child.pid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass  # The command exited between interruption and kill.
-                        row["exit"] = child.wait()
-                        raise
-        except BaseException as error:
-            row["error"], row["error_type"] = str(error), type(error).__name__
-            raise
-        finally:
-            row["seconds"] = round(time.monotonic() - start, 3)
-            self.commands.append(row)
-            (self.output / "commands.json").write_text(json.dumps(self.commands, indent=2) + "\n")
-        code = row["exit"]
-        print(f"{label}: exit {code}", flush=True)
-        if required and code:
-            raise RuntimeError(f"{label} failed; see {self.output / (label + '.stderr')}")
-        return code
 
 
 def copy_artifact(source, destination):
@@ -139,23 +71,6 @@ def verify_descriptor_preservation(original, working):
     if (working / retained).read_bytes() != (original / name).read_bytes():
         raise RuntimeError("migration changed or lost the original descriptor bytes")
     return retained
-
-
-def cleanup(runner, prefix, sandbox, result=None):
-    """Attempt both lifecycle operations before propagating an interruption."""
-    result = {} if result is None else result
-    interrupted = None
-    for operation in ("stop", "rm"):
-        try:
-            result[operation] = runner.run(prefix + "-cleanup-" + operation,
-                                           operation, sandbox, required=False)
-        except BaseException as error:
-            result[operation] = str(error)
-            if not isinstance(error, Exception):
-                interrupted = error
-    if interrupted is not None:
-        raise interrupted
-    return result
 
 
 def finish_case(runner, prefix, sandbox, row, report, output, attempted=True):

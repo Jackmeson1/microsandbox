@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
@@ -154,7 +155,7 @@ class HistoricalSnapshotTests(unittest.TestCase):
             child.wait.side_effect = [subprocess.TimeoutExpired("fixture", 180), 0]
             with self.assertRaises(subprocess.TimeoutExpired):
                 runner.run("timed-out", "-c", "pass")
-        kill.assert_called_once_with(12345, smoke.signal.SIGKILL)
+        kill.assert_called_once_with(12345, signal.SIGKILL)
         self.assertEqual(child.wait.call_count, 2)
         self.assertTrue(spawn.call_args.kwargs["start_new_session"])
         self.assertEqual(spawn.call_args.kwargs["stdin"], subprocess.DEVNULL)

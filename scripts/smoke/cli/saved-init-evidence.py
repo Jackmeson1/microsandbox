@@ -53,7 +53,7 @@ def main():
         setattr(args, name, value.resolve())
     support = Path(__file__).resolve().parent
     sys.path.insert(0, str(support))
-    spec = importlib.util.spec_from_file_location("history", support / "historical-snapshots.py")
+    spec = importlib.util.spec_from_file_location("history", support / "lifecycle_evidence.py")
     history = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(history)
     history.install_termination_handler()
@@ -163,16 +163,17 @@ def main():
             row["status"] = "passed"
             report["cases"].append(row)
         report["status"] = "passed"
-    except Exception as error:
+    except BaseException as error:
         report.update(status="failed", error=str(error), traceback=traceback.format_exc())
+        if not isinstance(error, Exception):
+            raise
     finally:
-        report["cleanup"] = {}
-        for name in names:
-            report["cleanup"][name] = {
-                "stop": runner.run("cleanup-stop-" + name, "stop", "--force", name, required=False),
-                "rm": runner.run("cleanup-rm-" + name, "rm", name, required=False),
-            }
-        try:
+        report["cleanup"] = {name: {} for name in names}
+
+        def collect_pids():
+            pids.update(pid for (pid,) in rows("SELECT pid FROM run") if pid)
+
+        def audit():
             report["remaining_sandboxes"] = rows("SELECT count(*) FROM sandbox")[0][0]
             report["remaining_live_runs"] = rows("SELECT count(*) FROM run WHERE terminated_at IS NULL")[0][0]
             report["surviving_pids"] = []
@@ -183,11 +184,10 @@ def main():
                 except ProcessLookupError:
                     pass
             if report["remaining_sandboxes"] or report["remaining_live_runs"] or report["surviving_pids"]:
-                report["status"] = "failed"
-        except Exception:
-            report["cleanup_error"] = traceback.format_exc()
-            report["status"] = "failed"
-        (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+                raise RuntimeError("candidate cleanup left sandbox state or live processes")
+
+        history.finish_saved_evidence(runner, report["cleanup"], report, report,
+                                      args.output, audit, force=True, prepare=collect_pids)
     print(report["status"], flush=True)
     return report["status"] != "passed"
 
