@@ -15,6 +15,7 @@ mod network_validation;
 mod resources;
 mod runtime;
 mod runtime_capture;
+mod script_backing;
 mod storage;
 mod storage_capture;
 mod storage_validation;
@@ -62,6 +63,7 @@ pub use runtime_capture::{
     RuntimeCaptureInit, RuntimeCaptureInput, RuntimeCaptureProjection, RuntimeCaptureScript,
     RuntimeCaptureText, project_runtime_capture,
 };
+pub use script_backing::{SavedScriptBacking, SavedScriptMetadata};
 pub use storage::{
     SavedBindRootKind, SavedMount, SavedMountOptions, SavedNamedStorage, SavedStorageConfig,
     SavedVsockRoute,

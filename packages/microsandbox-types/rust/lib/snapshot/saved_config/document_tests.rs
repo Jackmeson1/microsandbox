@@ -542,6 +542,54 @@ fn schema_document_is_still_not_advertised_as_a_supported_extension() {
     );
 }
 
+#[test]
+fn script_backing_requires_observed_matching_inventory_and_never_pending_intent() {
+    let mut doc = document();
+    doc["active"]["storage"] = json!({});
+    let content = "PRIVATE_SCRIPT_BODY";
+    doc["active"]["runtime"]["scripts"] = json!({"state":"value","origin":"observed","value":{"task":{"kind":"inline","content":content,"mode":416,"digest":format!("sha256:{}",hex::encode(Sha256::digest(content)))}}});
+    doc["active"]["script_backing"] = json!({"state":"value","origin":"observed","value":{
+        "runtime_directory":{"uid":0,"gid":0,"mode":493},
+        "scripts_directory":{"uid":41,"gid":42,"mode":448},
+        "files":{"task":{"uid":43,"gid":44,"mode":416}}
+    }});
+    let parsed = parse(&doc);
+    assert_eq!(serde_json::to_value(parsed).unwrap(), doc);
+    for (path, value) in [
+        ("/active/script_backing/origin", json!("configured")),
+        ("/active/script_backing/value/files/task/mode", json!(493)),
+        (
+            "/active/script_backing/value/runtime_directory/mode",
+            json!(4095),
+        ),
+        ("/active/script_backing/value/files", json!({})),
+        ("/active/runtime/scripts/origin", json!("configured")),
+    ] {
+        let mut bad = doc.clone();
+        *bad.pointer_mut(path).unwrap() = value;
+        let error = SavedSandboxConfig::from_bytes(&serde_json::to_vec(&bad).unwrap())
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(!error.contains(content));
+    }
+    let mut bad = doc.clone();
+    bad["pending"] = json!({"script_backing":{"state":"unknown","reason":"not_recorded"}});
+    reject(&bad, "pending intent cannot contain observed backing");
+    for value in [json!(null), json!({"state":"default"})] {
+        let mut bad = doc.clone();
+        bad["active"]["script_backing"] = value;
+        assert!(SavedSandboxConfig::from_bytes(&serde_json::to_vec(&bad).unwrap()).is_err());
+    }
+    doc["active"]["script_backing"] = json!({"state":"unknown","reason":"not_recorded"});
+    parse(&doc);
+    doc["active"]
+        .as_object_mut()
+        .unwrap()
+        .remove("script_backing");
+    parse(&doc);
+}
+
 //--------------------------------------------------------------------------------------------------
 // Functions
 //--------------------------------------------------------------------------------------------------

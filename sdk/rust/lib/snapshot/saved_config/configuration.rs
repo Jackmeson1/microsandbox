@@ -5,8 +5,8 @@ use std::fmt;
 
 use microsandbox_types::snapshot::saved_config::{
     MAX_SAVED_CONFIG_BYTES, MAX_SAVED_CONFIG_ENTRIES, SavedBindingConsumer, SavedBindingUses,
-    SavedNetworkConfig, SavedOrigin, SavedRuntimeConfig, SavedSandboxConfig, SavedValue,
-    collect_binding_uses,
+    SavedNetworkConfig, SavedOrigin, SavedRuntimeConfig, SavedSandboxConfig, SavedScript,
+    SavedScriptBacking, SavedValue, collect_binding_uses,
 };
 use microsandbox_types::{
     NetworkSpec, SandboxResources, SandboxResourcesPatch, SandboxSpec, SandboxSpecPatch,
@@ -96,6 +96,23 @@ pub struct SavedConfigurationPlan {
     destination: SandboxSpec,
     runtime_context: RuntimeSelectionContext,
     runtime: RuntimeConfigurationPlan,
+    #[cfg_attr(
+        not(all(feature = "local", unix)),
+        expect(
+            dead_code,
+            reason = "full backing obligations retained for platform admission"
+        )
+    )]
+    pub(super) script_backing: Option<SavedValue<SavedScriptBacking>>,
+    // Never hash an excluded/bound source body. Missing hashes mean identity is unresolved.
+    #[cfg_attr(
+        not(all(feature = "local", unix)),
+        expect(
+            dead_code,
+            reason = "full backing obligations retained for platform admission"
+        )
+    )]
+    pub(super) script_digests: Option<BTreeMap<String, (String, u16)>>,
     resources: ResourceConfigurationPlan,
     execution: ExecutionConfigurationPlan,
     network_policy: NetworkPolicyConfigurationPlan,
@@ -426,6 +443,23 @@ pub fn prepare_saved_configuration(
     Ok(SavedConfigurationPlan {
         destination: destination_fields(request.lower, explicit),
         runtime_context,
+        script_backing: saved.script_backing.clone(),
+        script_digests: saved
+            .runtime
+            .scripts
+            .as_ref()
+            .and_then(SavedValue::value)
+            .and_then(|scripts| {
+                scripts
+                    .iter()
+                    .map(|(name, script)| match script {
+                        SavedScript::Inline { digest, mode, .. } => {
+                            Some((name.clone(), (digest.clone(), *mode)))
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            }),
         runtime: prepare_runtime_configuration(
             &saved.runtime,
             request.lower,

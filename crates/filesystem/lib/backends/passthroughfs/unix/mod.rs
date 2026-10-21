@@ -1194,8 +1194,8 @@ fn open_root_no_symlink(root_dir: &Path) -> io::Result<File> {
 
 pub use builder::PassthroughFsBuilder;
 pub use runtime_scripts::{
-    CapturedRuntimeScripts, RuntimeBootScript, RuntimeScriptLimits, RuntimeScriptMetadata,
-    stage_runtime_boot_scripts,
+    CapturedRuntimeScripts, RuntimeBootScript, RuntimeRestoredScript, RuntimeScriptLimits,
+    RuntimeScriptMetadata, stage_runtime_boot_scripts, stage_runtime_restored_scripts,
 };
 
 //--------------------------------------------------------------------------------------------------

@@ -18,8 +18,9 @@ use tempfile::TempDir;
 use crate::{Context, DynFileSystem, FsOptions};
 
 use super::runtime_scripts::{
-    CapturedRuntimeScripts, RuntimeBootScript, RuntimeScriptLimits, stage_boot_scripts_with_check,
-    stage_runtime_boot_scripts,
+    CapturedRuntimeScripts, RuntimeBootScript, RuntimeRestoredScript, RuntimeScriptLimits,
+    RuntimeScriptMetadata, stage_boot_scripts_with_check, stage_restored_scripts_with_check,
+    stage_runtime_boot_scripts, stage_runtime_restored_scripts,
 };
 use super::{PassthroughConfig, PassthroughFs};
 
@@ -653,4 +654,140 @@ fn registered_script_staging_cannot_restore_unaccounted_runtime_handles() {
     assert!(restored.validate_state(&state).is_err());
     assert!(restored.restore_state(&state).is_err());
     assert_eq!(restored.capture_state().unwrap(), before);
+}
+
+#[test]
+fn portable_staging_restores_handles_only_after_source_deletion() {
+    let (root, pinned) = source();
+    let content = b"#!/bin/sh\nprintf 'captured bytes'\n";
+    let path = root.path().join("scripts/task");
+    fs::write(&path, content).unwrap();
+    permissions(&path, 42, 43, 0o750);
+    permissions(&root.path().join("scripts"), 44, 45, 0o711);
+    let source_fs = mounted_runtime(root.path());
+    let directory = source_fs.lookup(root_context(), 1, c"scripts").unwrap();
+    let entry = source_fs
+        .lookup(root_context(), directory.inode, c"task")
+        .unwrap();
+    let handle = source_fs
+        .open(root_context(), entry.inode, false, 0)
+        .unwrap()
+        .0
+        .unwrap();
+    let state = source_fs.capture_state().unwrap();
+    let observed = capture_files(&pinned, &names(&["task"])).unwrap();
+    let (runtime_metadata, scripts_metadata) = observed.directory_metadata();
+    let values: Vec<_> = observed
+        .observations()
+        .map(|(name, content, metadata)| (name.to_owned(), content.to_owned(), metadata))
+        .collect();
+    drop(observed);
+    drop(source_fs);
+    drop(pinned);
+    root.close().unwrap();
+    // No source descriptors or paths remain when the replacement backing is created.
+    let inputs: Vec<_> = values
+        .iter()
+        .map(|(name, content, metadata)| RuntimeRestoredScript {
+            name,
+            content,
+            metadata: *metadata,
+        })
+        .collect();
+    let parent = tempfile::tempdir().unwrap();
+    let staged = stage_runtime_restored_scripts(
+        parent.path(),
+        &inputs,
+        runtime_metadata,
+        scripts_metadata,
+        boot_limits(),
+    )
+    .unwrap();
+    let staged_inode = fs::metadata(staged.path().join("scripts/task"))
+        .unwrap()
+        .ino();
+    let restored = mounted_runtime(staged.path());
+    restored.validate_state(&state).unwrap();
+    restored.restore_state(&state).unwrap();
+    let reopened = restored.handles.read().unwrap()[&handle].clone();
+    assert_eq!(reopened.inode, entry.inode);
+    let file = reopened.file.read().unwrap();
+    assert_eq!(file.metadata().unwrap().ino(), staged_inode);
+    let mut tail = vec![0; content.len() - 3];
+    // FUSE carries the guest offset per request; reopening must serve those exact offsets.
+    assert_eq!(file.read_at(&mut tail, 3).unwrap(), tail.len());
+    assert_eq!(tail, content[3..]);
+    drop(file);
+    let again = restored
+        .lookup(root_context(), directory.inode, c"task")
+        .unwrap();
+    assert_eq!(again.inode, entry.inode);
+    assert_eq!(
+        (
+            again.attr.st_uid,
+            again.attr.st_gid,
+            again.attr.st_mode & 0o7777
+        ),
+        (42, 43, 0o750)
+    );
+    let dir = restored.lookup(root_context(), 1, c"scripts").unwrap();
+    assert_eq!(
+        (dir.attr.st_uid, dir.attr.st_gid, dir.attr.st_mode & 0o7777),
+        (44, 45, 0o711)
+    );
+}
+
+#[test]
+fn portable_staging_rejects_metadata_and_late_changes_without_partial_output() {
+    let valid = RuntimeScriptMetadata {
+        uid: 42,
+        gid: 43,
+        mode: 0,
+    };
+    let input = [RuntimeRestoredScript {
+        name: "task",
+        content: "PRIVATE_SCRIPT",
+        metadata: valid,
+    }];
+    let parent = tempfile::tempdir().unwrap();
+    for mode in [0o1000, 0o4755, 0xffff] {
+        assert!(
+            stage_runtime_restored_scripts(
+                parent.path(),
+                &input,
+                RuntimeScriptMetadata { mode, ..valid },
+                valid,
+                boot_limits()
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0);
+    }
+    for mutation in ["bytes", "mode", "replacement", "directory", "failure"] {
+        let result = stage_restored_scripts_with_check(
+            parent.path(),
+            &input,
+            valid,
+            valid,
+            boot_limits(),
+            |root| {
+                let file = root.join("scripts/task");
+                match mutation {
+                    "bytes" => fs::write(file, "CHANGED")?,
+                    "mode" => permissions(&file, 42, 43, 0o777),
+                    "replacement" => {
+                        fs::remove_file(&file)?;
+                        fs::write(&file, "PRIVATE_SCRIPT")?;
+                        permissions(&file, 42, 43, 0);
+                    }
+                    "directory" => permissions(&root.join("scripts"), 1, 2, 0),
+                    _ => return Err(std::io::Error::other("injected")),
+                }
+                Ok(())
+            },
+        );
+        assert!(result.is_err(), "{mutation}");
+        assert!(!result.err().unwrap().to_string().contains("PRIVATE_SCRIPT"));
+        assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0);
+    }
 }

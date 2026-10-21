@@ -47,7 +47,8 @@ pub use backends::{
     passthroughfs::{
         BindIdentityMap, BindIdentityMapHandle, CachePolicy, CapturedRuntimeScripts,
         HostPermissions, PassthroughConfig, PassthroughFs, PassthroughFsBuilder, RuntimeBootScript,
-        RuntimeScriptLimits, RuntimeScriptMetadata, StatVirtualization, stage_runtime_boot_scripts,
+        RuntimeRestoredScript, RuntimeScriptLimits, RuntimeScriptMetadata, StatVirtualization,
+        stage_runtime_boot_scripts, stage_runtime_restored_scripts,
     },
     singlefilefs::SingleFileFs,
 };

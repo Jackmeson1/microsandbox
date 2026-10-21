@@ -6,15 +6,21 @@ use std::{
 };
 
 use microsandbox_filesystem::PassthroughFs;
-use microsandbox_types::snapshot::saved_config::SavedRuntimeConfig;
-use microsandbox_types::{SandboxRuntimeOptionsPatch, SandboxSpec, SandboxSpecPatch};
+use microsandbox_types::snapshot::saved_config::{
+    SavedBindingKind, SavedOrigin, SavedRuntimeConfig, SavedSandboxConfig, SavedScript,
+    SavedUnknownReason, SavedValue,
+};
+use microsandbox_types::{
+    SandboxResources, SandboxRuntimeOptionsPatch, SandboxSpec, SandboxSpecPatch,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use super::{
-    RuntimeBindingInput, RuntimeConfigurationPlan, RuntimeDefaultClear, RuntimeSelectionContext,
-    SnapshotConfigMode, prepare_runtime_configuration,
+    ConfigurationBindingInput, RuntimeBindingInput, RuntimeConfigurationPlan, RuntimeDefaultClear,
+    RuntimeSelectionContext, SavedConfigurationContext, SavedConfigurationPlan, SnapshotConfigMode,
+    prepare_runtime_configuration,
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -54,6 +60,41 @@ fn prepare(
             config_mode: SnapshotConfigMode::Saved,
             full_resume: full,
             starts_command: false,
+        },
+        bindings,
+    )
+    .unwrap()
+}
+
+fn portable_full_scripts() -> SavedSandboxConfig {
+    super::configuration_tests::document(
+        json!({
+            "runtime":{"scripts":{"state":"value","origin":"observed","value":{"task":inline("CAPTURED_BODY",0o640)}}},
+            "script_backing":{"state":"value","origin":"observed","value":{
+                "runtime_directory":{"uid":40,"gid":41,"mode":488},
+                "scripts_directory":{"uid":44,"gid":45,"mode":456},
+                "files":{"task":{"uid":42,"gid":43,"mode":416}}
+            }}
+        }),
+        json!({}),
+    )
+}
+
+fn prepare_full_scripts(
+    saved: &SavedSandboxConfig,
+    patch: &SandboxSpecPatch,
+    bindings: BTreeMap<String, ConfigurationBindingInput>,
+) -> SavedConfigurationPlan {
+    let resources = SandboxResources::default();
+    let captured = Default::default();
+    super::configuration_tests::prepare(
+        saved,
+        patch,
+        SnapshotConfigMode::Fresh,
+        SavedConfigurationContext::Full {
+            resources: &resources,
+            security: Default::default(),
+            bindings: &captured,
         },
         bindings,
     )
@@ -172,4 +213,75 @@ fn full_resume_cannot_use_cold_boot_staging_even_with_equal_or_empty_scripts() {
         assert!(error.contains("SCFG_IDENTITY"));
         assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0);
     }
+}
+
+#[test]
+fn full_script_materialization_keeps_serialized_guest_metadata_after_source_deletion() {
+    let source = tempfile::tempdir().unwrap();
+    fs::write(source.path().join("source"), "CAPTURED_BODY").unwrap();
+    let document = portable_full_scripts();
+    let bytes = serde_json::to_vec(&document).unwrap();
+    drop(document);
+    source.close().unwrap();
+    let saved = SavedSandboxConfig::from_bytes(&bytes).unwrap();
+    let plan = prepare_full_scripts(&saved, &SandboxSpecPatch::new(), BTreeMap::new());
+    let parent = tempfile::tempdir().unwrap();
+    let staged = plan.stage_full_scripts(parent.path()).unwrap();
+    assert_eq!(
+        fs::read_to_string(staged.path().join("scripts/task")).unwrap(),
+        "CAPTURED_BODY"
+    );
+    for (path, expected) in [
+        (staged.path().to_path_buf(), (40, 41, 0o750)),
+        (staged.path().join("scripts"), (44, 45, 0o710)),
+        (staged.path().join("scripts/task"), (42, 43, 0o640)),
+    ] {
+        let stat = PassthroughFs::runtime_backing_stat(&File::open(path).unwrap()).unwrap();
+        assert_eq!((stat.st_uid, stat.st_gid, stat.st_mode & 0o7777), expected);
+    }
+    assert!(plan.runtime().inputs().requires_full_identity);
+    drop(staged);
+    assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn full_script_staging_never_invents_metadata_or_certifies_changed_or_bound_bytes() {
+    let parent = tempfile::tempdir().unwrap();
+    for state in [
+        None,
+        Some(SavedValue::Unknown {
+            reason: SavedUnknownReason::NotRecorded,
+        }),
+    ] {
+        let mut saved = portable_full_scripts();
+        saved.active.script_backing = state;
+        let plan = prepare_full_scripts(&saved, &SandboxSpecPatch::new(), BTreeMap::new());
+        assert!(plan.stage_full_scripts(parent.path()).is_err());
+    }
+    let saved = portable_full_scripts();
+    let patch = SandboxSpecPatch::new().runtime(
+        SandboxRuntimeOptionsPatch::new()
+            .scripts(BTreeMap::from([("task".into(), "CHANGED_BODY".into())])),
+    );
+    let plan = prepare_full_scripts(&saved, &patch, BTreeMap::new());
+    assert!(plan.stage_full_scripts(parent.path()).is_err());
+    let mut bound = saved.clone();
+    *bound.active.runtime.scripts.as_mut().unwrap() = SavedValue::Value {
+        origin: SavedOrigin::Observed,
+        value: BTreeMap::from([("task".into(), SavedScript::Binding { id: "body".into() })]),
+    };
+    bound.bindings.insert("body".into(), SavedBindingKind::Text);
+    let plan = prepare_full_scripts(
+        &bound,
+        &SandboxSpecPatch::new(),
+        BTreeMap::from([(
+            "body".into(),
+            ConfigurationBindingInput::Text(RuntimeBindingInput {
+                text: Zeroizing::new("CAPTURED_BODY".into()),
+                script_mode: Some(0o640),
+            }),
+        )]),
+    );
+    assert!(plan.stage_full_scripts(parent.path()).is_err());
+    assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0);
 }

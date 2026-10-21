@@ -124,6 +124,8 @@ impl RuntimeCaptureSource<'_> {
         .map_err(manifest_error)?;
         let active = SavedActiveConfig {
             resources: self.project_resources(resources)?,
+            script_backing: self
+                .script_backing(&runtime.active, manifest.scope == SnapshotScope::Full)?,
             runtime: runtime.active,
             network: self.project_network(network, network_controls)?,
             execution: self.project_execution(&active_execution)?,
@@ -131,6 +133,7 @@ impl RuntimeCaptureSource<'_> {
         };
         let pending = match pending {
             Some(pending) => Some(SavedActiveConfig {
+                script_backing: None,
                 resources: pending.source.project_pending_resources()?,
                 runtime: runtime.pending.ok_or_else(|| {
                     MicrosandboxError::InvalidConfig(

@@ -6,7 +6,8 @@ use microsandbox_protocol::init_observation::InitObservation;
 use microsandbox_runtime::retention::ScriptBackingEvidence;
 use microsandbox_types::snapshot::saved_config::{
     RuntimeCaptureInit, RuntimeCaptureInput, RuntimeCaptureScript, RuntimeCaptureText,
-    SavedHostname, SavedInitSelection, SavedOrigin, SavedUnknownReason, SavedValue,
+    SavedHostname, SavedInitSelection, SavedOrigin, SavedRuntimeConfig, SavedScriptBacking,
+    SavedScriptMetadata, SavedUnknownReason, SavedValue,
 };
 use microsandbox_types::{SandboxRuntimeOptions, hostname_from_sandbox_name};
 use serde_json::Value;
@@ -109,6 +110,61 @@ impl<'a> RuntimeCaptureSource<'a> {
             init,
             scripts,
         })
+    }
+
+    /// Retain guest ownership and directory metadata independently of reusable defaults.
+    /// Only full capture needs this closure evidence; disk boot uses fresh runtime directories.
+    pub(super) fn script_backing(
+        &self,
+        runtime: &SavedRuntimeConfig,
+        full: bool,
+    ) -> MicrosandboxResult<Option<SavedValue<SavedScriptBacking>>> {
+        if !full {
+            return Ok(None);
+        }
+        let Some(ScriptBackingEvidence::Observed {
+            files,
+            runtime_directory,
+            scripts_directory,
+        }) = self.scripts
+        else {
+            return Ok(unknown(SavedUnknownReason::NotObserved));
+        };
+        if self.recorded.pointer("/runtime/scripts").is_none() {
+            return Ok(unknown(SavedUnknownReason::NotRecorded));
+        }
+        let backing = SavedScriptBacking {
+            runtime_directory: SavedScriptMetadata {
+                uid: runtime_directory.uid,
+                gid: runtime_directory.gid,
+                mode: runtime_directory.mode,
+            },
+            scripts_directory: SavedScriptMetadata {
+                uid: scripts_directory.uid,
+                gid: scripts_directory.gid,
+                mode: scripts_directory.mode,
+            },
+            files: files
+                .iter()
+                .map(|(name, file)| {
+                    (
+                        name.clone(),
+                        SavedScriptMetadata {
+                            uid: file.uid,
+                            gid: file.gid,
+                            mode: file.mode,
+                        },
+                    )
+                })
+                .collect(),
+        };
+        backing
+            .validate(runtime)
+            .map_err(|error| MicrosandboxError::InvalidConfig(error.to_string()))?;
+        Ok(Some(SavedValue::Value {
+            value: backing,
+            origin: SavedOrigin::Observed,
+        }))
     }
 
     /// Assemble nonserializable runtime input for `project_runtime_capture`.
