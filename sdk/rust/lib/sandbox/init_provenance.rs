@@ -95,6 +95,67 @@ mod tests {
     }
 
     #[test]
+    fn retained_overlay_and_reconstruction_preserve_init_intent_or_its_absence() {
+        let original = auto_from_image();
+        for recorded in [false, true] {
+            let mut raw = serde_json::to_value(original.clone_for_persistence()).unwrap();
+            if !recorded {
+                raw.as_object_mut().unwrap().remove("init_provenance");
+            }
+            for overlay in [false, true] {
+                let retained: SandboxConfig = serde_json::from_value(raw.clone()).unwrap();
+                let builder = if overlay {
+                    SandboxBuilder::new("replacement")
+                        // Equal paths do not establish that the old producer selected a path.
+                        .init("/init")
+                        .overlay(SandboxConfigPatch::from_present_fields(retained))
+                } else {
+                    SandboxBuilder::from(retained)
+                };
+                let rebuilt = builder.finish(None, None).unwrap();
+                assert_eq!(
+                    serde_json::to_value(&rebuilt.spec.init).unwrap(),
+                    serde_json::to_value(&original.spec.init).unwrap()
+                );
+                assert_eq!(
+                    rebuilt.init_provenance,
+                    recorded.then(|| original.init_provenance.clone().unwrap())
+                );
+                raw = serde_json::to_value(rebuilt.clone_for_persistence()).unwrap();
+                assert!(raw.get("init_provenance_unknown").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_init_declaration_can_replace_missing_historical_intent() {
+        let mut raw = serde_json::to_value(auto_from_image()).unwrap();
+        raw.as_object_mut().unwrap().remove("init_provenance");
+        let retained: SandboxConfig = serde_json::from_value(raw).unwrap();
+        let explicit = HandoffInit {
+            cmd: "/init".into(),
+            args: vec![],
+            env: vec![],
+        };
+        for builder in [
+            SandboxBuilder::from(retained.clone()).init("/init"),
+            SandboxBuilder::from(retained.clone()).init_with("/init", |init| init),
+            SandboxBuilder::from(retained.clone())
+                .overlay(SandboxConfigPatch::new().spec(SandboxSpecPatch::new().init(explicit))),
+            SandboxBuilder::from_spec_json(&serde_json::to_string(&retained.spec).unwrap())
+                .unwrap(),
+        ] {
+            let config = builder.finish(None, None).unwrap();
+            assert_eq!(
+                config.init_provenance,
+                Some(InitProvenance::Path {
+                    configured: "/init".into()
+                })
+            );
+        }
+    }
+
+    #[test]
     fn explicit_same_path_override_replaces_inherited_auto_intent() {
         let explicit = HandoffInit {
             cmd: "/init".into(),

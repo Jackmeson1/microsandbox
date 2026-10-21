@@ -155,11 +155,25 @@ impl SandboxBuilder {
             boot.thp |= patch.spec.resources.thp.is_some();
         });
         if let Some(init) = &patch.spec.init {
-            // Even an explicit same-path replacement ends inherited auto-selection intent.
-            patch.init_provenance = Some(InitProvenance::from_init(Some(init)));
+            // Replacement must not borrow evidence from the destination, even for the
+            // same path. Retained auto intent stays auto; only fresh declarations infer it.
+            self.config.init_provenance = None;
+            if patch.init_provenance_unknown == Some(true)
+                || patch
+                    .init_provenance
+                    .as_ref()
+                    .is_some_and(|origin| !origin.matches(Some(init)))
+            {
+                patch.init_provenance = None;
+                patch.init_provenance_unknown = Some(true);
+            } else if patch.init_provenance.is_none() {
+                patch.init_provenance = Some(InitProvenance::from_init(Some(init)));
+                patch.init_provenance_unknown = Some(false);
+            }
         }
         if patch.spec.runtime.cmd.is_some() {
-            // A caller explicitly re-declares CMD, even when equal to an earlier invocation.
+            // Clear destination evidence. The patch can restore matching retained intent
+            // or its unknown guard; a fresh declaration establishes new defaults.
             self.config.command_provenance = None;
             self.config.command_provenance_unknown = Some(false);
             if self.config.launch_cmd_before_override.is_some() {
@@ -223,6 +237,7 @@ impl SandboxBuilder {
         builder.config.http_defaults_implicit = Some(implicit_http);
         // This API accepts an explicit new task declaration, not a retained sandbox record.
         builder.config.command_provenance_unknown = Some(false);
+        builder.config.init_provenance_unknown = Some(false);
         builder.config.environment_provenance_unknown = Some(false);
         builder.config.field_presence_unknown = Some(false);
         Ok(builder)
@@ -834,6 +849,7 @@ impl SandboxBuilder {
             .declare_init(self.config.spec.init.as_ref());
         self.config.init_provenance =
             Some(InitProvenance::from_init(self.config.spec.init.as_ref()));
+        self.config.init_provenance_unknown = Some(false);
         self
     }
 
@@ -874,6 +890,7 @@ impl SandboxBuilder {
             .init_env = origins;
         self.config.init_provenance =
             Some(InitProvenance::from_init(self.config.spec.init.as_ref()));
+        self.config.init_provenance_unknown = Some(false);
         self
     }
 
@@ -2855,6 +2872,10 @@ impl From<SandboxConfig> for SandboxBuilder {
             .command_provenance
             .as_ref()
             .is_none_or(|origin| !origin.matches(&config.spec.runtime.cmd));
+        config.init_provenance_unknown = config
+            .init_provenance
+            .as_ref()
+            .is_none_or(|origin| !origin.matches(config.spec.init.as_ref()));
         let env = std::mem::take(&mut config.spec.env);
         let shell = config.spec.runtime.shell.take();
         let log_level = config.spec.runtime.log_level.take();
@@ -3174,8 +3195,19 @@ mod tests {
                     .unwrap();
                 let mut actual_launch = serde_json::to_value(&actual).unwrap();
                 let mut expected_launch = serde_json::to_value(&expected).unwrap();
-                // Private environment/presence evidence has separate tests; prior launch fields
-                // must still match the historical image-resolution path exactly.
+                // Reconstruction must not invent private init intent, while the concrete
+                // launch still matches fresh image resolution. Other private evidence has
+                // separate tests and is not part of the guest launch contract.
+                assert!(actual.init_provenance.is_none());
+                assert!(expected.init_provenance.is_some());
+                actual_launch
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("init_provenance");
+                expected_launch
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("init_provenance");
                 actual_launch
                     .as_object_mut()
                     .unwrap()

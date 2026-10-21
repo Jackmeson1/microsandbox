@@ -259,6 +259,50 @@ fn rebuilt_historical_environment_requires_bindings_before_capture() {
 }
 
 #[test]
+fn rebuilt_historical_command_and_init_intent_stay_unknown_at_capture() {
+    let mut raw = source();
+    for key in ["command_provenance", "init_provenance"] {
+        raw.as_object_mut().unwrap().remove(key);
+    }
+    let historical: SandboxConfig = serde_json::from_value(raw).unwrap();
+    let rebuilt = SandboxBuilder::new("rebuilt")
+        .overlay(SandboxConfigPatch::from_present_fields(historical))
+        .finish(None, None)
+        .unwrap();
+    let raw = serde_json::to_value(rebuilt.clone_for_persistence()).unwrap();
+    let adapter = RuntimeCaptureSource::from_recorded(&raw, None, None).unwrap();
+    // Unknown init intent has no reusable init environment to bind. Workload
+    // environment remains independently available and still needs its binding.
+    let controls = BTreeMap::from([(
+        RuntimeCaptureTarget::EnvKey("host".into()),
+        RuntimeCaptureAction::Bind("host-input".into()),
+    )]);
+    let projected = project_runtime_capture(
+        adapter.input(),
+        Some(adapter.pending_input()),
+        &controls,
+        false,
+    )
+    .unwrap();
+    let pending = projected.pending.unwrap();
+    assert!(matches!(
+        pending.init,
+        Some(SavedValue::Unknown {
+            reason: SavedUnknownReason::NotRecorded
+        })
+    ));
+    for section in [projected.active, pending] {
+        assert!(matches!(
+            section.cmd,
+            Some(SavedValue::Unknown {
+                reason: SavedUnknownReason::NotRecorded
+            })
+        ));
+        assert!(!serde_json::to_string(&section).unwrap().contains("PRIVATE"));
+    }
+}
+
+#[test]
 fn pending_source_requires_env_provenance_and_does_not_infer_reusable_cmd() {
     let mut raw = source();
     raw.as_object_mut()
