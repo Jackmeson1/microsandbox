@@ -1994,6 +1994,7 @@ jobs:
           path: sdk/python/dist/
 
       - name: Install Python development environment
+        id: python_ready
         working-directory: sdk/python
         run: |
           uv sync --group dev --no-install-project
@@ -2011,7 +2012,8 @@ jobs:
           uv run --project sdk/python --no-sync pytest --import-mode=importlib -n 2 --dist loadscope sdk/python/integration
 
       - name: Python managed-job and null-stdin regression
-        if: ${{ !cancelled() }}
+        # Run after test failures only when artifacts and the Python environment are ready.
+        if: ${{ !cancelled() && steps.python_ready.outcome == 'success' }}
         timeout-minutes: 5
         run: |
           chmod +x build/msb build/agentd
