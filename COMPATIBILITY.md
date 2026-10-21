@@ -661,3 +661,8 @@ These helpers add no receipt fields, catalog migration, runtime request, protoco
 ### Resource and execution capture projection (unreleased)
 
 Internal source projection now preserves resource observation reasons and reusable execution policy. Effective CPU/memory input must be observed or explicitly unknown; configured targets/defaults are rejected as observation evidence. Missing historical ceilings, THP, security, process limits or lifetime distinctions remain unknown. Label exclusions run before portable label construction, and system identity labels, host placement/profile names and ephemeral ownership are excluded. This adds no persisted field, catalog migration, SDK/runtime request or archive behavior. Portable emission and activation remain disabled while the complete source/destination pipeline is unfinished.
+
+
+## Guarded network capture projection
+
+The internal saved-config source adapter projects only portable network policy and logical destination requirements. It does not write metadata, change catalog or launch contracts, dispatch network operations or enable saved-config activation. Missing historical fields, including nested fields otherwise supplied by serde defaults, remain unknown; an explicitly recorded null remains distinct. Existing persisted TCP-count and TLS aliases are preserved. Source interface allocations, host endpoints/listeners, secret values/source references and CA paths/keys do not enter the projection. Binding inventory and full-resume backing remain caller obligations under the capture guard. No release, version bump or new private presence protocol is introduced.
