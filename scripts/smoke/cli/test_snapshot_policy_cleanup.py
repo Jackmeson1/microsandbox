@@ -88,6 +88,7 @@ class CleanupTests(unittest.TestCase):
                                 try:
                                     os.killpg(int(pid_file.read_text()), signal.SIGKILL)
                                 except ProcessLookupError:
+                                    # The process group may already have exited during teardown.
                                     pass
                             process.kill()
                             process.communicate()

@@ -505,9 +505,11 @@ async fn disk_only_restore_from_full_archive_passes_admission() {
 
     // Match the public restore builder: the reference is resolved during preparation.
     let builder = SandboxBuilder::new("disk-only-child")
-        .network(|network| network.http(|http| http.deny_response(false)))
         .with_snapshot_reference(SnapshotReference::path(archive.to_string_lossy()))
         .disk_only();
+    // Only network-enabled builds need the historical HTTP-denial override.
+    #[cfg(feature = "net")]
+    let builder = builder.network(|network| network.http(|http| http.deny_response(false)));
     let error = match backend
         .create_sandbox(backend.clone(), builder, SpawnMode::Attached, None)
         .await

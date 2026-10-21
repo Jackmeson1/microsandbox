@@ -469,7 +469,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", feature = "net"))]
     #[test]
     fn destination_proxy_preserves_guest_identity_and_policy() {
         let builder = Sandbox::restore("saved")
