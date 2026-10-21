@@ -36,6 +36,9 @@ pub mod jobs;
 pub(crate) mod metrics;
 #[cfg(feature = "local")]
 mod modify;
+mod mount_presence;
+#[cfg(all(test, feature = "local"))]
+mod mount_presence_tests;
 #[cfg(feature = "local")]
 mod patch;
 #[cfg(all(feature = "local", windows))]

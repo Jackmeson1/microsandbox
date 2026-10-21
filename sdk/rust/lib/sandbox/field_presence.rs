@@ -3,8 +3,13 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use microsandbox_types::{NetworkSpec, SandboxSpec, SandboxSpecPatch, TransparentHugePagePolicy};
+use microsandbox_types::{
+    NetworkSpec, SandboxSpec, SandboxSpecPatch, TransparentHugePagePolicy, VolumeMount,
+};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use super::mount_presence::DefaultMountOwnership;
 
 //--------------------------------------------------------------------------------------------------
 // Constants
@@ -52,6 +57,8 @@ pub(crate) enum AbsentNetworkField {
 pub(crate) struct FieldPresence {
     thp: Option<TransparentHugePagePolicy>,
     absent_network: BTreeSet<AbsentNetworkField>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    default_mount_ownership: BTreeSet<DefaultMountOwnership>,
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -99,6 +106,11 @@ impl FieldPresence {
         Self {
             thp: Some(spec.resources.thp),
             absent_network,
+            default_mount_ownership: spec
+                .mounts
+                .iter()
+                .filter_map(DefaultMountOwnership::for_mount)
+                .collect(),
         }
     }
 
@@ -111,6 +123,35 @@ impl FieldPresence {
             self.thp = other.thp;
         }
         self.absent_network.extend(other.absent_network);
+        self.default_mount_ownership
+            .extend(other.default_mount_ownership);
+    }
+
+    pub(crate) fn clear_mounts(&mut self) {
+        self.default_mount_ownership.clear();
+    }
+
+    pub(crate) fn declare_mount(&mut self, mount: &VolumeMount) {
+        if let Some(key) = DefaultMountOwnership::for_mount(mount) {
+            self.default_mount_ownership.insert(key);
+        }
+    }
+
+    pub(crate) fn knows_default_mount_ownership(&self, mount: &VolumeMount) -> bool {
+        DefaultMountOwnership::for_mount(mount)
+            .is_some_and(|key| self.default_mount_ownership.contains(&key))
+    }
+
+    /// Clear a lost options parent before typed defaults can manufacture it on a rewrite.
+    pub(crate) fn retain_recorded_mounts(&mut self, mounts: Option<&Value>) {
+        let recorded: BTreeSet<_> = mounts
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(DefaultMountOwnership::recorded_options)
+            .collect();
+        self.default_mount_ownership
+            .retain(|key| recorded.contains(key));
     }
 
     pub(crate) fn knows_thp(&self, spec: &SandboxSpec) -> bool {
@@ -129,6 +170,13 @@ impl FieldPresence {
         }
         self.absent_network
             .retain(|field| field.is_absent(&spec.network));
+        let current: BTreeSet<_> = spec
+            .mounts
+            .iter()
+            .filter_map(DefaultMountOwnership::for_mount)
+            .collect();
+        self.default_mount_ownership
+            .retain(|key| current.contains(key));
     }
 
     /// A missing parent is not a serializer-omitted child. Discard its evidence before
@@ -145,6 +193,14 @@ impl FieldPresence {
     /// Only an actual nullable clear establishes absence. Ordinary patch omissions inherit
     /// values and must not be promoted to declarations during historical reconstruction.
     pub(crate) fn apply_explicit(&mut self, patch: &SandboxSpecPatch) {
+        if let Some(mounts) = &patch.mounts {
+            // An explicit replacement declares only the supplied list. Reconstruction
+            // patches are filtered by the caller before reaching this method.
+            self.default_mount_ownership = mounts
+                .iter()
+                .filter_map(DefaultMountOwnership::for_mount)
+                .collect();
+        }
         if let Some(thp) = patch.resources.thp {
             self.thp = Some(thp);
         }
@@ -180,7 +236,7 @@ mod tests {
     use crate::sandbox::SandboxBuilder;
     use crate::snapshot::saved_config::{
         NetworkCaptureBindings, NetworkCaptureControls, ResourceCaptureObservation,
-        RuntimeCaptureSource,
+        RuntimeCaptureSource, StorageCaptureBindings,
     };
     use crate::{SandboxConfig, SandboxConfigPatch};
 
@@ -433,6 +489,15 @@ mod tests {
             )
             .unwrap();
             let source = RuntimeCaptureSource::from_recorded(&record, None, None).unwrap();
+            if record["mounts"]
+                .as_array()
+                .is_some_and(|mounts| !mounts.is_empty())
+            {
+                let storage = source
+                    .project_pending_storage(StorageCaptureBindings::default())
+                    .unwrap();
+                assert_eq!(storage.mounts.unwrap().value().is_some(), known, "{name}");
+            }
             let network = source
                 .project_network(
                     NetworkCaptureBindings::default(),
