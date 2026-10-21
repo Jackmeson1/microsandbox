@@ -734,7 +734,7 @@ if operations is not None:
 async def resize_operations(self) -> list[ResizeOperation]
 ```
 
-Read the latest recorded operation per resource without changing targets. An empty list means no recorded request. Each record contains `id`, `runtime_boot_id`, `generation`, `requested_target`, `accepted_target`, `status`, `outcome` and `observation`. Targets use `ResourceKind.CPUS` with `online`, or `ResourceKind.MEMORY` with `total_mib`. Status retains requested/actual/enforced quantities and convergence state. Outcome is `ResizeOutcome.PENDING`, `APPLIED` or `SUPERSEDED`; observation is `ResizeObservation.AVAILABLE`, `UNSUPPORTED`, `PAUSED` or `UNAVAILABLE`.
+Read the latest recorded operation per resource without changing targets. Reads return retained evidence and request a background refresh; they do not wait for a new guest sample. Use an operation-specific wait to await confirmed completion. An empty list means no recorded request. Each record contains `id`, `runtime_boot_id`, `generation`, `requested_target`, `accepted_target`, `status`, `outcome` and `observation`. Targets use `ResourceKind.CPUS` with `online`, or `ResourceKind.MEMORY` with `total_mib`. Status retains requested/actual/enforced quantities and convergence state. Outcome is `ResizeOutcome.PENDING`, `APPLIED` or `SUPERSEDED`; observation is `ResizeObservation.AVAILABLE`, `UNSUPPORTED`, `PAUSED` or `UNAVAILABLE`.
 
 #### <span className="msb-recv">sb.</span><span className="msb-hn">wait_for_resize_operations()</span>
 

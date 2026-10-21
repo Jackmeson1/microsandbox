@@ -674,7 +674,7 @@ if result.ResizeOperations != nil {
 func (s *Sandbox) ResizeOperations(ctx context.Context) ([]ResizeOperation, error)
 ```
 
-Read the latest operation per resource without changing targets. Empty means no recorded request. Each record contains `ID`, `RuntimeBootID`, `Generation`, `RequestedTarget`, `AcceptedTarget`, `Status`, `Outcome` and `Observation`. Generation is uint64. Targets contain `Resource` with either `Online` (CPU count) or `TotalMiB` (uint64 memory allocation). Status preserves requested, actual, enforced and convergence quantities. Outcome is `ResizePending`, `ResizeApplied` or `ResizeSuperseded`; observation is available, unsupported, paused or unavailable. JSON round trips through these typed structs preserve integer precision.
+Read the latest operation per resource without changing targets. Reads return retained evidence and request a background refresh; they do not wait for a new guest sample. Use an operation-specific wait to await confirmed completion. Empty means no recorded request. Each record contains `ID`, `RuntimeBootID`, `Generation`, `RequestedTarget`, `AcceptedTarget`, `Status`, `Outcome` and `Observation`. Generation is uint64. Targets contain `Resource` with either `Online` (CPU count) or `TotalMiB` (uint64 memory allocation). Status preserves requested, actual, enforced and convergence quantities. Outcome is `ResizePending`, `ResizeApplied` or `ResizeSuperseded`; observation is available, unsupported, paused or unavailable. JSON round trips through these typed structs preserve integer precision.
 
 #### <span className="msb-recv">sb.</span><span className="msb-hn">WaitForResizeOperations()</span>
 

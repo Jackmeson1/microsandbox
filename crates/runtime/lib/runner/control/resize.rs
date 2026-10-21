@@ -70,6 +70,16 @@ impl ResizeTracker {
             .collect()
     }
 
+    /// A retained completion is historical evidence; only unfinished operations lose
+    /// their live observation while execution is paused or otherwise unavailable.
+    pub fn mark_pending_paused(&mut self) {
+        for record in self.records.values_mut() {
+            if record.outcome == ResizeOutcome::Pending {
+                record.observation = ResizeObservation::Paused;
+            }
+        }
+    }
+
     /// Must be checked before dispatch. Exhaustion cannot follow an applied mutation.
     pub fn admits(&self, target: &ResizeTarget) -> bool {
         self.generations[index(target)] < u64::MAX
@@ -201,6 +211,40 @@ mod tests {
             status(&target, ResourceConvergenceState::Accepted),
         )
     }
+    #[test]
+    fn pause_invalidates_only_pending_observations_and_preserves_history() {
+        let mut tracker = ResizeTracker::new("boot".into());
+        let completed = accept(&mut tracker, "completed", ResizeTarget::Cpus { online: 2 });
+        tracker.observed(
+            &completed.id,
+            completed.generation,
+            status(
+                &completed.accepted_target,
+                ResourceConvergenceState::Applied,
+            ),
+            ResizeObservation::Available,
+        );
+        let completed = tracker.get("completed").unwrap().clone();
+        accept(
+            &mut tracker,
+            "old-memory",
+            ResizeTarget::Memory { total_mib: 512 },
+        );
+        let pending = accept(
+            &mut tracker,
+            "new-memory",
+            ResizeTarget::Memory { total_mib: 768 },
+        );
+        let superseded = tracker.get("old-memory").unwrap().clone();
+        tracker.mark_pending_paused();
+        assert_eq!(tracker.get("completed"), Some(&completed));
+        assert_eq!(tracker.get("old-memory"), Some(&superseded));
+        let paused = tracker.get("new-memory").unwrap();
+        assert_eq!(paused.outcome, ResizeOutcome::Pending);
+        assert_eq!(paused.status, pending.status);
+        assert_eq!(paused.observation, ResizeObservation::Paused);
+    }
+
     #[test]
     fn failed_or_intervening_mutations_invalidate_query_evidence_without_changing_operations() {
         let mut tracker = ResizeTracker::new("boot".into());

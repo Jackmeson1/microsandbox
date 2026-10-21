@@ -635,7 +635,7 @@ if (result.resizeOperations !== null) {
 resizeOperations(): Promise<ResizeOperation[]>
 ```
 
-Read the latest recorded operation per resource without changing targets. An empty list means no recorded request. Records contain `id`, `runtimeBootId`, `generation`, `requestedTarget`, `acceptedTarget`, `status`, `outcome` and `observation`. Generation is a `bigint`; memory targets use `{ resource: "memory", totalMib: bigint }`, and CPU targets use `{ resource: "cpus", online: number }`. Status preserves requested, actual, enforced and convergence quantities. Outcome is `pending`, `applied` or `superseded`; observation is `available`, `unsupported`, `paused` or `unavailable`.
+Read the latest recorded operation per resource without changing targets. Reads return retained evidence and request a background refresh; they do not wait for a new guest sample. Use an operation-specific wait to await confirmed completion. An empty list means no recorded request. Records contain `id`, `runtimeBootId`, `generation`, `requestedTarget`, `acceptedTarget`, `status`, `outcome` and `observation`. Generation is a `bigint`; memory targets use `{ resource: "memory", totalMib: bigint }`, and CPU targets use `{ resource: "cpus", online: number }`. Status preserves requested, actual, enforced and convergence quantities. Outcome is `pending`, `applied` or `superseded`; observation is `available`, `unsupported`, `paused` or `unavailable`.
 
 Keep bigint fields intact when storing records for reconnection; ordinary `JSON.stringify` cannot serialize bigint. Use a bigint-aware serializer that restores those fields as bigint, not JavaScript numbers.
 

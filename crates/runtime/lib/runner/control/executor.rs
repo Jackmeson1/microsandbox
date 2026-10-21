@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use microsandbox_protocol::bootstrap::GuestBootstrap;
 use microsandbox_protocol::control::ControlError as FramedControlError;
-use microsandbox_protocol::resize::{ResizeOutcome, ResizeRequest, ResizeResponse, ResizeTarget};
+use microsandbox_protocol::resize::{ResizeRequest, ResizeResponse, ResizeTarget};
 use microsandbox_types::modify::{ResourceConvergenceState, ResourceKind, ResourceResizeStatus};
 use rand::Rng as _;
 use sha2::{Digest as _, Sha256};
@@ -261,20 +261,17 @@ impl RuntimeControlExecutor {
                 "resize identity must be nonempty printable ASCII of at most 128 bytes",
             ));
         }
-        // Never retain mutation authority while waiting for guest I/O. Another setter or
-        // lifecycle operation may run; the observer fences its result before publication.
-        let refresh = match &request {
-            ResizeRequest::Read { id, .. } => state
-                .resize
-                .get(id)
-                .is_some_and(|record| record.outcome == ResizeOutcome::Pending),
-            ResizeRequest::Current { .. } => true,
-            _ => false,
-        };
-        if refresh {
-            drop(state);
-            self.signal_runtime.block_on(self.refresh_resize(false));
-            state = self.state.lock().unwrap();
+        // The dispatcher serializes ordinary requests across connections. Releasing
+        // `state` before a synchronous guest query would still block that queue. Reads
+        // return retained evidence and coalesce a wake for the existing observer instead.
+        if matches!(
+            &request,
+            ResizeRequest::Read { .. } | ResizeRequest::Current { .. }
+        ) {
+            if state.lifecycle != RuntimeLifecycle::Running || state.user_pause.is_some() {
+                state.resize.mark_pending_paused();
+            }
+            self.resize_observer.wake.notify_one();
         }
         let operations = match request {
             ResizeRequest::Hello => Vec::new(),
@@ -1156,3 +1153,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "resize_read_tests.rs"]
+mod resize_read_tests;

@@ -67,7 +67,7 @@ impl RuntimeControlExecutor {
                 let Some(executor) = weak.upgrade() else {
                     break;
                 };
-                executor.refresh_resize(true).await;
+                executor.refresh_resize().await;
                 let retry = executor.retry_resize_observation();
                 drop(executor);
                 // Notify retains a permit if a setter races this transition to sleep. A
@@ -84,10 +84,10 @@ impl RuntimeControlExecutor {
         });
     }
 
-    /// Background and explicit reads share one query gate and one CPU/memory response.
-    pub(super) async fn refresh_resize(&self, background: bool) {
-        // An in-flight query will publish its own result. Return the retained state rather
-        // than adding its deadline to this reader's deadline or queueing duplicate queries.
+    /// One background query covers both resources; control reads only wake this worker.
+    pub(super) async fn refresh_resize(&self) {
+        // A wake coalesces with the in-flight query. Never queue an additional guest
+        // request or retain mutation authority while waiting for its response.
         let Ok(_query) = self.resize_observer.query.try_lock() else {
             return;
         };
@@ -101,10 +101,7 @@ impl RuntimeControlExecutor {
                 .resize
                 .current()
                 .into_iter()
-                .filter(|record| {
-                    record.outcome == ResizeOutcome::Pending
-                        && (!background || automatic_observation(record))
-                })
+                .filter(automatic_observation)
                 .collect();
             if records.is_empty()
                 && !self
@@ -115,14 +112,7 @@ impl RuntimeControlExecutor {
                 return;
             }
             if state.lifecycle != RuntimeLifecycle::Running || state.user_pause.is_some() {
-                for record in records {
-                    state.resize.observed(
-                        &record.id,
-                        record.generation,
-                        record.status,
-                        ResizeObservation::Paused,
-                    );
-                }
+                state.resize.mark_pending_paused();
                 return;
             }
             (state.resize.observation_fence(), records)
