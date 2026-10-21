@@ -2,6 +2,10 @@
 //!
 //! No launch path calls this module until complete policy and deferred-exec enforcement land.
 
+#[cfg(feature = "local")]
+mod capture;
+#[cfg(all(test, feature = "local"))]
+mod capture_tests;
 mod configuration;
 #[cfg(test)]
 mod configuration_tests;
@@ -89,6 +93,8 @@ mod types;
 // Re-Exports
 //--------------------------------------------------------------------------------------------------
 
+#[cfg(feature = "local")]
+pub use capture::{CaptureDocumentRequest, PendingCaptureSections};
 pub use configuration::{
     SavedConfigurationClears, SavedConfigurationContext, SavedConfigurationPlan,
     SavedConfigurationRequest, prepare_saved_configuration,

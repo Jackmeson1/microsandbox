@@ -12,11 +12,13 @@ use microsandbox_runtime::retention::{
 };
 
 use microsandbox_types::snapshot::saved_config::{
-    MAX_SAVED_CONFIG_ENTRIES, MAX_SAVED_SCRIPT_BYTES, MAX_SAVED_SCRIPTS_BYTES,
+    MAX_SAVED_CONFIG_ENTRIES, MAX_SAVED_SCRIPT_BYTES, MAX_SAVED_SCRIPTS_BYTES, SavedOrigin,
+    SavedSandboxConfig, SavedValue,
 };
 
 use crate::backend::{ControlSession, LocalBackend};
 use crate::sandbox::SandboxConfig;
+use crate::snapshot::saved_config::{CaptureDocumentRequest, RuntimeCaptureSource};
 use crate::{MicrosandboxError, MicrosandboxResult};
 
 use super::stopped_script_backing::StoppedScriptObservation;
@@ -109,6 +111,32 @@ impl CapturedSandboxConfiguration {
 
     pub(crate) fn configuration(&self) -> &SandboxConfig {
         &self.configuration
+    }
+
+    /// Assemble only from this immutable receipt/guard selection. Do not reload current
+    /// catalog intent or infer generation from a mutable sidecar during projection.
+    /// Publication remains disabled until complete destination enforcement is available.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "portable publication remains gated")
+    )]
+    pub(crate) fn project_document(
+        &self,
+        request: CaptureDocumentRequest<'_>,
+    ) -> MicrosandboxResult<SavedSandboxConfig> {
+        let raw = self
+            .source
+            .source
+            .as_ref()
+            .ok_or_else(|| invalid("capture has no recorded source"))?;
+        RuntimeCaptureSource::from_recorded(raw, self.init.as_ref(), self.scripts.as_ref())?
+            .project_document(
+                request,
+                SavedValue::Value {
+                    value: self.source.generation.to_string(),
+                    origin: SavedOrigin::Observed,
+                },
+            )
     }
 
     fn validate_init_observation(&self) -> MicrosandboxResult<()> {
@@ -439,7 +467,10 @@ mod tests {
 
     #[test]
     fn receipt_selects_captured_configuration_without_consulting_current_generation() {
-        let fixture = Fixture::new();
+        let mut fixture = Fixture::new();
+        // A real captured sandbox has a valid name; the minimal receipt fixture's
+        // empty default cannot establish a valid generated guest hostname.
+        fixture.value["source"]["source"]["name"] = serde_json::json!("captured-source");
         // These files deliberately disagree. Neither is authoritative for an immutable capture.
         std::fs::write(
             fixture.home.path().join("last-active/state.json"),
@@ -456,6 +487,54 @@ mod tests {
             selected.configuration().spec.runtime.user.as_deref(),
             Some("captured-user")
         );
+        // Assembly must retain the same immutable source/generation even though the
+        // mutable state and pending files above are intentionally unreadable JSON.
+        let descriptor: crate::snapshot::Manifest = serde_json::from_value(serde_json::json!({
+            "schema":"microsandbox.snapshot/1", "snapshot_id":"snap_0123456789abcdef0123456789abcdef", "scope":"file",
+            "state":{"kind":"file","disk_format":"raw","filesystem":"ext4","virtual_size":4,"head":"layer_0123456789abcdef0123456789abcdef",
+              "layers":[{"layer_id":"layer_0123456789abcdef0123456789abcdef","format":"raw","virtual_size":4,"backing":null,"payload":{"file_kind":"regular","integrity":null}}]},
+            "capture":{"created_at":"2026-08-29T00:00:00Z","source_lineage":null,"source_checkpoint":null,"consistency":"crash-consistent"},
+            "image":{"reference":"alpine:latest","manifest_digest":format!("sha256:{}","a".repeat(64))},
+            "parent":null,"requires":[],"extensions":{}
+        })).unwrap();
+        let runtime_controls = std::collections::BTreeMap::new();
+        let execution_controls = crate::snapshot::saved_config::ExecutionCaptureControls::default();
+        let network_controls = crate::snapshot::saved_config::NetworkCaptureControls::default();
+        let document = selected
+            .project_document(CaptureDocumentRequest {
+                manifest: &descriptor,
+                resources: Default::default(),
+                network: Default::default(),
+                storage: Default::default(),
+                runtime_controls: &runtime_controls,
+                execution_controls: &execution_controls,
+                network_controls: &network_controls,
+                pending: None,
+                include_source_name: false,
+                construction_resources: None,
+            })
+            .unwrap();
+        assert_eq!(
+            document
+                .provenance
+                .active_generation
+                .value()
+                .map(String::as_str),
+            Some("2")
+        );
+        assert_eq!(
+            document
+                .active
+                .runtime
+                .user
+                .as_ref()
+                .and_then(SavedValue::value)
+                .map(String::as_str),
+            Some("captured-user")
+        );
+        let encoded = serde_json::to_value(&document).unwrap();
+        assert!(encoded["provenance"].get("runtime_boot_id").is_none());
+        assert!(encoded["provenance"].get("catalog_file").is_none());
     }
 
     #[test]
