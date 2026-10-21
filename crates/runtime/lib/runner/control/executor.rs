@@ -6,6 +6,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use microsandbox_protocol::bootstrap::GuestBootstrap;
+use microsandbox_protocol::control::ControlError as FramedControlError;
+use microsandbox_protocol::resize::{ResizeOutcome, ResizeRequest, ResizeResponse, ResizeTarget};
+use microsandbox_types::modify::{ResourceConvergenceState, ResourceKind, ResourceResizeStatus};
 use rand::Rng as _;
 use sha2::{Digest as _, Sha256};
 
@@ -15,10 +19,6 @@ use crate::checkpoint::{CheckpointCoordinator, CheckpointResult, UserPause};
 use crate::control::*;
 use crate::metrics::ConfirmedMemoryLimit;
 use crate::vm::VmConfig;
-use microsandbox_protocol::bootstrap::GuestBootstrap;
-use microsandbox_protocol::control::ControlError as FramedControlError;
-use microsandbox_protocol::resize::{ResizeOutcome, ResizeRequest, ResizeResponse, ResizeTarget};
-use microsandbox_types::modify::{ResourceConvergenceState, ResourceKind, ResourceResizeStatus};
 
 //--------------------------------------------------------------------------------------------------
 // Constants

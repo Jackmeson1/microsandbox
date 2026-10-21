@@ -9,6 +9,10 @@ use microsandbox_protocol::{
     },
 };
 
+//--------------------------------------------------------------------------------------------------
+// Tests
+//--------------------------------------------------------------------------------------------------
+
 #[test]
 fn host_advertisement_preserves_ready_and_is_not_inferred_from_guest_fields() {
     let ready = Ready {

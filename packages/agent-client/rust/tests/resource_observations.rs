@@ -16,6 +16,10 @@ use microsandbox_protocol::{
 };
 use tokio::io::{AsyncWriteExt, DuplexStream};
 
+//--------------------------------------------------------------------------------------------------
+// Functions
+//--------------------------------------------------------------------------------------------------
+
 async fn peer(generation: u8, relay: Option<u8>) -> (AgentClient, DuplexStream) {
     let (host, mut guest) = tokio::io::duplex(16384);
     guest.write_all(&1u32.to_be_bytes()).await.unwrap();
@@ -50,6 +54,10 @@ fn unavailable(query_id: [u8; 16]) -> ObservedResources {
         },
     }
 }
+
+//--------------------------------------------------------------------------------------------------
+// Tests
+//--------------------------------------------------------------------------------------------------
 
 #[tokio::test]
 async fn older_peer_gets_no_observation_request_and_remains_usable() {
