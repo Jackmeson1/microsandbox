@@ -3,12 +3,13 @@
 use std::collections::BTreeMap;
 
 use microsandbox_types::snapshot::saved_config::{
-    RuntimeCaptureAction, RuntimeCaptureInput, RuntimeCaptureTarget, SAVED_CONFIG_SCHEMA_VERSION,
-    SavedActiveConfig, SavedBindingKind, SavedCaptureProvenance, SavedExecutionConfig,
-    SavedNetworkConfig, SavedResourcesConfig, SavedSandboxConfig, SavedStorageConfig, SavedValue,
-    collect_binding_uses, project_runtime_capture,
+    MAX_SAVED_CONFIG_ENTRIES, RuntimeCaptureAction, RuntimeCaptureTarget,
+    SAVED_CONFIG_SCHEMA_VERSION, SavedActiveConfig, SavedBindingKind, SavedCaptureProvenance,
+    SavedResourcesConfig, SavedSandboxConfig, SavedValue, collect_binding_uses,
+    project_runtime_capture,
 };
 use microsandbox_types::snapshot::{Manifest, SnapshotScope};
+use serde_json::Value;
 
 use super::{
     ExecutionCaptureControls, NetworkCaptureBindings, NetworkCaptureControls,
@@ -20,25 +21,18 @@ use crate::{MicrosandboxError, MicrosandboxResult};
 // Types
 //--------------------------------------------------------------------------------------------------
 
-/// Already classified next-start intent, selected under the same capture guard. It must
-/// not be manufactured by treating a second desired configuration as observed active state.
-/// Runtime text remains nonserializable until the shared exclusions have been applied.
-/// Other sections must already have passed their source-aware sanitization/controls.
-pub struct PendingCaptureSections<'a> {
-    /// Classified requested runtime defaults, with unresolved observations left unknown.
-    pub runtime: RuntimeCaptureInput<'a>,
-    /// Desired targets may be configured here; they never supply active capacity.
-    pub resources: SavedResourcesConfig,
-    /// Sanitized next-start network intent and logical requirements only.
-    pub network: SavedNetworkConfig,
-    /// Sanitized next-start execution intent.
-    pub execution: SavedExecutionConfig,
-    /// Sanitized future storage requirements, never active captured backing evidence.
-    pub storage: SavedStorageConfig,
+/// Raw next-start intent selected under the same capture guard as active state.
+/// The assembler classifies every section and applies the document's exclusions before
+/// constructing portable values. This source supplies no active fallback or observation.
+/// No Debug/serialization: recorded configuration may contain host-private values.
+pub struct PendingCaptureSource<'a> {
+    source: RuntimeCaptureSource<'a>,
+    network: NetworkCaptureBindings,
+    storage: StorageCaptureBindings,
 }
 
 /// One source-side assembly request. The source adapter supplies all active sections;
-/// caller observations, descriptor and pending classification must share its capture cut.
+/// caller observations, descriptor and pending source must share its capture cut.
 /// This request contains no destination resource values or permission to activate them.
 pub struct CaptureDocumentRequest<'a> {
     /// Authoritative descriptor from the same capture, including existing owned backing.
@@ -51,12 +45,12 @@ pub struct CaptureDocumentRequest<'a> {
     pub storage: StorageCaptureBindings,
     /// Runtime omissions/bindings apply consistently to active and pending text.
     pub runtime_controls: &'a BTreeMap<RuntimeCaptureTarget, RuntimeCaptureAction>,
-    /// Optional active user-label exclusions.
+    /// User-label exclusions applied across both active and pending sources.
     pub execution_controls: &'a ExecutionCaptureControls,
-    /// Optional active network-response exclusions.
+    /// Network-response exclusions applied to both active and pending sources.
     pub network_controls: &'a NetworkCaptureControls,
-    /// Separately classified next-start intent; never active fallback.
-    pub pending: Option<PendingCaptureSections<'a>>,
+    /// Separately selected recorded next-start intent; never active fallback.
+    pub pending: Option<PendingCaptureSource<'a>>,
     /// Include the optional source-name provenance field. Captured guest hostname is
     /// independent and remains subject to its own runtime exclusion/full-state rules.
     pub include_source_name: bool,
@@ -68,10 +62,27 @@ pub struct CaptureDocumentRequest<'a> {
 // Methods
 //--------------------------------------------------------------------------------------------------
 
+impl<'a> PendingCaptureSource<'a> {
+    /// Decode recorded next-start intent without borrowing active init/script observations.
+    /// Logical requirements must describe this source, not the active backing inventory.
+    /// The caller still owns selection/generation coherence; no catalog or file is read here.
+    pub fn from_recorded(
+        recorded: &'a Value,
+        network: NetworkCaptureBindings,
+        storage: StorageCaptureBindings,
+    ) -> MicrosandboxResult<Self> {
+        Ok(Self {
+            source: RuntimeCaptureSource::from_recorded(recorded, None, None)?,
+            network,
+            storage,
+        })
+    }
+}
+
 impl RuntimeCaptureSource<'_> {
     /// Project one document from this source, deriving its binding inventory from actual
     /// sanitized references. The generation must be supplied by the coherent capture owner;
-    /// this pure projection cannot establish freshness, pending classification or backing.
+    /// this pure projection cannot establish freshness, coherent pending selection or backing.
     /// No manifest extension is written and no capability is advertised by this method.
     pub fn project_document(
         &self,
@@ -90,28 +101,18 @@ impl RuntimeCaptureSource<'_> {
             include_source_name,
             construction_resources,
         } = request;
-        let (pending_runtime, pending_sections) = match pending {
-            Some(PendingCaptureSections {
-                runtime,
-                resources,
-                network,
-                execution,
-                storage,
-            }) => (
-                Some(runtime),
-                Some(SavedActiveConfig {
-                    resources,
-                    network,
-                    execution,
-                    storage,
-                    ..Default::default()
-                }),
-            ),
-            None => (None, None),
-        };
+        // Validate selectors against the union, then scope them to each recorded source.
+        // A key present only in pending must be removable without weakening typo detection.
+        let (active_execution, pending_execution) = partition_execution_controls(
+            self,
+            pending.as_ref().map(|pending| &pending.source),
+            execution_controls,
+        )?;
         let runtime = project_runtime_capture(
             self.input(),
-            pending_runtime,
+            pending
+                .as_ref()
+                .map(|pending| pending.source.pending_input()),
             runtime_controls,
             manifest.scope == SnapshotScope::Full,
         )
@@ -120,15 +121,25 @@ impl RuntimeCaptureSource<'_> {
             resources: self.project_resources(resources)?,
             runtime: runtime.active,
             network: self.project_network(network, network_controls)?,
-            execution: self.project_execution(execution_controls)?,
+            execution: self.project_execution(&active_execution)?,
             storage: self.project_storage(storage, manifest)?,
         };
-        let pending = pending_sections
-            .zip(runtime.pending)
-            .map(|(mut sections, runtime)| {
-                sections.runtime = runtime;
-                sections
-            });
+        let pending = match pending {
+            Some(pending) => Some(SavedActiveConfig {
+                resources: pending.source.project_pending_resources()?,
+                runtime: runtime.pending.ok_or_else(|| {
+                    MicrosandboxError::InvalidConfig(
+                        "SCFG_VALUE: sandbox-config: pending runtime projection is missing".into(),
+                    )
+                })?,
+                network: pending
+                    .source
+                    .project_network(pending.network, network_controls)?,
+                execution: pending.source.project_execution(&pending_execution)?,
+                storage: pending.source.project_pending_storage(pending.storage)?,
+            }),
+            None => None,
+        };
         // Build the inventory from references, not caller declarations. Shared IDs must
         // agree across every family and active/pending section; pending uses do not enter
         // activation demand, which the resolver derives separately from active settings.
@@ -168,6 +179,52 @@ impl RuntimeCaptureSource<'_> {
 //--------------------------------------------------------------------------------------------------
 // Functions
 //--------------------------------------------------------------------------------------------------
+
+fn partition_execution_controls(
+    active: &RuntimeCaptureSource<'_>,
+    pending: Option<&RuntimeCaptureSource<'_>>,
+    controls: &ExecutionCaptureControls,
+) -> MicrosandboxResult<(ExecutionCaptureControls, ExecutionCaptureControls)> {
+    if controls.omit_label_keys.len() > MAX_SAVED_CONFIG_ENTRIES {
+        return Err(MicrosandboxError::InvalidConfig(
+            "SCFG_LIMIT: sandbox-config: too many label exclusions".into(),
+        ));
+    }
+    if controls.omit_labels && !controls.omit_label_keys.is_empty() {
+        return Err(MicrosandboxError::InvalidConfig(
+            "SCFG_VALUE: sandbox-config: overlapping label exclusions".into(),
+        ));
+    }
+    let mut active_controls = ExecutionCaptureControls {
+        omit_labels: controls.omit_labels,
+        ..Default::default()
+    };
+    let mut pending_controls = ExecutionCaptureControls {
+        omit_labels: controls.omit_labels,
+        ..Default::default()
+    };
+    for key in &controls.omit_label_keys {
+        let active_match = label_is_recorded(active, key);
+        let pending_match = pending.is_some_and(|source| label_is_recorded(source, key));
+        if crate::sandbox::reserved_label_prefix(key).is_some() || (!active_match && !pending_match)
+        {
+            return Err(MicrosandboxError::InvalidConfig(
+                "SCFG_VALUE: sandbox-config: label exclusion did not match source".into(),
+            ));
+        }
+        if active_match {
+            active_controls.omit_label_keys.insert(key.clone());
+        }
+        if pending_match {
+            pending_controls.omit_label_keys.insert(key.clone());
+        }
+    }
+    Ok((active_controls, pending_controls))
+}
+
+fn label_is_recorded(source: &RuntimeCaptureSource<'_>, key: &str) -> bool {
+    source.recorded.get("labels").is_some() && source.config.spec.labels.contains_key(key)
+}
 
 fn add_bindings(
     inventory: &mut BTreeMap<String, SavedBindingKind>,
