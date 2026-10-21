@@ -187,7 +187,12 @@ impl SandboxBuilder {
             .environment_provenance
             .take()
             .unwrap_or_default();
-        let supplied_origin = patch.environment_provenance.take();
+        // An older retained record may have no evidence map at all. Supply an empty
+        // map in that case so historical replacements cannot borrow literal evidence
+        // from the destination or masquerade as fresh public declarations.
+        let supplied_origin = patch.environment_provenance.take().or_else(|| {
+            (patch.environment_provenance_unknown == Some(true)).then(Default::default)
+        });
         if let Some(env) = patch.spec.get_env() {
             for value in env {
                 origin.declare_env_input(&value.key, &value.value, supplied_origin.as_ref());
