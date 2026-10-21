@@ -420,6 +420,58 @@ mod tests {
     }
 
     #[test]
+    fn legacy_sparse_overlay_keeps_missing_workload_and_init_origins_unknown() {
+        let original = finish(
+            SandboxBuilder::new("legacy-source")
+                .image("alpine")
+                .host_env("HOST".into(), "PRIVATE_WORKLOAD".into())
+                .init_with("/init", |init| {
+                    init.host_env("INIT_HOST".into(), "PRIVATE_INIT".into())
+                }),
+        );
+        let expected_env = original.spec.env.clone();
+        let expected_init = original.spec.init.clone();
+        let mut raw = serde_json::to_value(original).unwrap();
+        raw.as_object_mut()
+            .unwrap()
+            .remove("environment_provenance");
+        for _ in 0..2 {
+            let legacy: SandboxConfig = serde_json::from_value(raw).unwrap();
+            let rebuilt = finish(
+                SandboxBuilder::new("destination")
+                    // Existing literal evidence for the same value must not certify a
+                    // historical replacement whose origin was never recorded.
+                    .env("HOST", "PRIVATE_WORKLOAD")
+                    .overlay(SandboxConfigPatch::from_present_fields(legacy)),
+            );
+            assert_eq!(rebuilt.spec.env, expected_env);
+            assert_eq!(
+                serde_json::to_value(&rebuilt.spec.init).unwrap(),
+                serde_json::to_value(&expected_init).unwrap()
+            );
+            assert!(origin(&rebuilt, "HOST", false) == Some(EnvironmentOrigin::Unknown));
+            assert!(origin(&rebuilt, "INIT_HOST", true) == Some(EnvironmentOrigin::Unknown));
+            assert!(
+                !rebuilt.environment_provenance.as_ref().unwrap().is_literal(
+                    "HOST",
+                    "PRIVATE_WORKLOAD",
+                    false
+                )
+            );
+            raw = serde_json::to_value(rebuilt.clone_for_persistence()).unwrap();
+        }
+        let retained: SandboxConfig = serde_json::from_value(raw).unwrap();
+        let explicit = finish(
+            SandboxBuilder::new("destination")
+                .overlay(SandboxConfigPatch::from_present_fields(retained))
+                .env("HOST", "PRIVATE_WORKLOAD")
+                .init_with("/init", |init| init.env("INIT_HOST", "PRIVATE_INIT")),
+        );
+        assert!(origin(&explicit, "HOST", false) == Some(EnvironmentOrigin::Literal));
+        assert!(origin(&explicit, "INIT_HOST", true) == Some(EnvironmentOrigin::Literal));
+    }
+
+    #[test]
     fn mismatched_origin_stays_unknown_across_resolution_and_init_inheritance() {
         let mut evidence = EnvironmentProvenance::default();
         evidence.declare_env("KEY", "original-private-value", EnvironmentOrigin::Host);

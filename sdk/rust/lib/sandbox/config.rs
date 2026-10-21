@@ -1319,6 +1319,10 @@ impl<'de> Deserialize<'de> for SandboxConfig {
         let mut config = Self::deserialize(value).map_err(serde::de::Error::custom)?;
         config.field_presence = presence;
         config.field_presence_unknown = true;
+        // Decoding retained configuration does not establish where its values came from.
+        // Matching evidence remains usable, but absent origins must stay unknown even
+        // when callers reconstruct a sparse patch directly instead of using From.
+        config.environment_provenance_unknown = true;
         if let Some(presence) = &mut config.field_presence {
             presence.retain_recorded_parents(resources_recorded, network_recorded);
             presence.retain_matching(&config.spec);

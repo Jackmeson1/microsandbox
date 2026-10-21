@@ -689,6 +689,8 @@ The optional local `field_presence` hint distinguishes known serializer-omitted 
 
 Older runtimes and SDKs continue using the existing configuration and catalog schema and may ignore or discard the hint. New restart/reconstruction never invents missing evidence. Active capture still requires exact retained-source/catalog equality and run/generation ownership, including after older writers modify the catalog. This is private evidence, not a new archive extension or capability claim, and portable saved-config emission/activation remains disabled pending completion of the destination consumers.
 
+Decoded retained configuration also keeps missing environment origins unknown through sparse builder overlays. A missing evidence map cannot certify workload or init environment values as literals, even if the destination previously declared the same values. Matching recorded origins remain usable, and a later explicit declaration can establish new literal evidence. Repeated persistence preserves that distinction. Guest environment values, existing launch/modify operations, catalog schemas and released protocols are unchanged; the gated capture projector requires bindings or exclusion for unknown origins.
+
 ## Recorded pending capture source
 
 The unshipped capture-assembly API replaces `PendingCaptureSections` with `PendingCaptureSource::from_recorded`: callers supply the selected raw next-start record and its logical network/storage bindings, and the assembler projects every pending section. Experimental callers of the prior draft helper must update that construction; released SDK signatures, catalog fields, runtime requests and artifact formats are unchanged. No raw configuration is serialized into a snapshot.

@@ -15,8 +15,8 @@ use super::{
     ResourceCaptureObservation, RuntimeCaptureSource, RuntimeDefaultClear, RuntimeDefaultSelection,
     RuntimeSelectionContext, SnapshotConfigMode, prepare_runtime_inputs, select_runtime_defaults,
 };
-use crate::SandboxConfigPatch;
 use crate::sandbox::SandboxBuilder;
+use crate::{SandboxConfig, SandboxConfigPatch};
 
 //--------------------------------------------------------------------------------------------------
 // Functions
@@ -205,6 +205,57 @@ fn pending_source_missing_fields_are_unknown_but_explicit_empty_is_known() {
     let pending = result.pending.unwrap();
     assert!(matches!(pending.init, Some(SavedValue::Default {})));
     assert!(pending.scripts.unwrap().value().unwrap().is_empty());
+}
+
+#[test]
+fn rebuilt_historical_environment_requires_bindings_before_capture() {
+    let mut raw = source();
+    raw.as_object_mut()
+        .unwrap()
+        .remove("environment_provenance");
+    let historical: SandboxConfig = serde_json::from_value(raw).unwrap();
+    let rebuilt = SandboxBuilder::new("rebuilt")
+        .overlay(SandboxConfigPatch::from_present_fields(historical))
+        .finish(None, None)
+        .unwrap();
+    let raw = serde_json::to_value(rebuilt.clone_for_persistence()).unwrap();
+    let init = InitObservation::Handoff {
+        path: "/init".into(),
+    };
+    let adapter = RuntimeCaptureSource::from_recorded(&raw, Some(&init), None).unwrap();
+    let error = project_runtime_capture(
+        adapter.input(),
+        Some(adapter.pending_input()),
+        &BTreeMap::new(),
+        false,
+    )
+    .err()
+    .unwrap();
+    assert!(error.to_string().contains("SCFG_BINDING"));
+    assert!(!error.to_string().contains("PRIVATE"));
+
+    // All historical values lack evidence, including an originally ordinary literal.
+    // Explicit bindings permit capture without copying their source values or digests.
+    let mut controls = bindings();
+    controls.insert(
+        RuntimeCaptureTarget::EnvKey("ordinary".into()),
+        RuntimeCaptureAction::Bind("ordinary-input".into()),
+    );
+    let projected = project_runtime_capture(
+        adapter.input(),
+        Some(adapter.pending_input()),
+        &controls,
+        false,
+    )
+    .unwrap();
+    for section in [Some(projected.active), projected.pending] {
+        let encoded = serde_json::to_string(&section.unwrap()).unwrap();
+        assert!(!encoded.contains("PRIVATE"));
+        assert!(!encoded.contains("digest"));
+        assert!(encoded.contains("ordinary-input"));
+        assert!(encoded.contains("host-input"));
+        assert!(encoded.contains("init-input"));
+    }
 }
 
 #[test]
