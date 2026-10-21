@@ -63,6 +63,11 @@ pub struct CaptureDocumentRequest<'a> {
 //--------------------------------------------------------------------------------------------------
 
 impl<'a> PendingCaptureSource<'a> {
+    /// Compare provenance without exposing private source values in diagnostics.
+    pub(crate) fn matches_recorded(&self, recorded: &Value) -> bool {
+        self.source.recorded == recorded
+    }
+
     /// Decode recorded next-start intent without borrowing active init/script observations.
     /// Logical requirements must describe this source, not the active backing inventory.
     /// The caller still owns selection/generation coherence; no catalog or file is read here.

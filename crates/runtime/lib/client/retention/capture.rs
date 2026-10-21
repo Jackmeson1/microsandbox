@@ -61,6 +61,8 @@ pub struct CapturedConfiguration {
     capture_root: String,
     source: Option<RetainedConfiguration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     scripts: Option<ScriptBackingEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     init: Option<InitObservation>,
@@ -138,6 +140,9 @@ impl ConfigurationCaptureObservation<'_> {
             self.selected
                 .as_ref()
                 .map(LiveConfigurationSelection::configuration),
+            self.selected
+                .as_ref()
+                .and_then(LiveConfigurationSelection::pending_configuration),
             Some(self.scripts.finish()),
             self.init,
         )
@@ -145,6 +150,12 @@ impl ConfigurationCaptureObservation<'_> {
 }
 
 impl CapturedConfiguration {
+    /// Private next-start intent selected at the capture boundary, never active evidence.
+    /// Older receipts omit it; do not replace that absence with current catalog settings.
+    pub fn pending_configuration(&self) -> Option<&serde_json::Value> {
+        self.pending.as_ref()
+    }
+
     /// Guest boot selection bound to this capture, not a portable init default or health check.
     pub fn init(&self) -> Option<&InitObservation> {
         self.init.as_ref()
@@ -222,6 +233,7 @@ impl PreparedConfigurationReceipt {
         checkpoint_id: &str,
         capture_root: &str,
         source: Option<&RetainedConfiguration>,
+        pending: Option<&serde_json::Value>,
         scripts: Option<ScriptBackingEvidence>,
         init: Option<InitObservation>,
     ) -> io::Result<Self> {
@@ -236,6 +248,7 @@ impl PreparedConfigurationReceipt {
             checkpoint_id: checkpoint_id.into(),
             capture_root: capture_root.into(),
             source: source.cloned(),
+            pending: pending.cloned(),
             scripts,
             init,
         };
@@ -359,6 +372,7 @@ mod tests {
             "full:root",
             Some(&source),
             None,
+            None,
             Some(InitObservation::Builtin),
         )
         .unwrap();
@@ -388,6 +402,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .is_err()
         );
@@ -412,6 +427,59 @@ mod tests {
                 0o700
             );
         }
+    }
+
+    #[test]
+    fn pending_intent_is_digest_bound_and_missing_legacy_evidence_stays_unknown() {
+        let home = tempfile::tempdir().unwrap();
+        let pending = serde_json::json!({"runtime":{"user":"PRIVATE_PENDING_USER"}});
+        let receipt = PreparedConfigurationReceipt::prepare(
+            home.path(),
+            "pending",
+            "disk:root",
+            Some(&source()),
+            Some(&pending),
+            None,
+            None,
+        )
+        .unwrap()
+        .publish();
+        let captured =
+            CapturedConfiguration::read(home.path(), "pending", "disk:root", &receipt).unwrap();
+        assert_eq!(captured.pending_configuration(), Some(&pending));
+        assert!(
+            captured
+                .source()
+                .unwrap()
+                .source
+                .as_ref()
+                .unwrap()
+                .get("runtime")
+                .is_none()
+        );
+        let path = receipt_path(home.path(), "pending").unwrap();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        value["pending"]["runtime"]["user"] = "OTHER_PRIVATE_USER".into();
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let error = CapturedConfiguration::read(home.path(), "pending", "disk:root", &receipt)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("digest mismatch"));
+        assert!(!error.contains("PRIVATE_USER"));
+        value.as_object_mut().unwrap().remove("pending");
+        let bytes = serde_json::to_vec(&value).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let legacy = ConfigurationCaptureReceipt {
+            sha256: hex::encode(Sha256::digest(&bytes)),
+        };
+        assert!(
+            CapturedConfiguration::read(home.path(), "pending", "disk:root", &legacy)
+                .unwrap()
+                .pending_configuration()
+                .is_none()
+        );
     }
 
     #[test]
@@ -443,6 +511,7 @@ mod tests {
             "with_scripts",
             "full:root",
             Some(&source()),
+            None,
             Some(scripts),
             None,
         )
@@ -483,6 +552,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap(),
         );
@@ -498,6 +568,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap()
         .publish();
@@ -509,8 +580,16 @@ mod tests {
         );
         for id in ["", "..", "../state", "a/b", "a\\b"] {
             assert!(
-                PreparedConfigurationReceipt::prepare(home.path(), id, "root", None, None, None)
-                    .is_err()
+                PreparedConfigurationReceipt::prepare(
+                    home.path(),
+                    id,
+                    "root",
+                    None,
+                    None,
+                    None,
+                    None
+                )
+                .is_err()
             );
         }
     }
@@ -523,6 +602,7 @@ mod tests {
             "checkpoint_one",
             "root",
             Some(&source()),
+            None,
             None,
             None,
         )

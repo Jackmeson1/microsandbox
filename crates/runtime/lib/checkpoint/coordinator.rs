@@ -3025,6 +3025,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
             let receipt_path = sandbox.join("last-active/captures/checkpoint.json");

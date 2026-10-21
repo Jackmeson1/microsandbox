@@ -3,7 +3,7 @@
 use std::{io, path::PathBuf};
 
 use microsandbox_db::DbWriteConnection;
-use sea_orm::{ConnectionTrait, DbBackend, Statement};
+use sea_orm::{ConnectionTrait, DbBackend, QueryResult, Statement};
 use serde_json::Value;
 
 use super::{RetainedConfiguration, RetentionJournal, catalog_file_identity, invalid};
@@ -25,6 +25,7 @@ pub struct LiveConfigurationSelection<'a> {
     db: &'a DbWriteConnection,
     confirmed: &'a RetainedConfiguration,
     catalog_path: PathBuf,
+    pending: Option<Value>,
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -55,13 +56,26 @@ impl RetentionJournal {
         if path.is_empty() {
             return Ok(None);
         }
-        let capture = LiveConfigurationSelection {
+        let mut capture = LiveConfigurationSelection {
             journal: self,
             db,
             confirmed,
             catalog_path: path.into(),
+            pending: None,
         };
-        Ok(capture.revalidate().await?.then_some(capture))
+        let Some(row) = capture.read_validated_metadata().await? else {
+            return Ok(None);
+        };
+        let pending: Option<String> = row
+            .try_get("", "config")
+            .map_err(|_| invalid("invalid pending capture configuration"))?;
+        capture.pending = pending
+            .map(|pending| {
+                serde_json::from_str(&pending)
+                    .map_err(|_| invalid("invalid pending capture configuration document"))
+            })
+            .transpose()?;
+        Ok(Some(capture))
     }
 }
 
@@ -72,19 +86,29 @@ impl LiveConfigurationSelection<'_> {
         self.confirmed
     }
 
+    /// Next-start intent read in the same SQLite statement as validated active provenance.
+    /// Later desired-only edits do not alter this selection or certify any active settings.
+    pub fn pending_configuration(&self) -> Option<&Value> {
+        self.pending.as_ref()
+    }
+
     /// Check lifecycle/catalog provenance again while the original runtime guard remains held.
     /// A false result means unknown, not empty defaults or permission to borrow desired config.
     pub async fn revalidate(&self) -> io::Result<bool> {
+        Ok(self.read_validated_metadata().await?.is_some())
+    }
+
+    async fn read_validated_metadata(&self) -> io::Result<Option<QueryResult>> {
         let db = self.db;
         let owner = &self.confirmed.owner;
         if catalog_file_identity(&self.catalog_path)? != owner.catalog_file {
-            return Ok(false);
+            return Ok(None);
         }
         if !microsandbox_db::catalog::has_column(db, "sandbox", "active_config")
             .await
             .map_err(|_| invalid("could not inspect capture configuration support"))?
         {
-            return Ok(false);
+            return Ok(None);
         }
         // One SQLite statement binds the source value to the latest run and both row identities.
         // Filtering terminal runs first, or checking an arbitrary live PID, could resurrect stale
@@ -93,7 +117,7 @@ impl LiveConfigurationSelection<'_> {
             .query_one_raw(Statement::from_sql_and_values(
                 DbBackend::Sqlite,
                 "SELECT s.created_at AS sandbox_created_at, s.status AS sandbox_status, \
-                 s.active_config, r.id AS run_id, r.started_at AS run_started_at, \
+                 s.active_config, s.config, r.id AS run_id, r.started_at AS run_started_at, \
                  r.status AS run_status, r.pid, r.terminated_at \
                  FROM sandbox s JOIN run r ON r.sandbox_id = s.id \
                  WHERE s.id = ? ORDER BY r.id DESC LIMIT 1",
@@ -101,7 +125,7 @@ impl LiveConfigurationSelection<'_> {
             ))
             .await
             .map_err(|_| invalid("could not read live capture provenance"))?;
-        let Some(row) = row else { return Ok(false) };
+        let Some(row) = row else { return Ok(None) };
         let sandbox_created_at: Option<String> = row
             .try_get("", "sandbox_created_at")
             .map_err(|_| invalid("invalid capture sandbox identity"))?;
@@ -131,7 +155,7 @@ impl LiveConfigurationSelection<'_> {
             || terminated_at.is_some()
             || pid.and_then(|pid| u32::try_from(pid).ok()) != Some(std::process::id())
         {
-            return Ok(false);
+            return Ok(None);
         }
         let active: Option<String> = row
             .try_get("", "active_config")
@@ -143,7 +167,7 @@ impl LiveConfigurationSelection<'_> {
             })
             .transpose()?;
         if active.as_ref() != self.confirmed.source.as_ref() {
-            return Ok(false);
+            return Ok(None);
         }
         // Another process must not be able to replace a durable journal while this runtime keeps
         // an apparently valid in-memory generation. Never reopen the catalog just to read identity:
@@ -155,12 +179,15 @@ impl LiveConfigurationSelection<'_> {
                 .ok_or_else(|| invalid("missing capture owner directory"))?,
         )?
         else {
-            return Ok(false);
+            return Ok(None);
         };
-        Ok(record.current(owner).is_some_and(|confirmed| {
-            confirmed.generation == self.confirmed.generation
-                && confirmed.source == self.confirmed.source
-        }))
+        Ok(record
+            .current(owner)
+            .is_some_and(|confirmed| {
+                confirmed.generation == self.confirmed.generation
+                    && confirmed.source == self.confirmed.source
+            })
+            .then_some(row))
     }
 }
 
@@ -231,6 +258,18 @@ mod tests {
             .await
             .unwrap();
         assert!(capture.revalidate().await.unwrap());
+        assert_eq!(capture.pending_configuration().unwrap()["memory"], 999);
+        let later = fixture
+            .journal
+            .select_live_configuration(&fixture.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(later.pending_configuration().unwrap()["memory"], 1024);
+        assert_eq!(
+            later.configuration().source.as_ref().unwrap()["memory"],
+            256
+        );
         fixture
             .db
             .execute_unprepared("UPDATE sandbox SET active_config = '{\"memory\":512}'")
@@ -250,6 +289,40 @@ mod tests {
             capture.configuration().source.as_ref().unwrap()["memory"],
             256
         );
+    }
+
+    #[tokio::test]
+    async fn pending_selection_preserves_absence_and_redacts_invalid_documents() {
+        let fixture = Fixture::new().await;
+        fixture
+            .db
+            .execute_unprepared("UPDATE sandbox SET config = NULL")
+            .await
+            .unwrap();
+        let selected = fixture
+            .journal
+            .select_live_configuration(&fixture.db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(selected.pending_configuration().is_none());
+        fixture
+            .db
+            .execute_unprepared("UPDATE sandbox SET config = 'PRIVATE_INVALID_INTENT'")
+            .await
+            .unwrap();
+        // Later desired edits do not change active provenance or an already selected cut.
+        assert!(selected.revalidate().await.unwrap());
+        assert!(selected.pending_configuration().is_none());
+        let error = fixture
+            .journal
+            .select_live_configuration(&fixture.db)
+            .await
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("pending capture configuration document"));
+        assert!(!error.contains("PRIVATE_INVALID_INTENT"));
     }
 
     #[tokio::test]
