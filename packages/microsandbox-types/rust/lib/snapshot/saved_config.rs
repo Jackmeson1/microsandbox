@@ -4,6 +4,7 @@
 //! once capture, restore, and deferred command binding enforcement are implemented.
 
 mod bindings;
+mod capture_controls;
 mod document;
 mod execution;
 mod gateway_capture;
@@ -20,6 +21,8 @@ mod validation;
 mod value;
 
 #[cfg(test)]
+mod capture_controls_tests;
+#[cfg(test)]
 mod document_tests;
 #[cfg(test)]
 mod gateway_capture_tests;
@@ -35,6 +38,9 @@ mod tests;
 //--------------------------------------------------------------------------------------------------
 
 pub use bindings::{RuntimeBindingConsumer, RuntimeBindingRequirements};
+pub use capture_controls::{
+    RuntimeCaptureAction, RuntimeCaptureTarget, apply_runtime_capture_controls,
+};
 pub use document::{
     SAVED_CONFIG_SCHEMA_VERSION, SavedActiveConfig, SavedCaptureProvenance, SavedSandboxConfig,
 };
