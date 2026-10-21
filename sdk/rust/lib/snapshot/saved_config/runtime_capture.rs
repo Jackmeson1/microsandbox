@@ -25,8 +25,8 @@ use crate::{MicrosandboxError, MicrosandboxResult, SandboxConfig};
 /// generation, disk-cut coherence or full-state handle fidelity. No source paths are opened.
 /// Keep the original evidence alive through publication and independently validate other fields.
 pub struct RuntimeCaptureSource<'a> {
-    recorded: &'a Value,
-    config: SandboxConfig,
+    pub(super) recorded: &'a Value,
+    pub(super) config: SandboxConfig,
     init: Option<&'a InitObservation>,
     scripts: Option<&'a ScriptBackingEvidence>,
 }
