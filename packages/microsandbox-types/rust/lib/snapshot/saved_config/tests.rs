@@ -247,7 +247,7 @@ fn script_size_limits_apply_individually_and_in_aggregate() {
     parse(&json!({"scripts": recorded(json!({"check": script(&body, 0o755)}))}));
     reject(
         &json!({"scripts": recorded(json!({"check": script(&(body.clone() + "x"), 0o755)}))}),
-        "inline script is too large",
+        "script payload is too large",
     );
 
     let mut scripts: BTreeMap<_, _> = (0..4)
@@ -257,7 +257,7 @@ fn script_size_limits_apply_individually_and_in_aggregate() {
     scripts.insert("extra".into(), script("x", 0o755));
     reject(
         &json!({"scripts": recorded(json!(scripts))}),
-        "combined inline scripts are too large",
+        "combined script payload is too large",
     );
 }
 

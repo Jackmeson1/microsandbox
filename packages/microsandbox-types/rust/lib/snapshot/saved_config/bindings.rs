@@ -55,8 +55,9 @@ impl SavedRuntimeConfig {
                 RuntimeBindingConsumer::NewCommand,
             );
         }
-        if let Some(SavedInit::Handoff { args, env, .. }) =
-            self.init.as_ref().and_then(SavedValue::value)
+        if let Some(
+            SavedInit::Handoff { args, env, .. } | SavedInit::RequestedHandoff { args, env, .. },
+        ) = self.init.as_ref().and_then(SavedValue::value)
         {
             record_texts(
                 &mut requirements,

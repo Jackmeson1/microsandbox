@@ -136,6 +136,7 @@ pub fn apply_runtime_capture_controls(
     controls: &BTreeMap<RuntimeCaptureTarget, RuntimeCaptureAction>,
     full_state: bool,
 ) -> SnapshotManifestResult<SavedSandboxConfig> {
+    draft.active.runtime.validate_active_role()?;
     validate_controls(controls)?;
     let mut removed_candidates = runtime_binding_ids(&draft.active.runtime);
     if let Some(pending) = &draft.pending {
@@ -263,11 +264,15 @@ fn apply_one(
         T::CmdArg(index) => concrete(&mut runtime.cmd).and_then(|v| v.get_mut(*index)),
         T::EnvKey(key) => concrete(&mut runtime.env).and_then(|v| v.get_mut(key)),
         T::InitArg(index) => match concrete(&mut runtime.init) {
-            Some(SavedInit::Handoff { args, .. }) => args.get_mut(*index),
+            Some(SavedInit::Handoff { args, .. } | SavedInit::RequestedHandoff { args, .. }) => {
+                args.get_mut(*index)
+            }
             _ => None,
         },
         T::InitEnvKey(key) => match concrete(&mut runtime.init) {
-            Some(SavedInit::Handoff { env, .. }) => env.get_mut(key),
+            Some(SavedInit::Handoff { env, .. } | SavedInit::RequestedHandoff { env, .. }) => {
+                env.get_mut(key)
+            }
             _ => None,
         },
         _ => {
@@ -314,8 +319,9 @@ fn runtime_binding_ids(runtime: &SavedRuntimeConfig) -> BTreeSet<String> {
             record(text);
         }
     }
-    if let Some(SavedInit::Handoff { args, env, .. }) =
-        runtime.init.as_ref().and_then(SavedValue::value)
+    if let Some(
+        SavedInit::Handoff { args, env, .. } | SavedInit::RequestedHandoff { args, env, .. },
+    ) = runtime.init.as_ref().and_then(SavedValue::value)
     {
         for text in args.iter().chain(env.values()) {
             record(text);

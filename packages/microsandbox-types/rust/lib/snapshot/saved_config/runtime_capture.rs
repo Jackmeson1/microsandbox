@@ -30,6 +30,8 @@ pub enum RuntimeCaptureText<'a> {
 /// Source script backing, already observed and normalized under the capture guard.
 /// This deliberately has no serialization or host pathname.
 pub enum RuntimeCaptureScript<'a> {
+    /// Pending declaration, not materialized or normalized backing.
+    Declaration(&'a str),
     /// Ordinary registered backing; exclusions apply before copying or hashing its body.
     Inline {
         /// Exact normalized UTF-8 backing, without rewrapping or execution.
@@ -45,6 +47,15 @@ pub enum RuntimeCaptureScript<'a> {
 pub enum RuntimeCaptureInit<'a> {
     /// Confirmed builtin init, not a substitute for missing historical evidence.
     Builtin,
+    /// Next-start declaration; accepted only in pending input.
+    RequestedHandoff {
+        /// `auto` or an absolute guest path.
+        cmd: &'a str,
+        /// Declared supplemental arguments.
+        args: Vec<RuntimeCaptureText<'a>>,
+        /// Classified init-only environment.
+        env: BTreeMap<&'a str, RuntimeCaptureText<'a>>,
+    },
     /// Confirmed executable and configured supplemental inputs.
     Handoff {
         /// Original explicit path or auto-discovery intent.
@@ -126,6 +137,13 @@ impl Projector<'_> {
             scripts: self.field(T::Scripts, input.scripts, full, |p, v| p.scripts(v, full))?,
             init: self.field(T::Init, input.init, full, |p, v| match v {
                 RuntimeCaptureInit::Builtin => Ok(SavedInit::Builtin {}),
+                RuntimeCaptureInit::RequestedHandoff { cmd, args, env } => {
+                    Ok(SavedInit::RequestedHandoff {
+                        cmd: cmd.to_owned(),
+                        args: p.arguments(args, T::InitArg)?,
+                        env: p.environment(env, true)?,
+                    })
+                }
                 RuntimeCaptureInit::Handoff {
                     selection,
                     resolved_path,
@@ -268,6 +286,9 @@ impl Projector<'_> {
                     SavedScript::Binding { id: id.clone() }
                 }
                 None => match value {
+                    RuntimeCaptureScript::Declaration(content) => SavedScript::Declaration {
+                        content: content.to_owned(),
+                    },
                     RuntimeCaptureScript::Inline { content, mode } => SavedScript::Inline {
                         content: content.to_owned(),
                         mode,
@@ -308,6 +329,26 @@ pub fn project_runtime_capture(
     controls: &BTreeMap<RuntimeCaptureTarget, RuntimeCaptureAction>,
     full_state: bool,
 ) -> SnapshotManifestResult<RuntimeCaptureProjection> {
+    // Reject the wrong evidence role before controls can hide it. No source text is copied.
+    if matches!(
+        active.init.as_ref().and_then(SavedValue::value),
+        Some(RuntimeCaptureInit::RequestedHandoff { .. })
+    ) || active
+        .scripts
+        .as_ref()
+        .and_then(SavedValue::value)
+        .is_some_and(|scripts| {
+            scripts
+                .values()
+                .any(|script| matches!(script, RuntimeCaptureScript::Declaration(_)))
+        })
+    {
+        return invalid(
+            "SCFG_IDENTITY",
+            "active.runtime",
+            "pending declarations cannot provide active evidence",
+        );
+    }
     validate_controls(controls)?;
     let mut projector = Projector {
         controls,
@@ -315,6 +356,7 @@ pub fn project_runtime_capture(
         bindings: BTreeMap::new(),
     };
     let active = projector.runtime(active, full_state)?;
+    active.validate_active_role()?;
     let pending = pending
         .map(|input| projector.runtime(input, false))
         .transpose()?;

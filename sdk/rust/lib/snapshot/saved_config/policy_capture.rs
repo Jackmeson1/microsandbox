@@ -79,6 +79,24 @@ impl RuntimeCaptureSource<'_> {
         Ok(result)
     }
 
+    /// Record desired next-start capacities, never confirmed guest allocation. Missing raw
+    /// fields remain unknown even when decoding supplied a historical default.
+    pub fn project_pending_resources(&self) -> MicrosandboxResult<SavedResourcesConfig> {
+        let mut resources = self.project_resources(ResourceCaptureObservation::default())?;
+        resources.cpus = Some(recorded(
+            self.recorded.pointer("/resources/cpus").is_some(),
+            self.config.spec.resources.cpus,
+        ));
+        resources.memory_mib = Some(recorded(
+            self.recorded.pointer("/resources/memory_mib").is_some(),
+            self.config.spec.resources.memory_mib,
+        ));
+        resources
+            .validate()
+            .map_err(|error| MicrosandboxError::InvalidConfig(error.to_string()))?;
+        Ok(resources)
+    }
+
     /// Project reusable process policy without source ephemeral ownership, elapsed timers,
     /// system identity labels or per-invocation limits. Raw configuration is never portable output.
     /// Caller exclusions run before label cloning/validation; retained labels remain bounded.

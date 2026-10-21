@@ -44,6 +44,8 @@ mod network_inputs;
 mod network_policy;
 #[cfg(test)]
 mod network_policy_tests;
+#[cfg(all(test, feature = "local"))]
+mod pending_capture_tests;
 #[cfg(feature = "local")]
 mod policy_capture;
 #[cfg(all(test, feature = "local"))]
