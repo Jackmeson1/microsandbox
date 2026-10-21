@@ -7,21 +7,20 @@ use microsandbox_runtime::retention::{
 };
 use microsandbox_types::snapshot::Manifest;
 use microsandbox_types::snapshot::saved_config::{
-    RuntimeCaptureAction, RuntimeCaptureInput, RuntimeCaptureScript, RuntimeCaptureTarget,
-    RuntimeCaptureText, SavedBindingKind, SavedBindingReference, SavedOrigin, SavedResourcesConfig,
-    SavedText, SavedUnknownReason, SavedValue, SavedVsockRoute,
+    RuntimeCaptureAction, RuntimeCaptureTarget, SavedBindingKind, SavedBindingReference,
+    SavedOrigin, SavedText, SavedUnknownReason, SavedValue,
 };
 use microsandbox_types::{
     GuestClockPolicy, HostPermissions, MountOptions, OwnedVolumeStorage, StatVirtualization,
-    VolumeMount, VsockSocketType,
+    VolumeMount,
 };
 use serde_json::{Value, json};
 
 use super::storage_tests::manifest;
 use super::{
     CaptureDocumentRequest, ExecutionCaptureControls, NetworkCaptureBindings,
-    NetworkCaptureControls, PendingCaptureSections, ResourceCaptureObservation,
-    RuntimeCaptureSource, StorageCaptureBindings,
+    NetworkCaptureControls, PendingCaptureSource, ResourceCaptureObservation, RuntimeCaptureSource,
+    StorageCaptureBindings,
 };
 use crate::sandbox::SandboxBuilder;
 
@@ -83,17 +82,20 @@ fn request<'a>(descriptor: &'a Manifest, controls: &'a Controls) -> CaptureDocum
     }
 }
 
-fn pending(runtime: RuntimeCaptureInput<'_>) -> PendingCaptureSections<'_> {
-    PendingCaptureSections {
-        runtime,
-        resources: SavedResourcesConfig {
-            cpus: Some(known(8, SavedOrigin::Configured)),
-            ..Default::default()
-        },
-        network: Default::default(),
-        execution: Default::default(),
-        storage: Default::default(),
-    }
+fn pending_record(configure: impl FnOnce(SandboxBuilder) -> SandboxBuilder) -> Value {
+    let mut config = configure(
+        SandboxBuilder::new("pending-source")
+            .image("alpine")
+            .cpus(8),
+    )
+    .finish(None, None)
+    .unwrap();
+    config.spec.network.trust_host_cas = false;
+    serde_json::to_value(config.clone_for_persistence()).unwrap()
+}
+
+fn pending(raw: &Value) -> PendingCaptureSource<'_> {
+    PendingCaptureSource::from_recorded(raw, Default::default(), Default::default()).unwrap()
 }
 
 // Source-name provenance is optional, but the captured guest hostname is a separate
@@ -213,18 +215,17 @@ fn capture_document_pending_targets_and_bindings_never_supply_active_defaults() 
         RuntimeCaptureTarget::EnvKey("FUTURE".into()),
         RuntimeCaptureAction::Bind("future".into()),
     );
+    let mut pending_raw = pending_record(|builder| {
+        builder
+            .cmd(["pending-default"])
+            .env("FUTURE", "PRIVATE_FUTURE_CREDENTIAL")
+    });
+    pending_raw
+        .as_object_mut()
+        .unwrap()
+        .remove("environment_provenance");
     let mut input = request(&descriptor, &controls);
-    input.pending = Some(pending(RuntimeCaptureInput {
-        cmd: Some(known(
-            vec![RuntimeCaptureText::Literal("pending-default")],
-            SavedOrigin::Configured,
-        )),
-        env: Some(known(
-            [("FUTURE", RuntimeCaptureText::BindingRequired)].into(),
-            SavedOrigin::Configured,
-        )),
-        ..Default::default()
-    }));
+    input.pending = Some(pending(&pending_raw));
     let document = adapter.project_document(input, generation()).unwrap();
     assert_eq!(
         document
@@ -262,11 +263,9 @@ fn capture_document_unknown_active_setting_stays_unknown_despite_pending_value()
     let adapter = RuntimeCaptureSource::from_recorded(&raw, None, None).unwrap();
     let descriptor = manifest(false);
     let controls = Controls::default();
+    let pending_raw = pending_record(|builder| builder.workdir("/future"));
     let mut input = request(&descriptor, &controls);
-    input.pending = Some(pending(RuntimeCaptureInput {
-        workdir: Some(known("/future", SavedOrigin::Configured)),
-        ..Default::default()
-    }));
+    input.pending = Some(pending(&pending_raw));
     let document = adapter.project_document(input, generation()).unwrap();
     assert!(matches!(
         document.active.runtime.workdir,
@@ -313,18 +312,22 @@ fn capture_document_rejects_cross_family_binding_conflicts_without_echoing_ids()
     let raw = source();
     let adapter = RuntimeCaptureSource::from_recorded(&raw, None, None).unwrap();
     let mut input = request(&descriptor, &controls);
-    let mut future = pending(RuntimeCaptureInput::default());
-    future.storage.vsock = Some(known(
-        vec![SavedVsockRoute {
-            port: 456,
-            socket_type: VsockSocketType::Stream,
-            binding: SavedBindingReference {
-                id: "shared".into(),
+    let mut pending_raw = pending_record(|builder| builder);
+    pending_raw["vsock"]["routes"] =
+        json!([{"port":456,"socket_type":"stream","host_socket":"/PRIVATE_SOCKET"}]);
+    input.pending = Some(
+        PendingCaptureSource::from_recorded(
+            &pending_raw,
+            Default::default(),
+            StorageCaptureBindings {
+                routes: vec![SavedBindingReference {
+                    id: "shared".into(),
+                }],
+                ..Default::default()
             },
-        }],
-        SavedOrigin::Configured,
-    ));
-    input.pending = Some(future);
+        )
+        .unwrap(),
+    );
     assert!(
         adapter
             .project_document(input, generation())
@@ -353,18 +356,17 @@ fn capture_document_shared_text_inventory_is_derived_and_pending_exclusions_appl
         RuntimeCaptureTarget::EnvKey("EXCLUDED".into()),
         RuntimeCaptureAction::Omit,
     );
+    let mut pending_raw = pending_record(|builder| {
+        builder
+            .env("FUTURE", "PRIVATE_CREDENTIAL")
+            .env("EXCLUDED", "PRIVATE_EXCLUDED")
+    });
+    pending_raw
+        .as_object_mut()
+        .unwrap()
+        .remove("environment_provenance");
     let mut input = request(&descriptor, &controls);
-    input.pending = Some(pending(RuntimeCaptureInput {
-        env: Some(known(
-            [
-                ("FUTURE", RuntimeCaptureText::BindingRequired),
-                ("EXCLUDED", RuntimeCaptureText::Literal("PRIVATE_EXCLUDED")),
-            ]
-            .into(),
-            SavedOrigin::Configured,
-        )),
-        ..Default::default()
-    }));
+    input.pending = Some(pending(&pending_raw));
     let document = adapter.project_document(input, generation()).unwrap();
     assert_eq!(document.bindings.len(), 1);
     assert_eq!(document.bindings["shared"], SavedBindingKind::Text);
@@ -484,28 +486,9 @@ fn capture_document_enforces_combined_active_and_pending_script_budget() {
     let adapter = RuntimeCaptureSource::from_recorded(&raw, None, Some(&backing)).unwrap();
     let descriptor = manifest(false);
     let controls = Controls::default();
-    let future = || {
-        pending(RuntimeCaptureInput {
-            scripts: Some(known(
-                ["d", "e"]
-                    .into_iter()
-                    .map(|name| {
-                        (
-                            name,
-                            RuntimeCaptureScript::Inline {
-                                content: &content,
-                                mode: 0o644,
-                            },
-                        )
-                    })
-                    .collect(),
-                SavedOrigin::Configured,
-            )),
-            ..Default::default()
-        })
-    };
+    let pending_raw = pending_record(|builder| builder.script("d", &content).script("e", &content));
     let mut input = request(&descriptor, &controls);
-    input.pending = Some(future());
+    input.pending = Some(pending(&pending_raw));
     let error = adapter
         .project_document(input, generation())
         .err()
@@ -517,7 +500,7 @@ fn capture_document_enforces_combined_active_and_pending_script_budget() {
         .runtime
         .insert(RuntimeCaptureTarget::Scripts, RuntimeCaptureAction::Omit);
     let mut input = request(&descriptor, &controls);
-    input.pending = Some(future());
+    input.pending = Some(pending(&pending_raw));
     let document = adapter.project_document(input, generation()).unwrap();
     assert!(document.active.runtime.scripts.is_none());
     assert!(document.pending.as_ref().unwrap().runtime.scripts.is_none());
@@ -545,19 +528,14 @@ fn capture_document_assembles_raw_pending_intent_without_active_fallback() {
     // Explicitly recorded absence: a historical serializer omission is still unknown.
     pending_raw["mounts"][0]["options"]["override_uid"] = Value::Null;
     pending_raw["mounts"][0]["options"]["override_gid"] = Value::Null;
-    let pending_source = RuntimeCaptureSource::from_recorded(&pending_raw, None, None).unwrap();
     let descriptor = manifest(false);
     let controls = Controls::default();
     let mut request = request(&descriptor, &controls);
-    request.pending = Some(PendingCaptureSections {
-        runtime: pending_source.pending_input(),
-        resources: pending_source.project_pending_resources().unwrap(),
-        network: Default::default(),
-        execution: Default::default(),
-        storage: pending_source
-            .project_pending_storage(StorageCaptureBindings::default())
-            .unwrap(),
-    });
+    // This pending source requests no external host trust inventory.
+    pending_raw["network"]["trust_host_cas"] = Value::Bool(false);
+    pending_raw["network"]["enabled"] = Value::Bool(false);
+    pending_raw["labels"] = json!({"future":"intent"});
+    request.pending = Some(pending(&pending_raw));
     let document = active.project_document(request, generation()).unwrap();
     let encoded = serde_json::to_value(&document).unwrap();
     assert_eq!(
@@ -579,7 +557,274 @@ fn capture_document_assembles_raw_pending_intent_without_active_fallback() {
         "requested_owned"
     );
     assert_eq!(encoded["active"]["storage"]["mounts"]["value"], json!([]));
+    assert_eq!(encoded["pending"]["network"]["enabled"]["value"], false);
+    assert_eq!(
+        encoded["pending"]["execution"]["labels"]["value"],
+        json!({"future":"intent"})
+    );
+    assert_eq!(
+        encoded["active"]["execution"]["labels"]["value"],
+        json!({"team":"work"})
+    );
     assert!(document.active_binding_uses().unwrap().is_empty());
     assert!(document.active.runtime.validate_active().is_ok());
     assert!(document.pending.unwrap().runtime.validate_active().is_err());
+}
+
+#[test]
+fn capture_document_excludes_labels_and_http_across_both_recorded_sources_before_validation() {
+    let mut raw = source();
+    let mut future = pending_record(|builder| builder);
+    let excluded = "PRIVATE_EXCLUDED".repeat(10_000);
+    raw["labels"] = json!({"shared": excluded, "active-only": excluded, "keep":"active"});
+    future["labels"] = json!({"shared": excluded, "pending-only": excluded, "keep":"pending"});
+    for record in [&mut raw, &mut future] {
+        record["network"]["http"]["deny_message"] = json!(excluded);
+    }
+    let adapter = RuntimeCaptureSource::from_recorded(&raw, None, None).unwrap();
+    let descriptor = manifest(false);
+    let no_controls = Controls::default();
+    let mut input = request(&descriptor, &no_controls);
+    input.pending = Some(pending(&future));
+    assert!(adapter.project_document(input, generation()).is_err());
+
+    for whole in [false, true] {
+        let mut controls = Controls::default();
+        controls.network.omit_http = true;
+        controls.execution.omit_labels = whole;
+        if !whole {
+            controls.execution.omit_label_keys = ["shared", "active-only", "pending-only"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+        }
+        let mut input = request(&descriptor, &controls);
+        input.pending = Some(pending(&future));
+        let document = adapter.project_document(input, generation()).unwrap();
+        let pending = document.pending.as_ref().unwrap();
+        assert!(document.active.network.http.is_none());
+        assert!(pending.network.http.is_none());
+        if whole {
+            assert!(document.active.execution.labels.is_none());
+            assert!(pending.execution.labels.is_none());
+        } else {
+            assert_eq!(
+                document
+                    .active
+                    .execution
+                    .labels
+                    .as_ref()
+                    .unwrap()
+                    .value()
+                    .unwrap(),
+                &BTreeMap::from([("keep".into(), "active".into())])
+            );
+            assert_eq!(
+                pending.execution.labels.as_ref().unwrap().value().unwrap(),
+                &BTreeMap::from([("keep".into(), "pending".into())])
+            );
+        }
+        assert_only_guest_hostname_has_private_marker(&document);
+    }
+}
+
+#[test]
+fn capture_document_label_selectors_reject_unmatched_reserved_and_overlapping_controls() {
+    let raw = source();
+    let mut future = pending_record(|builder| builder);
+    future["labels"] = json!({"future":"visible", "microsandbox.PRIVATE_SYSTEM":"hidden"});
+    let adapter = RuntimeCaptureSource::from_recorded(&raw, None, None).unwrap();
+    let descriptor = manifest(false);
+    for (key, whole) in [
+        ("PRIVATE_TYPO", false),
+        ("microsandbox.PRIVATE_SYSTEM", false),
+        ("future", true),
+    ] {
+        let mut controls = Controls::default();
+        controls.execution.omit_labels = whole;
+        controls.execution.omit_label_keys.insert(key.into());
+        let mut input = request(&descriptor, &controls);
+        input.pending = Some(pending(&future));
+        let error = adapter
+            .project_document(input, generation())
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("SCFG_VALUE"), "{error}");
+        assert!(!error.contains("PRIVATE"), "{error}");
+    }
+}
+
+#[test]
+fn capture_document_missing_pending_sections_stay_unknown_without_active_fallback() {
+    let raw = source();
+    let mut future = pending_record(|builder| builder);
+    for key in [
+        "network",
+        "resources",
+        "runtime",
+        "labels",
+        "mounts",
+        "vsock",
+        "security_profile",
+        "rlimits",
+        "lifecycle",
+        "command_provenance",
+        "environment_provenance",
+    ] {
+        future.as_object_mut().unwrap().remove(key);
+    }
+    let adapter = RuntimeCaptureSource::from_recorded(&raw, None, None).unwrap();
+    let descriptor = manifest(false);
+    let controls = Controls::default();
+    let mut input = request(&descriptor, &controls);
+    input.pending = Some(pending(&future));
+    let document = adapter.project_document(input, generation()).unwrap();
+    let encoded = serde_json::to_value(document).unwrap();
+    for path in [
+        "/pending/resources/cpus",
+        "/pending/runtime/workdir",
+        "/pending/network/enabled",
+        "/pending/execution/labels",
+        "/pending/execution/security_profile",
+        "/pending/execution/lifecycle",
+        "/pending/storage/mounts",
+        "/pending/storage/vsock",
+    ] {
+        assert_eq!(encoded.pointer(path).unwrap()["state"], "unknown", "{path}");
+    }
+    assert_eq!(encoded["active"]["resources"]["cpus"]["value"], 2);
+}
+
+#[test]
+fn capture_document_pending_bindings_must_match_the_pending_source() {
+    let mut raw = source();
+    raw["network"]["dns"] = json!({"rebind_protection":true,"nameservers":["PRIVATE_ACTIVE_ENDPOINT"],"query_timeout_ms":100});
+    let future = pending_record(|builder| builder);
+    let adapter = RuntimeCaptureSource::from_recorded(&raw, None, None).unwrap();
+    let descriptor = manifest(false);
+    let controls = Controls::default();
+    let mut input = request(&descriptor, &controls);
+    input.network.resolvers = vec![SavedBindingReference {
+        id: "active-dns".into(),
+    }];
+    input.pending = Some(
+        PendingCaptureSource::from_recorded(
+            &future,
+            NetworkCaptureBindings {
+                resolvers: vec![SavedBindingReference {
+                    id: "PRIVATE_UNUSED".into(),
+                }],
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap(),
+    );
+    let error = adapter
+        .project_document(input, generation())
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("SCFG_BINDING"), "{error}");
+    assert!(!error.contains("PRIVATE"), "{error}");
+}
+
+#[test]
+fn capture_document_pending_network_and_socket_requirements_never_become_active_demand() {
+    let raw = source();
+    let mut future = pending_record(|builder| builder);
+    future["network"]["dns"] = json!({"rebind_protection":true,"nameservers":["PRIVATE_PENDING_ENDPOINT"],"query_timeout_ms":100});
+    future["vsock"]["routes"] =
+        json!([{"port":456,"socket_type":"stream","host_socket":"/PRIVATE_PENDING_SOCKET"}]);
+    let adapter = RuntimeCaptureSource::from_recorded(&raw, None, None).unwrap();
+    let descriptor = manifest(false);
+    let controls = Controls::default();
+    let mut input = request(&descriptor, &controls);
+    input.pending = Some(
+        PendingCaptureSource::from_recorded(
+            &future,
+            NetworkCaptureBindings {
+                resolvers: vec![SavedBindingReference {
+                    id: "future-dns".into(),
+                }],
+                ..Default::default()
+            },
+            StorageCaptureBindings {
+                routes: vec![SavedBindingReference {
+                    id: "future-socket".into(),
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap(),
+    );
+    let document = adapter.project_document(input, generation()).unwrap();
+    assert_eq!(document.bindings.len(), 2);
+    assert!(document.bindings.contains_key("future-dns"));
+    assert!(document.bindings.contains_key("future-socket"));
+    assert!(document.active_binding_uses().unwrap().is_empty());
+    assert_only_guest_hostname_has_private_marker(&document);
+}
+
+#[test]
+#[ignore = "requires MSB_PRESENCE_CAPTURE_FIXTURES from saved-presence-evidence.py"]
+fn runtime_capture_document_preserves_old_writer_unknowns() {
+    let directory = std::path::PathBuf::from(
+        std::env::var_os("MSB_PRESENCE_CAPTURE_FIXTURES").expect("live fixture directory"),
+    );
+    let active_raw: Value = serde_json::from_slice(
+        &std::fs::read(directory.join("current/current-source.json")).unwrap(),
+    )
+    .unwrap();
+    let active = RuntimeCaptureSource::from_recorded(&active_raw, None, None).unwrap();
+    let descriptor = manifest(false);
+    let mut controls = Controls::default();
+    // These fixtures include environment values without portable literal provenance.
+    // Explicitly omit that optional default; never relax the binding requirement just
+    // to exercise ownership evidence from real old/new producer records.
+    controls
+        .runtime
+        .insert(RuntimeCaptureTarget::Env, RuntimeCaptureAction::Omit);
+    for (name, mounts_known) in [
+        ("current-source", true),
+        ("runtime-modified-source", true),
+        ("old-modified-config", false),
+        ("new-after-old-source", false),
+    ] {
+        let future: Value = serde_json::from_slice(
+            &std::fs::read(directory.join("current").join(format!("{name}.json"))).unwrap(),
+        )
+        .unwrap();
+        let mut input = request(&descriptor, &controls);
+        // These saved records do not attest a new capture cut or guest allocation.
+        // Exercise their real producer shapes without manufacturing either observation.
+        input.resources = ResourceCaptureObservation::default();
+        input.pending = Some(pending(&future));
+        let document = active
+            .project_document(
+                input,
+                SavedValue::Unknown {
+                    reason: SavedUnknownReason::NotObserved,
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            document.active.resources.cpus,
+            Some(SavedValue::Unknown { .. })
+        ));
+        let pending = document.pending.unwrap();
+        assert_eq!(
+            pending.storage.mounts.unwrap().value().is_some(),
+            mounts_known,
+            "{name}"
+        );
+        assert!(matches!(
+            pending.resources.cpus,
+            Some(SavedValue::Value {
+                origin: SavedOrigin::Configured,
+                ..
+            })
+        ));
+    }
 }

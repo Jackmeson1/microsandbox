@@ -96,7 +96,7 @@ mod types;
 //--------------------------------------------------------------------------------------------------
 
 #[cfg(feature = "local")]
-pub use capture::{CaptureDocumentRequest, PendingCaptureSections};
+pub use capture::{CaptureDocumentRequest, PendingCaptureSource};
 pub use configuration::{
     SavedConfigurationClears, SavedConfigurationContext, SavedConfigurationPlan,
     SavedConfigurationRequest, prepare_saved_configuration,
