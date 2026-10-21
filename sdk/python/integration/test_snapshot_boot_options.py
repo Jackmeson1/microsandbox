@@ -32,7 +32,9 @@ async def test_snapshot_destination_init_and_hostname(sandbox_name, full):
         digest = checkpoint.digest
         before = await checkpoint.verify()
         if full:
-            for options in [{"init": "auto"}, {"hostname": "source-host"}]:
+            for options in [
+                {"init": "auto"}, {"hostname": "source-host"},
+            ]:
                 for progress in [False, True]:
                     name = sandbox_name("boot-refuse")
                     names.append(name)
@@ -66,7 +68,17 @@ async def test_snapshot_destination_init_and_hostname(sandbox_name, full):
             # An explicit match resumes captured execution; it does not request a resize.
             name = sandbox_name("geometry-match")
             names.append(name)
-            child = await group.spawn_sandbox(name=name, max_cpus=2, max_memory=512)
+            child = await group.spawn_sandbox(
+                name=name, max_cpus=2, max_memory=512,
+                labels={"destination": "full-child"}, workdir="/root", shell="/bin/ash",
+                env={"DEST_VALUE":"full-value"}, entrypoint=["/bin/sh", "-c"],
+                cmd=['printf "%s:%s" "$PWD" "$DEST_VALUE"; touch /root/default-ran'],
+            )
+            assert (await child.shell("test ! -e /root/default-ran")).success
+            result = await child.exec_default()
+            assert result.success and result.stdout_text == "/root:full-value"
+            config = json.loads((await Sandbox.get(name)).config_json)
+            assert config["labels"]["destination"] == "full-child"
             assert (await child.shell("cat /root/marker")).stdout_text == "source-marker"
             await child.stop()
             await remove_sandbox(name)
@@ -80,6 +92,9 @@ async def test_snapshot_destination_init_and_hostname(sandbox_name, full):
                 memory=256,
                 max_cpus=2,
                 max_memory=512,
+                labels={"destination": "boot-child"}, workdir="/root", shell="/bin/ash",
+                env={"DEST_VALUE":"disk-value"}, entrypoint=["/bin/sh", "-c"],
+                cmd=['printf "%s:%s" "$PWD" "$DEST_VALUE"; touch /root/default-ran'],
                 hostname="child-host",
                 disk_only=full,
                 init=InitConfig(
@@ -94,9 +109,14 @@ async def test_snapshot_destination_init_and_hostname(sandbox_name, full):
             else:
                 child = await group.spawn_sandbox(**options)
             try:
+                assert (await child.shell("test ! -e /root/default-ran")).success
+                result = await child.exec_default()
+                assert result.success and result.stdout_text == "/root:disk-value"
                 resources = json.loads((await Sandbox.get(name)).config_json)["resources"]
                 assert resources["max_cpus"] == 2
                 assert resources["max_memory_mib"] == 512
+                config = json.loads((await Sandbox.get(name)).config_json)
+                assert config["labels"]["destination"] == "boot-child"
                 capacity = await child.shell("nproc; cat /sys/devices/system/cpu/possible")
                 assert capacity.success
                 assert capacity.stdout_text.strip() == "1\n0-1"

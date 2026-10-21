@@ -12,10 +12,16 @@ import (
 type RestoreOptions struct {
 	PullPolicy                  string                `json:"pull_policy,omitempty"`
 	Proxy                       *OutboundProxyOptions `json:"proxy,omitempty"`
+	Workdir                     *string               `json:"workdir,omitempty"`
+	Shell                       *string               `json:"shell,omitempty"`
+	Entrypoint                  *[]string             `json:"entrypoint,omitempty"`
+	Cmd                         *[]string             `json:"cmd,omitempty"`
+	Env                         map[string]string     `json:"env,omitempty"`
 	Init                        *InitOptions          `json:"init,omitempty"`
 	Hostname                    *string               `json:"hostname,omitempty"`
 	MaxCPUs                     *uint8                `json:"max_cpus,omitempty"`
 	MaxMemoryMiB                *uint32               `json:"max_memory_mib,omitempty"`
+	Labels                      map[string]string     `json:"labels,omitempty"`
 	Snapshot                    string                `json:"snapshot"`
 	SnapshotReferenceKind       string                `json:"snapshot_reference_kind,omitempty"`
 	CPUs                        *uint8                `json:"cpus,omitempty"`
@@ -87,6 +93,21 @@ func CheckRestoreBootOptions(ctx context.Context, options RestoreOptions) error 
 	if options.Proxy != nil {
 		requested = append(requested, "proxy")
 	}
+	if options.Workdir != nil {
+		requested = append(requested, "workdir")
+	}
+	if options.Shell != nil {
+		requested = append(requested, "shell")
+	}
+	if options.Entrypoint != nil {
+		requested = append(requested, "entrypoint")
+	}
+	if options.Cmd != nil {
+		requested = append(requested, "cmd")
+	}
+	if len(options.Env) > 0 {
+		requested = append(requested, "env")
+	}
 	if options.Init != nil {
 		requested = append(requested, "init")
 	}
@@ -98,6 +119,9 @@ func CheckRestoreBootOptions(ctx context.Context, options RestoreOptions) error 
 	}
 	if options.MaxMemoryMiB != nil {
 		requested = append(requested, "max_memory_mib")
+	}
+	if len(options.Labels) > 0 {
+		requested = append(requested, "labels")
 	}
 	if len(requested) == 0 {
 		return nil

@@ -3,10 +3,13 @@
 import pytest
 
 from microsandbox import Network, NetworkPolicy, Sandbox, SecurityProfile
+from microsandbox.errors import InvalidConfigError
 
 
 @pytest.mark.parametrize(
-    "option", ["image", "network", "cmd", "replace", "detached", "entrypoint"],
+    "option", [
+        "image", "network", "foreground_command", "replace", "detached", "background_command",
+    ],
 )
 def test_restore_rejects_create_options(option):
     with pytest.raises(TypeError, match="unexpected restore option"):
@@ -223,6 +226,44 @@ async def test_restore_ceilings_reach_source_validation(tmp_path, method):
             await result
         else:
             await result.result()
+
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["restore", "restore_with_progress"])
+async def test_restore_destination_options_reach_source_validation(tmp_path, method):
+    with pytest.raises(FileNotFoundError):
+        result = getattr(Sandbox, method)(
+            tmp_path / "missing", name="label-validation",
+            labels={"team": "dev"},
+        )
+        if method == "restore":
+            await result
+        else:
+            await result.result()
+
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["restore", "restore_with_progress"])
+async def test_destination_command_defaults_reach_source_validation(tmp_path, method):
+    with pytest.raises(FileNotFoundError):
+        result = getattr(Sandbox, method)(
+            tmp_path / "missing", name="command-defaults", workdir="/root", shell="/bin/ash",
+            entrypoint=[], cmd=[], env={"KEY": "", "OTHER": "literal"},
+        )
+        if method == "restore":
+            await result
+        else:
+            await result.result()
+
+
+@pytest.mark.parametrize("field", ["workdir", "shell", "entrypoint", "cmd", "env"])
+def test_destination_command_defaults_reject_wrong_types(field):
+    with pytest.raises(TypeError):
+        Sandbox.restore("missing", name="command-defaults", **{field: 42})
 
 
 @pytest.mark.parametrize("method", ["create", "restore"])
