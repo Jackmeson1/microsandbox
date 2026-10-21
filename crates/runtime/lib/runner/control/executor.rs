@@ -148,7 +148,10 @@ impl RuntimeControlExecutor {
         let mut state = self.state.lock().unwrap();
         state
             .retention
-            .confirm(source.map(|source| source.configuration))
+            .confirm_start(
+                source.map(|source| source.configuration),
+                self.signal_workload.boot_init(),
+            )
             .map_err(|error| {
                 format!(
                     "active configuration confirmation failed after guest activation; \

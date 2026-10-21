@@ -13,7 +13,7 @@ use microsandbox_protocol::core::{
     WORKLOAD_TRANSPORT_CONTROL_FRAMES, WorkloadFrozen, WorkloadThawed, WorkloadTransportCredit,
     WorkloadTransportPosition,
 };
-use microsandbox_protocol::init_observation::ObservedReady;
+use microsandbox_protocol::init_observation::{InitObservation, ObservedReady};
 use microsandbox_protocol::message::{Message, MessageType};
 use tokio::sync::{Notify, mpsc, oneshot};
 
@@ -169,6 +169,19 @@ impl WorkloadControl {
             ));
         }
         Ok((version, ready))
+    }
+
+    /// Boot evidence is needed before the relay starts admitting clients. Unlike capture's
+    /// ready(), this does not authorize workload commands or require a running writer.
+    pub(crate) fn boot_init(&self) -> Option<InitObservation> {
+        let state = self.state.lock().unwrap();
+        if state.closed {
+            return None;
+        }
+        state
+            .ready
+            .as_ref()
+            .and_then(|(_, ready)| ready.init_observation.clone())
     }
 
     pub(crate) fn gate(self: &Arc<Self>) -> InputGate {
@@ -532,6 +545,24 @@ mod tests {
             false,
         );
         control
+    }
+
+    #[test]
+    fn boot_evidence_does_not_authorize_workload_commands_before_the_writer_starts() {
+        let control = WorkloadControl::new();
+        assert!(control.boot_init().is_none());
+        control.install_ready(
+            9,
+            ObservedReady {
+                ready: Ready::default(),
+                init_observation: Some(InitObservation::Builtin),
+            },
+            false,
+        );
+        assert_eq!(control.boot_init(), Some(InitObservation::Builtin));
+        assert!(control.ready().is_err());
+        control.close();
+        assert!(control.boot_init().is_none());
     }
 
     #[test]
