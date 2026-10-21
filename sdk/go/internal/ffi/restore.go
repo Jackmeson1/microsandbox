@@ -12,6 +12,8 @@ import (
 type RestoreOptions struct {
 	Init                        *InitOptions         `json:"init,omitempty"`
 	Hostname                    *string              `json:"hostname,omitempty"`
+	MaxCPUs                     *uint8               `json:"max_cpus,omitempty"`
+	MaxMemoryMiB                *uint32              `json:"max_memory_mib,omitempty"`
 	Snapshot                    string               `json:"snapshot"`
 	SnapshotReferenceKind       string               `json:"snapshot_reference_kind,omitempty"`
 	CPUs                        *uint8               `json:"cpus,omitempty"`
@@ -83,6 +85,12 @@ func CheckRestoreBootOptions(ctx context.Context, options RestoreOptions) error 
 	if options.Hostname != nil {
 		requested = append(requested, "hostname")
 	}
+	if options.MaxCPUs != nil {
+		requested = append(requested, "max_cpus")
+	}
+	if options.MaxMemoryMiB != nil {
+		requested = append(requested, "max_memory_mib")
+	}
 	if len(requested) == 0 {
 		return nil
 	}
@@ -98,7 +106,7 @@ func CheckRestoreBootOptions(ctx context.Context, options RestoreOptions) error 
 		if !errors.As(err, &native) || (native.Kind != KindUnsupportedOperation && native.Kind != KindInvalidArgument) {
 			return err
 		}
-		return &Error{Kind: KindUnsupportedOperation, Message: "init/hostname selection requires an updated native SDK: " + err.Error()}
+		return &Error{Kind: KindUnsupportedOperation, Message: "requested restore options require an updated native SDK: " + err.Error()}
 	}
 	var supported []string
 	if err := json.Unmarshal(raw, &supported); err != nil {

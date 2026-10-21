@@ -217,6 +217,14 @@ init: "/sbin/init" # or "auto"
 
 Select guest PID 1 for a disk checkpoint or `disk_only: true` boot. Uses the existing string init format. Available on group/checkpoint spawn and progress variants. Full-memory resume refuses an explicit choice, including `"auto"`.
 
+#### max_cpus and max_memory
+
+```ruby
+max_cpus: 2, max_memory: 512
+```
+
+Set the maximum possible CPU count and memory ceiling in MiB for a disk boot, including `disk_only: true`. Values must be positive and at least the requested capacity; full-memory resume requires the captured ceilings exactly. Omission retains the existing inherited/default choice. Available on group/checkpoint spawn and progress variants.
+
 #### hostname
 
 ```ruby

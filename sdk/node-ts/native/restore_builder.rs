@@ -73,6 +73,24 @@ impl JsRestoreBuilder {
         Ok(self)
     }
 
+    /// Set the CPU ceiling for disk boot; full resume requires the captured ceiling.
+    #[napi(js_name = "maxCpus")]
+    pub fn max_cpus(&mut self, count: f64) -> Result<&Self> {
+        let count = crate::numeric::uint32(count, "count")?;
+        let count = u8::try_from(count)
+            .map_err(|_| napi::Error::from_reason("max_cpus out of u8 range"))?;
+        self.inner = Some(self.take_inner()?.max_cpus(count));
+        Ok(self)
+    }
+
+    /// Set the memory ceiling in MiB; full resume requires the captured ceiling.
+    #[napi(js_name = "maxMemory")]
+    pub fn max_memory(&mut self, mib: f64) -> Result<&Self> {
+        let mib = crate::numeric::uint32(mib, "mib")?;
+        self.inner = Some(self.take_inner()?.max_memory(Mebibytes::from(mib)));
+        Ok(self)
+    }
+
     /// Set guest PID 1 for disk boot. Full-memory resume rejects this request.
     #[napi]
     pub fn init(&mut self, cmd: String, args: Option<Vec<String>>) -> Result<&Self> {

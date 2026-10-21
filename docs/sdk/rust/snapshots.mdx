@@ -1710,6 +1710,22 @@ fn memory(mut self, size: impl Into<Mebibytes>) -> Self
 CPU count and memory in MiB. Full restore must match capture.
 
 
+#### <span className="msb-recv">restore.</span><span className="msb-hn">max_cpus()</span>
+
+```rust
+fn max_cpus(self, count: u8) -> Self
+```
+
+Set the maximum possible CPU count for a disk boot. Must be positive and at least the requested CPU count. Full-memory resume requires the captured ceiling exactly.
+
+#### <span className="msb-recv">restore.</span><span className="msb-hn">max_memory()</span>
+
+```rust
+fn max_memory(self, size: impl Into<Mebibytes>) -> Self
+```
+
+Set the memory ceiling in MiB for a disk boot. Must be positive and at least the requested memory. Full-memory resume requires the captured ceiling exactly. Omitting either ceiling retains the existing inherited/default choice.
+
 #### <span className="msb-recv">restore.</span><span className="msb-hn">network_policy()</span>
 
 ```rust

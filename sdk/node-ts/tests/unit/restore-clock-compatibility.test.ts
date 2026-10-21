@@ -38,3 +38,27 @@ describe("restore boot option capabilities", () => {
     });
   }
 });
+
+
+describe("restore resource ceiling capabilities", () => {
+  for (const option of ["maxCpus", "maxMemory"] as const) {
+    it(`rejects unsupported ${option} before a terminal call`, () => {
+      delete native[option];
+      // Sandbox.restore wraps terminal methods; retain the original native spies.
+      const restore = vi.fn();
+      const progress = vi.fn();
+      native.restore = restore;
+      native.restoreWithProgress = progress;
+      const builder = Sandbox.restore("saved");
+      expect(() => builder[option](0)).toThrow(UnsupportedError);
+      expect(restore).not.toHaveBeenCalled();
+      expect(progress).not.toHaveBeenCalled();
+    });
+    it(`preserves explicit zero and the native ${option} setter`, () => {
+      const setter = vi.fn().mockReturnValue(native);
+      native[option] = setter;
+      Sandbox.restore("saved")[option](0);
+      expect(setter).toHaveBeenCalledWith(0);
+    });
+  }
+});

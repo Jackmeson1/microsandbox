@@ -63,6 +63,14 @@ describe("native Sandbox lifecycle contract", () => {
     expect(() => builder.networkPolicyJson(JSON.stringify({ tls: {} })))
       .toThrow("restore network policy accepts only default actions and rules");
     expect(() => builder.cpus(256)).toThrow("cpus out of u8 range");
+    expect(() => builder.maxCpus(256)).toThrow("max_cpus out of u8 range");
+    for (const value of [-1, 1.5, NaN, Infinity, -Infinity, 2 ** 32]) {
+      expect(() => builder.maxCpus(value)).toThrow();
+      expect(() => builder.maxMemory(value)).toThrow();
+    }
+    // Numeric refusal must leave the deferred builder reusable. Zero remains
+    // explicit here; core resource validation rejects it at the terminal call.
+    expect(builder.maxCpus(0).maxMemory(0).maxCpus(2).maxMemory(512)).toBe(builder);
     expect(() => builder.security("invalid" as never)).toThrow("invalid security profile");
     for (const value of [-1, NaN, Infinity, -Infinity, 2 ** 64]) {
       expect(() => builder.maxDuration(value)).toThrow("restore duration must be finite");

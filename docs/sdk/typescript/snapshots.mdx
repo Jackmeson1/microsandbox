@@ -1600,6 +1600,24 @@ memory(mib: number): this
 
 Memory in MiB. Full restore must match capture.
 
+#### <span className="msb-recv">restore.</span><span className="msb-hn">maxCpus()</span>
+
+```typescript
+maxCpus(count: number): this
+```
+
+Set the maximum possible CPU count for a disk boot. Must be positive and at least the requested CPU count. Full-memory resume requires the captured ceiling exactly.
+
+#### <span className="msb-recv">restore.</span><span className="msb-hn">maxMemory()</span>
+
+```typescript
+maxMemory(mib: number): this
+```
+
+Set the memory ceiling in MiB for a disk boot. Must be positive and at least the requested memory. Full-memory resume requires the captured ceiling exactly. Omitting either ceiling retains the existing inherited/default choice.
+
+An older native SDK that lacks either setter rejects its explicit use before launch.
+
 #### <span className="msb-recv">restore.</span><span className="msb-hn">networkPolicy()</span>
 
 ```typescript

@@ -1,5 +1,6 @@
 """Destination boot choices must affect only a newly booted snapshot child."""
 
+import json
 import os
 from contextlib import suppress
 
@@ -7,6 +8,7 @@ import pytest
 
 from integration.helpers import IMAGE, remove_sandbox
 from microsandbox import InitConfig, Sandbox
+from microsandbox.errors import InvalidConfigError
 
 
 @pytest.mark.asyncio
@@ -18,7 +20,8 @@ async def test_snapshot_destination_init_and_hostname(sandbox_name, full):
     names = [source_name]
     group = None
     source = await Sandbox.create(
-        source_name, image=IMAGE, cpus=1, memory=256, hostname="source-host"
+        source_name, image=IMAGE, cpus=1, memory=256, max_cpus=2, max_memory=512,
+        hostname="source-host",
     )
     try:
         assert (await source.shell("printf source-marker > /root/marker; sync")).success
@@ -42,6 +45,31 @@ async def test_snapshot_destination_init_and_hostname(sandbox_name, full):
                     # No child should have been registered before refusing the boot mutation.
                     with pytest.raises(Exception, match="not found"):
                         await Sandbox.get(name)
+        for options in [
+            {"max_cpus": 0}, {"max_memory": 0},
+            {"cpus": 2, "max_cpus": 1}, {"memory": 512, "max_memory": 256},
+        ]:
+            name = sandbox_name("ceiling-refuse")
+            names.append(name)
+            with pytest.raises(InvalidConfigError):
+                await checkpoint.spawn_sandbox(name=name, disk_only=full, **options)
+            with pytest.raises(Exception, match="not found"):
+                await Sandbox.get(name)
+        if full:
+            for options in [{"max_cpus": 3}, {"max_memory": 768}]:
+                name = sandbox_name("geometry-refuse")
+                names.append(name)
+                with pytest.raises(Exception, match="captured CPU and memory geometry"):
+                    await checkpoint.spawn_sandbox(name=name, **options)
+                with pytest.raises(Exception, match="not found"):
+                    await Sandbox.get(name)
+            # An explicit match resumes captured execution; it does not request a resize.
+            name = sandbox_name("geometry-match")
+            names.append(name)
+            child = await group.spawn_sandbox(name=name, max_cpus=2, max_memory=512)
+            assert (await child.shell("cat /root/marker")).stdout_text == "source-marker"
+            await child.stop()
+            await remove_sandbox(name)
         # The source remains unchanged while both public spawn paths boot private children.
         for progress in [False, True]:
             name = sandbox_name("boot-child")
@@ -50,6 +78,8 @@ async def test_snapshot_destination_init_and_hostname(sandbox_name, full):
                 name=name,
                 cpus=1,
                 memory=256,
+                max_cpus=2,
+                max_memory=512,
                 hostname="child-host",
                 disk_only=full,
                 init=InitConfig(
@@ -64,6 +94,12 @@ async def test_snapshot_destination_init_and_hostname(sandbox_name, full):
             else:
                 child = await group.spawn_sandbox(**options)
             try:
+                resources = json.loads((await Sandbox.get(name)).config_json)["resources"]
+                assert resources["max_cpus"] == 2
+                assert resources["max_memory_mib"] == 512
+                capacity = await child.shell("nproc; cat /sys/devices/system/cpu/possible")
+                assert capacity.success
+                assert capacity.stdout_text.strip() == "1\n0-1"
                 output = await child.shell(
                     'for i in $(seq 1 50); do test -s /root/boot-value && break; sleep 0.1; done; '
                     'test "$(cat /root/boot-value)" = child-init && '

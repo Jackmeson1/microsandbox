@@ -25,6 +25,9 @@ type RestoreConfig struct {
 	// CPU and memory overrides must match captured geometry for full execution restore.
 	CPUs      *uint8
 	MemoryMiB *uint32
+	// Explicit ceilings apply to disk boot; full resume requires captured maxima.
+	MaxCPUs      *uint8
+	MaxMemoryMiB *uint32
 	// Init and Hostname apply only to disk boot. Full-memory resume refuses either override.
 	Init *InitConfig
 	// A pointer preserves an explicit empty hostname so validation can reject it.
@@ -100,6 +103,16 @@ func WithRestoreCPUs(cpus uint8) RestoreOption {
 // WithRestoreMemory selects memory in MiB; full restore requires captured geometry.
 func WithRestoreMemory(mebibytes uint32) RestoreOption {
 	return func(o *RestoreConfig) { o.MemoryMiB = &mebibytes }
+}
+
+// WithRestoreMaxCPUs selects the CPU ceiling; full resume requires the captured maximum.
+func WithRestoreMaxCPUs(cpus uint8) RestoreOption {
+	return func(o *RestoreConfig) { o.MaxCPUs = &cpus }
+}
+
+// WithRestoreMaxMemory selects the memory ceiling in MiB; full resume requires the captured maximum.
+func WithRestoreMaxMemory(mebibytes uint32) RestoreOption {
+	return func(o *RestoreConfig) { o.MaxMemoryMiB = &mebibytes }
 }
 
 // WithRestoreInit selects guest PID 1, arguments and environment for disk boot.
@@ -244,6 +257,7 @@ func buildFFIRestoreOptions[T SnapshotSeed](snapshot T, config RestoreConfig) ff
 		Snapshot: reference, SnapshotReferenceKind: referenceKind,
 		CPUs: config.CPUs, MemoryMiB: config.MemoryMiB, NetworkPolicy: policy,
 		Init: resources.Init, Hostname: config.Hostname,
+		MaxCPUs: config.MaxCPUs, MaxMemoryMiB: config.MaxMemoryMiB,
 		MaxConnections: config.MaxConnections, MaxTCPConnections: config.MaxTCPConnections,
 		MaxUDPConnections: config.MaxUDPConnections, DisableNetwork: config.DisableNetwork,
 		SecurityProfile: string(config.SecurityProfile),
