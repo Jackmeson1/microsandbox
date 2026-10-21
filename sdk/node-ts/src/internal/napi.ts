@@ -274,6 +274,13 @@ export interface NapiRestoreBuilderSetters {
   pullPolicy(policy: string): this;
   /** Select the destination proxy before disk boot or full resume. */
   proxy(configure: (arg: NapiOutboundProxyBuilder) => NapiHttpConnectProxyBuilder | NapiSocks4ProxyBuilder | NapiSocks5ProxyBuilder): this;
+  /** Defaults for new commands only; no startup execution or modification of captured processes. */
+  workdir(path: string): this;
+  shell(shell: string): this;
+  entrypoint(argv: string[]): this;
+  cmd(argv: string[]): this;
+  env(key: string, value: string): this;
+  envs(values: Record<string, string>): this;
   name(name: string): this;
   /** Full execution restore requires captured CPU and memory geometry. */
   cpus(count: number): this;
@@ -281,7 +288,10 @@ export interface NapiRestoreBuilderSetters {
   /** Disk-boot ceilings; full resume requires the captured maxima. */
   maxCpus(count: number): this;
   maxMemory(mib: number): this;
-  /** Guest PID 1 for disk boot; full-memory resume rejects replacement. */
+  /** Disk boot only; full resume rejects every explicit policy. */
+  /** Destination labels; source snapshot labels are unchanged. */
+  label(key: string, value: string): this;
+  labels(labels: Record<string, string>): this;
   init(cmd: string, args?: string[]): this;
   /** Guest PID 1 with arguments and environment, for disk boot only. */
   initWith(cmd: string, configure: (b: NapiInitOptionsBuilder) => NapiInitOptionsBuilder): this;

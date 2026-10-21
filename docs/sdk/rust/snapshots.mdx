@@ -1686,7 +1686,7 @@ fn hostname(self, hostname: impl Into<String>) -> Self
 
 Set a nonempty guest hostname of at most 64 UTF-8 bytes for disk boot. Full-memory resume refuses replacement even when the requested name matches the source.
 
-Image, replacement, and startup-command options are not accepted. Full restore requires matching CPU and memory settings, keeps captured network devices, and cannot apply a new guest security profile. Use disk-only restore to change these.
+Image, replacement, and automatic startup-command options are not accepted; entrypoint/CMD configure future commands only. Full restore requires matching CPU and memory settings, keeps captured network devices, and cannot apply a new guest security profile. Use disk-only restore to change these.
 
 Restore rejects missing external filesystems (and, for full restore, additional disks) by default. Use `allow_missing_resources()` to resume with unavailable devices (full restore records warnings). This is separate from strict/relaxed validation of supplied mappings; inheritance does not waive missing backing. Root and owned storage remain required.
 
@@ -1725,6 +1725,26 @@ fn max_memory(self, size: impl Into<Mebibytes>) -> Self
 ```
 
 Set the memory ceiling in MiB for a disk boot. Must be positive and at least the requested memory. Full-memory resume requires the captured ceiling exactly. Omitting either ceiling retains the existing inherited/default choice.
+
+#### Destination command defaults
+
+Use `workdir`, `shell`, `entrypoint`, `cmd`, `env` and `envs` to configure new commands in the destination. They work for disk boots and full resumes without changing captured processes or starting a workload during restoration. An explicit empty entrypoint or CMD clears that default; omission keeps existing resolution. Environment defaults combine with per-command overrides through the ordinary SDK rules. Guest working directories must exist. These are explicit destination settings, not automatically saved snapshot configuration. Unsupported native bindings reject new explicit options before dispatch.
+
+#### <span className="msb-recv">restore.</span><span className="msb-hn">label()</span>
+
+```rust
+fn label(self, key: impl Into<String>, value: impl Into<String>) -> Self
+```
+
+Attach a destination sandbox label. An existing key is replaced; source snapshot labels remain unchanged. Normal sandbox label validation applies.
+
+#### <span className="msb-recv">restore.</span><span className="msb-hn">labels()</span>
+
+```rust
+fn labels(self, labels: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>) -> Self
+```
+
+Attach several destination labels with the same semantics as `label()`.
 
 #### <span className="msb-recv">restore.</span><span className="msb-hn">network_policy()</span>
 

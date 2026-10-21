@@ -92,6 +92,48 @@ impl JsRestoreBuilder {
         Ok(self)
     }
 
+    /// Default guest directory for new commands.
+    #[napi]
+    pub fn workdir(&mut self, value: String) -> Result<&Self> {
+        self.inner = Some(self.take_inner()?.workdir(value));
+        Ok(self)
+    }
+
+    /// Default shell for new commands; never executed by restoration.
+    #[napi]
+    pub fn shell(&mut self, value: String) -> Result<&Self> {
+        self.inner = Some(self.take_inner()?.shell(value));
+        Ok(self)
+    }
+
+    /// Entrypoint for future default workloads, not startup execution.
+    #[napi]
+    pub fn entrypoint(&mut self, value: Vec<String>) -> Result<&Self> {
+        self.inner = Some(self.take_inner()?.entrypoint(value));
+        Ok(self)
+    }
+
+    /// CMD for future default workloads; an empty array clears it.
+    #[napi]
+    pub fn cmd(&mut self, value: Vec<String>) -> Result<&Self> {
+        self.inner = Some(self.take_inner()?.cmd(value));
+        Ok(self)
+    }
+
+    /// Add an environment default for new commands, not captured processes.
+    #[napi]
+    pub fn env(&mut self, key: String, value: String) -> Result<&Self> {
+        self.inner = Some(self.take_inner()?.env(key, value));
+        Ok(self)
+    }
+
+    /// Add environment defaults; does not start a command.
+    #[napi]
+    pub fn envs(&mut self, values: std::collections::HashMap<String, String>) -> Result<&Self> {
+        self.inner = Some(self.take_inner()?.envs(values));
+        Ok(self)
+    }
+
     /// Set destination CPUs; full execution restore requires the captured count.
     #[napi]
     pub fn cpus(&mut self, count: f64) -> Result<&Self> {
@@ -125,6 +167,20 @@ impl JsRestoreBuilder {
     pub fn max_memory(&mut self, mib: f64) -> Result<&Self> {
         let mib = crate::numeric::uint32(mib, "mib")?;
         self.inner = Some(self.take_inner()?.max_memory(Mebibytes::from(mib)));
+        Ok(self)
+    }
+
+    /// Annotate the destination sandbox without changing its snapshot.
+    #[napi]
+    pub fn label(&mut self, key: String, value: String) -> Result<&Self> {
+        self.inner = Some(self.take_inner()?.label(key, value));
+        Ok(self)
+    }
+
+    /// Attach destination labels, replacing earlier values for matching keys.
+    #[napi]
+    pub fn labels(&mut self, labels: std::collections::HashMap<String, String>) -> Result<&Self> {
+        self.inner = Some(self.take_inner()?.labels(labels));
         Ok(self)
     }
 

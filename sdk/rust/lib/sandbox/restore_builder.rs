@@ -133,6 +133,46 @@ impl RestoreBuilder {
         self
     }
 
+    /// Default guest working directory for new commands, including after full resume.
+    pub fn workdir(mut self, path: impl Into<String>) -> Self {
+        self.inner = self.inner.workdir(path);
+        self
+    }
+
+    /// Default shell for new commands; this does not execute it during restoration.
+    pub fn shell(mut self, shell: impl Into<String>) -> Self {
+        self.inner = self.inner.shell(shell);
+        self
+    }
+
+    /// Set the entrypoint for future default-workload execution; captured processes are unchanged.
+    pub fn entrypoint(mut self, argv: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.inner = self.inner.entrypoint(argv);
+        self
+    }
+
+    /// Set CMD for future default-workload execution. An empty list explicitly clears CMD.
+    /// This never selects a startup command or executes during restoration.
+    pub fn cmd(mut self, argv: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.inner = self.inner.cmd(argv);
+        self
+    }
+
+    /// Add a destination environment default for new commands, not captured processes.
+    pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.inner = self.inner.env(key, value);
+        self
+    }
+
+    /// Add destination environment defaults using the existing SDK append/override semantics.
+    pub fn envs(
+        mut self,
+        env: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        self.inner = self.inner.envs(env);
+        self
+    }
+
     /// Set guest CPUs for disk boot. Full restore accepts only the captured CPU count.
     pub fn cpus(mut self, count: u8) -> Self {
         self.inner = self.inner.cpus(count);
@@ -154,6 +194,21 @@ impl RestoreBuilder {
     /// Set the memory ceiling for disk boot. Full resume requires the captured ceiling.
     pub fn max_memory(mut self, size: impl Into<Mebibytes>) -> Self {
         self.inner = self.inner.max_memory(size);
+        self
+    }
+
+    /// Attach a label to the destination sandbox without changing snapshot labels.
+    pub fn label(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.inner = self.inner.label(key, value);
+        self
+    }
+
+    /// Attach destination labels, replacing earlier values for the same keys.
+    pub fn labels(
+        mut self,
+        labels: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        self.inner = self.inner.labels(labels);
         self
     }
 
@@ -498,6 +553,78 @@ mod tests {
             )
             .unwrap();
         assert!(builder.inner.build_error.is_none());
+    }
+
+    #[test]
+    fn destination_labels_do_not_override_guest_boot() {
+        let builder = Sandbox::restore("saved")
+            .label("team", "before")
+            .labels([("team", "after"), ("purpose", "snapshot-child")]);
+        let config = config(&builder);
+        assert_eq!(config.spec.labels["team"], "after");
+        assert_eq!(config.spec.labels["purpose"], "snapshot-child");
+        config
+            .restore_boot_overrides
+            .validate_scope(
+                crate::snapshot::SnapshotScope::Full,
+                SnapshotRestoreMode::Full,
+            )
+            .unwrap();
+        // Labels use the regular sandbox validation, including reserved keys.
+        assert!(
+            Sandbox::restore("saved")
+                .name("child")
+                .label("microsandbox.reserved", "x")
+                .inner
+                .image("alpine")
+                .finish(None, None)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn command_defaults_do_not_request_startup_or_change_captured_execution() {
+        let builder = Sandbox::restore("saved")
+            .workdir("/root")
+            .shell("/bin/ash")
+            .entrypoint(["/bin/sh", "-c"])
+            .cmd(["printf requested"])
+            .env("KEY", "first")
+            .envs([("KEY", "last"), ("EMPTY", "")]);
+        let config = config(&builder);
+        assert_eq!(config.spec.runtime.workdir.as_deref(), Some("/root"));
+        assert_eq!(config.spec.runtime.shell.as_deref(), Some("/bin/ash"));
+        assert_eq!(
+            config.spec.runtime.entrypoint,
+            Some(vec!["/bin/sh".into(), "-c".into()])
+        );
+        assert_eq!(
+            config.spec.runtime.cmd,
+            Some(vec!["printf requested".into()])
+        );
+        assert!(!config.should_launch_background_command());
+        config
+            .restore_boot_overrides
+            .validate_scope(
+                crate::snapshot::SnapshotScope::Full,
+                SnapshotRestoreMode::Full,
+            )
+            .unwrap();
+        assert_eq!(
+            config
+                .spec
+                .env
+                .iter()
+                .map(|value| (value.key.as_str(), value.value.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("KEY", "first"), ("KEY", "last"), ("EMPTY", "")]
+        );
+        let cleared = builder
+            .entrypoint(Vec::<String>::new())
+            .cmd(Vec::<String>::new());
+        let cleared = self::config(&cleared);
+        assert_eq!(cleared.spec.runtime.entrypoint, Some(vec![]));
+        assert_eq!(cleared.spec.runtime.cmd, Some(vec![]));
     }
 
     #[test]

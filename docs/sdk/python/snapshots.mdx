@@ -1216,18 +1216,17 @@ max_memory: int | None = None
 
 Set the maximum possible CPU count and memory ceiling in MiB for a disk boot, including `disk_only=True`. Values must be positive and at least the requested capacity; full-memory resume requires the captured ceilings exactly. `None` leaves a ceiling unspecified. Available on group/checkpoint spawn and progress variants as well as restore.
 
-#### hostname
+#### Destination command defaults
+
+Use `workdir`, `shell`, `entrypoint`, `cmd` and `env` keyword arguments to configure new commands in the destination. They work for disk boots and full resumes without changing captured processes or starting a workload during restoration. An explicit empty entrypoint or CMD clears that default; omission keeps existing resolution. Environment defaults combine with per-command overrides through the ordinary SDK rules. Guest working directories must exist. These are explicit destination settings, not automatically saved snapshot configuration. Unsupported native bindings reject new explicit options before dispatch.
+
+#### labels
 
 ```python
-hostname: str | None = None
+labels: Mapping[str, str] | None = None
 ```
 
-Set a nonempty guest hostname of at most 64 UTF-8 bytes for disk boot. Full-memory resume refuses replacement even when the requested name matches the source. `None` leaves the choice unspecified.
-
-Image, replacement, and startup-command options are not accepted. Full restore requires matching CPU and memory settings, keeps captured network devices, and cannot apply a new guest security profile. Use disk-only restore to change these.
-
-Restore rejects missing external filesystems (and, for full restore, additional disks) by default. Use `allow_missing_resources=True` to resume with unavailable devices (full restore records warnings). This is separate from strict/relaxed validation of supplied mappings; inheritance does not waive missing backing. Root and owned storage remain required.
-
+Attach destination sandbox labels. Source snapshot labels remain unchanged. Available on group/checkpoint spawn, progress variants and restore; normal sandbox label validation applies.
 
 #### pull_policy
 
@@ -1244,6 +1243,19 @@ proxy: OutboundProxy | None = None
 ```
 
 Select the destination host proxy before disk boot or full-memory resume. This preserves the captured guest interface and does not inject guest trust material. SOCKS5 passwords use destination environment references; resolved passwords are not saved in snapshot configuration. `None` leaves destination resolution unchanged.
+
+#### hostname
+
+```python
+hostname: str | None = None
+```
+
+Set a nonempty guest hostname of at most 64 UTF-8 bytes for disk boot. Full-memory resume refuses replacement even when the requested name matches the source. `None` leaves the choice unspecified.
+
+Image, replacement, and automatic startup-command options are not accepted; entrypoint/CMD configure future commands only. Full restore requires matching CPU and memory settings, keeps captured network devices, and cannot apply a new guest security profile. Use disk-only restore to change these.
+
+Restore rejects missing external filesystems (and, for full restore, additional disks) by default. Use `allow_missing_resources=True` to resume with unavailable devices (full restore records warnings). This is separate from strict/relaxed validation of supplied mappings; inheritance does not waive missing backing. Root and owned storage remain required.
+
 
 <div className="msb-params">
   <div className="msb-param">

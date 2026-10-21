@@ -61,9 +61,12 @@ func TestSnapshotBootOptionsLive(t *testing.T) {
 	}
 	for index, name := range names[:2] {
 		opts := []RestoreOption{
+			WithRestoreWorkdir("/root"), WithRestoreShell("/bin/ash"), WithRestoreEnv("DEST_VALUE", "go-value"),
+			WithRestoreEntrypoint("/bin/sh", "-c"), WithRestoreCmd("touch /root/default-ran"),
 			WithRestoreHostname("go-child"),
 			WithRestoreCPUs(1), WithRestoreMemory(256),
 			WithRestoreMaxCPUs(2), WithRestoreMaxMemory(512),
+			WithRestoreLabel("destination", "go-child"),
 			WithRestoreInit(Init.Cmd("/bin/sh", InitOptions{
 				Args: []string{"-c", `printf "%s" "$BOOT_VALUE" > /root/go-boot; exec sleep 300`},
 				Env:  map[string]string{"BOOT_VALUE": "go-init"},
@@ -83,6 +86,10 @@ func TestSnapshotBootOptionsLive(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		defaults, err := child.Exec(ctx, "/bin/sh", []string{"-c", `test ! -e /root/default-ran && printf "%s:%s" "$PWD" "$DEST_VALUE"`})
+		if err != nil || !defaults.Success() || defaults.Stdout() != "/root:go-value" {
+			t.Fatalf("command defaults: %v %+v", err, defaults)
+		}
 		handle, err := GetSandbox(ctx, name)
 		if err != nil {
 			t.Fatal(err)
@@ -90,6 +97,12 @@ func TestSnapshotBootOptionsLive(t *testing.T) {
 		config, err := handle.Config()
 		if err != nil || config.MaxCPUs != 2 || config.MaxMemoryMiB != 512 {
 			t.Fatalf("resource ceilings: %v %+v", err, config)
+		}
+		if config.Workdir != "/root" || config.Shell != "/bin/ash" || strings.Join(config.Entrypoint, "|") != "/bin/sh|-c" || len(config.Cmd) != 1 || config.Cmd[0] != "touch /root/default-ran" {
+			t.Fatalf("command defaults missing from retained child configuration: %+v", config)
+		}
+		if config.Labels["destination"] != "go-child" {
+			t.Fatalf("destination policy lost: %+v", config)
 		}
 		capacity, err := child.Exec(ctx, "sh", []string{"-c", "nproc; cat /sys/devices/system/cpu/possible"})
 		if err != nil || !capacity.Success() || strings.TrimSpace(capacity.Stdout()) != "1\n0-1" {
