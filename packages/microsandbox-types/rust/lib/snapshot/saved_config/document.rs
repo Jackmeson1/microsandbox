@@ -15,8 +15,8 @@ use super::validation::{MAX_NAME_BYTES, MAX_SAVED_SCRIPTS_BYTES, decode, encoded
 use super::value::deserialize_present;
 use super::{
     SavedBindingKind, SavedBindingUses, SavedExecutionConfig, SavedNetworkConfig,
-    SavedResourcesConfig, SavedRuntimeConfig, SavedScript, SavedStorageConfig, SavedValue,
-    collect_binding_uses,
+    SavedResourcesConfig, SavedRuntimeConfig, SavedScript, SavedScriptBacking, SavedStorageConfig,
+    SavedValue, collect_binding_uses,
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -62,6 +62,13 @@ pub struct SavedActiveConfig {
     /// Configured command/init/script defaults, without a foreground invocation.
     #[serde(default)]
     pub runtime: SavedRuntimeConfig,
+    /// Observed registered-file metadata for full capture; not reusable policy or handle admission.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present"
+    )]
+    pub script_backing: Option<SavedValue<SavedScriptBacking>>,
     /// Ordered gateway policy and logical destination network resources.
     #[serde(default)]
     pub network: SavedNetworkConfig,
@@ -129,6 +136,13 @@ impl SavedSandboxConfig {
         merge_binding_uses(&mut uses, self.active.storage.binding_uses()?)?;
         let mut script_bytes = self.active.inline_script_bytes();
         if let Some(pending) = &self.pending {
+            if pending.script_backing.is_some() {
+                return invalid(
+                    "SCFG_IDENTITY",
+                    "pending.script_backing",
+                    "pending intent cannot contain observed backing",
+                );
+            }
             // Pending input receives the same exclusion/validation contract, but it
             // contributes no activation demand. Do not hand this union to a launcher.
             pending.validate().map_err(pending_error)?;
@@ -209,6 +223,20 @@ impl SavedActiveConfig {
     pub fn validate(&self) -> SnapshotManifestResult<()> {
         self.resources.validate()?;
         self.runtime.validate()?;
+        match &self.script_backing {
+            None | Some(SavedValue::Unknown { .. }) => {}
+            Some(SavedValue::Value {
+                value,
+                origin: super::SavedOrigin::Observed,
+            }) => value.validate(&self.runtime)?,
+            _ => {
+                return invalid(
+                    "SCFG_IDENTITY",
+                    "active.script_backing",
+                    "script metadata must be observed",
+                );
+            }
+        }
         self.network.validate()?;
         self.execution.validate()?;
         self.storage.validate()

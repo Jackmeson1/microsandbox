@@ -15,6 +15,7 @@ use microsandbox_types::{
     VolumeMount,
 };
 use serde_json::{Value, json};
+use sha2::Digest;
 
 use super::storage_tests::manifest;
 use super::{
@@ -412,6 +413,76 @@ fn capture_document_generation_and_source_provenance_remain_explicit() {
         document.provenance.active_generation,
         SavedValue::Unknown { .. }
     ));
+}
+
+#[test]
+fn full_script_metadata_survives_projection_without_retaining_excluded_body_hashes() {
+    let mut raw = source();
+    raw["runtime"]["scripts"] = json!({"task":"STALE_DECLARATION"});
+    let evidence = ScriptBackingEvidence::Observed {
+        runtime_directory: CapturedScriptDirectory {
+            uid: 0,
+            gid: 0,
+            mode: 0o755,
+        },
+        scripts_directory: CapturedScriptDirectory {
+            uid: 44,
+            gid: 45,
+            mode: 0o710,
+        },
+        files: BTreeMap::from([(
+            "task".into(),
+            CapturedScriptBacking {
+                content: "PRIVATE_OBSERVED_BODY".into(),
+                uid: 42,
+                gid: 43,
+                mode: 0o640,
+            },
+        )]),
+    };
+    let source = RuntimeCaptureSource::from_recorded(&raw, None, Some(&evidence)).unwrap();
+    let descriptor = manifest(true);
+    let mut controls = Controls::default();
+    let doc = source
+        .project_document(request(&descriptor, &controls), generation())
+        .unwrap();
+    let metadata = doc
+        .active
+        .script_backing
+        .as_ref()
+        .and_then(SavedValue::value)
+        .unwrap();
+    assert_eq!(
+        (
+            metadata.files["task"].uid,
+            metadata.files["task"].gid,
+            metadata.files["task"].mode
+        ),
+        (42, 43, 0o640)
+    );
+    assert_eq!(metadata.scripts_directory.mode, 0o710);
+    controls.runtime.insert(
+        RuntimeCaptureTarget::ScriptKey("task".into()),
+        RuntimeCaptureAction::Bind("body".into()),
+    );
+    let bound = source
+        .project_document(request(&descriptor, &controls), generation())
+        .unwrap();
+    let encoded = serde_json::to_string(&bound).unwrap();
+    assert!(!encoded.contains("PRIVATE_OBSERVED_BODY"));
+    assert!(!encoded.contains(&hex::encode(sha2::Sha256::digest(b"PRIVATE_OBSERVED_BODY"))));
+    assert!(bound.active.script_backing.is_some());
+    assert!(
+        source
+            .project_document(
+                request(&manifest(false), &Controls::default()),
+                generation()
+            )
+            .unwrap()
+            .active
+            .script_backing
+            .is_none()
+    );
 }
 
 #[test]

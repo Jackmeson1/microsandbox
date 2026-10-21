@@ -55,6 +55,17 @@ pub struct RuntimeBootScript<'a> {
     pub mode: u16,
 }
 
+/// Source-independent registered backing with captured guest metadata.
+/// No source path or serialization: captured filesystem-state admission remains separate.
+pub struct RuntimeRestoredScript<'a> {
+    /// One validated registered filename.
+    pub name: &'a str,
+    /// Exact UTF-8 bytes, without wrapping or execution.
+    pub content: &'a str,
+    /// Captured guest ownership and ordinary mode.
+    pub metadata: RuntimeScriptMetadata,
+}
+
 /// Pinned observations of registered files and their runtime/scripts directories.
 ///
 /// The caller must hold the source's coherent capture/mutation guard through publication.
@@ -293,6 +304,98 @@ impl fmt::Debug for RuntimeBootScript<'_> {
 //--------------------------------------------------------------------------------------------------
 // Functions
 //--------------------------------------------------------------------------------------------------
+
+/// Reproduce registered backing from portable inputs after source deletion.
+/// This stages guest metadata faithfully but does not admit unregistered runtime files,
+/// filesystem handles, destination policy or a full VM resume.
+pub fn stage_runtime_restored_scripts(
+    parent: &Path,
+    inputs: &[RuntimeRestoredScript<'_>],
+    runtime_metadata: RuntimeScriptMetadata,
+    scripts_metadata: RuntimeScriptMetadata,
+    limits: RuntimeScriptLimits,
+) -> io::Result<TempDir> {
+    stage_restored_scripts_with_check(
+        parent,
+        inputs,
+        runtime_metadata,
+        scripts_metadata,
+        limits,
+        |_| Ok(()),
+    )
+}
+
+pub(super) fn stage_restored_scripts_with_check(
+    parent: &Path,
+    inputs: &[RuntimeRestoredScript<'_>],
+    runtime_metadata: RuntimeScriptMetadata,
+    scripts_metadata: RuntimeScriptMetadata,
+    limits: RuntimeScriptLimits,
+    after_files: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<TempDir> {
+    if inputs.len() > limits.max_entries || limits.max_script_bytes == usize::MAX {
+        return Err(error("SCFG_LIMIT", "invalid script count or byte limit"));
+    }
+    if [runtime_metadata, scripts_metadata]
+        .into_iter()
+        .chain(inputs.iter().map(|v| v.metadata))
+        .any(|v| v.mode > 0o777)
+    {
+        return Err(error(
+            "SCFG_BACKING",
+            "unsupported captured permission bits",
+        ));
+    }
+    let boot: Vec<_> = inputs
+        .iter()
+        .map(|v| RuntimeBootScript {
+            name: v.name,
+            content: v.content,
+            mode: v.metadata.mode,
+        })
+        .collect();
+    // Reuse bounded private file creation without changing the cold-boot ownership contract.
+    let staged = stage_runtime_boot_scripts(parent, &boot, limits)?;
+    let runtime =
+        Dir::open_ambient_dir(staged.path(), cap_std::ambient_authority()).map_err(io_error)?;
+    let scripts = scripts_directory(&runtime)?;
+    let mut stamps = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let observed = observe_file(&scripts, input.name, limits.max_script_bytes)?;
+        set_metadata(&observed._file, input.metadata)?;
+        observed._file.sync_all().map_err(io_error)?;
+        // Keep each inode pinned through verification; deletion must not allow inode reuse.
+        stamps.push(observed);
+    }
+    set_directory_metadata(&scripts, scripts_metadata)?;
+    set_directory_metadata(&runtime, runtime_metadata)?;
+    let scripts_stamp = directory_observation(&scripts)?.0;
+    let runtime_stamp = directory_observation(&runtime)?.0;
+    after_files(staged.path()).map_err(io_error)?;
+    let scripts = scripts_directory(&runtime)?;
+    let (current_scripts, current_metadata) = directory_observation(&scripts)?;
+    let (current_runtime, current_runtime_metadata) = directory_observation(&runtime)?;
+    if !same_inode(&scripts_stamp, &current_scripts)
+        || !same_inode(&runtime_stamp, &current_runtime)
+        || current_metadata != scripts_metadata
+        || current_runtime_metadata != runtime_metadata
+    {
+        return Err(error(
+            "SCFG_INTEGRITY",
+            "staged captured directories differ",
+        ));
+    }
+    for (input, stamp) in inputs.iter().zip(stamps) {
+        let actual = observe_file(&scripts, input.name, limits.max_script_bytes)?;
+        if !same_inode(&stamp.stamp, &actual.stamp)
+            || actual.content.as_bytes() != input.content.as_bytes()
+            || actual.metadata != input.metadata
+        {
+            return Err(error("SCFG_INTEGRITY", "staged captured backing differs"));
+        }
+    }
+    Ok(staged)
+}
 
 /// Materialize exact scripts for a new boot beneath a private caller-owned staging parent.
 ///

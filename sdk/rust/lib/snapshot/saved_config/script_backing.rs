@@ -3,19 +3,92 @@
 use std::{collections::BTreeSet, fs::File, path::Path};
 
 use microsandbox_filesystem::{
-    CapturedRuntimeScripts, RuntimeBootScript, RuntimeScriptLimits, stage_runtime_boot_scripts,
+    CapturedRuntimeScripts, RuntimeBootScript, RuntimeRestoredScript, RuntimeScriptLimits,
+    RuntimeScriptMetadata, stage_runtime_boot_scripts, stage_runtime_restored_scripts,
 };
 use microsandbox_types::snapshot::saved_config::{
-    MAX_SAVED_CONFIG_ENTRIES, MAX_SAVED_SCRIPT_BYTES, MAX_SAVED_SCRIPTS_BYTES,
+    MAX_SAVED_CONFIG_ENTRIES, MAX_SAVED_SCRIPT_BYTES, MAX_SAVED_SCRIPTS_BYTES, SavedOrigin,
+    SavedValue,
 };
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
-use super::RuntimeConfigurationPlan;
+use super::{RuntimeConfigurationPlan, SavedConfigurationPlan};
 use crate::{MicrosandboxError, MicrosandboxResult};
 
 //--------------------------------------------------------------------------------------------------
 // Methods
 //--------------------------------------------------------------------------------------------------
+
+impl SavedConfigurationPlan {
+    /// Stage source-independent full-capture backing without admitting VM execution.
+    /// Full filesystem/device restoration must still validate every captured handle and
+    /// unregistered resource. Bound bodies lack retained identity and cannot use this proof.
+    pub fn stage_full_scripts(&self, parent: &Path) -> MicrosandboxResult<TempDir> {
+        let fail = || {
+            MicrosandboxError::InvalidConfig("SCFG_IDENTITY: runtime.scripts: captured backing identity is unavailable or differs".into())
+        };
+        if !self.context().full_resume {
+            return Err(fail());
+        }
+        let Some(SavedValue::Value {
+            value: backing,
+            origin: SavedOrigin::Observed,
+        }) = &self.script_backing
+        else {
+            return Err(fail());
+        };
+        let Some(digests) = &self.script_digests else {
+            return Err(fail());
+        };
+        self.runtime()
+            .inputs()
+            .scripts
+            .require_available("runtime.scripts")?;
+        let selected = self.runtime().scripts();
+        if !selected.keys().eq(backing.files.keys()) || !selected.keys().eq(digests.keys()) {
+            return Err(fail());
+        }
+        let mut inputs = Vec::with_capacity(selected.len());
+        for (name, script) in selected {
+            let metadata = backing.files[name];
+            let (digest, mode) = &digests[name];
+            if *mode != metadata.mode
+                || script.mode != metadata.mode
+                || format!(
+                    "sha256:{}",
+                    hex::encode(Sha256::digest(script.content.as_bytes()))
+                ) != *digest
+            {
+                return Err(fail());
+            }
+            inputs.push(RuntimeRestoredScript {
+                name,
+                content: &script.content,
+                metadata: RuntimeScriptMetadata {
+                    uid: metadata.uid,
+                    gid: metadata.gid,
+                    mode: metadata.mode,
+                },
+            });
+        }
+        let directory = |v: microsandbox_types::snapshot::saved_config::SavedScriptMetadata| {
+            RuntimeScriptMetadata {
+                uid: v.uid,
+                gid: v.gid,
+                mode: v.mode,
+            }
+        };
+        stage_runtime_restored_scripts(
+            parent,
+            &inputs,
+            directory(backing.runtime_directory),
+            directory(backing.scripts_directory),
+            script_limits(),
+        )
+        .map_err(|error| MicrosandboxError::InvalidConfig(error.to_string()))
+    }
+}
 
 impl RuntimeConfigurationPlan {
     /// Stage exact selected script bytes for a new boot, without consulting the source.
