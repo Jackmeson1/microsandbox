@@ -90,9 +90,9 @@ pub fn read_retained_init(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
 
+    use super::*;
     fn owner(boot: &str) -> RetentionOwner {
         RetentionOwner {
             catalog_file: [1, 2],

@@ -57,10 +57,10 @@ impl fmt::Debug for CommandProvenance {
 
 #[cfg(all(test, feature = "local"))]
 mod tests {
-    use super::*;
     use microsandbox_image::ImageConfig;
     use microsandbox_types::{SandboxRuntimeOptionsPatch, SandboxSpecPatch};
 
+    use super::*;
     use crate::sandbox::{RootfsSource, SandboxBuilder};
     use crate::{SandboxConfig, SandboxConfigPatch};
 
