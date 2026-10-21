@@ -28,8 +28,9 @@ use super::{
         RestoreOverrideIntent, SandboxConfig, SandboxConfigPatch, SnapshotRestoreMode,
         sandbox_log_level_from_runtime,
     },
+    environment_provenance::EnvironmentOrigin,
     exec::{Rlimit, RlimitResource},
-    init::{HandoffInit, InitOptionsBuilder},
+    init::{HandoffInit, InitOptionsBuilder, PreparedInitOptions},
     init_provenance::InitProvenance,
     types::{
         DeploymentProfile, ImageBuilder, IntoImage, MountBuilder, Patch, PatchBuilder,
@@ -165,6 +166,23 @@ impl SandboxBuilder {
                 self.config.launch_cmd_before_override = Some(patch.spec.runtime.cmd.clone());
             }
         }
+        // Sparse public inputs are new declarations. Preserve origin for untouched keys;
+        // an explicit same-value declaration intentionally replaces a prior host forwarding.
+        let mut origin = self
+            .config
+            .environment_provenance
+            .take()
+            .unwrap_or_default();
+        let supplied_origin = patch.environment_provenance.take();
+        if let Some(env) = patch.spec.get_env() {
+            for value in env {
+                origin.declare_env_input(&value.key, &value.value, supplied_origin.as_ref());
+            }
+        }
+        if let Some(init) = &patch.spec.init {
+            origin.declare_init_input(init, supplied_origin.as_ref());
+        }
+        patch.environment_provenance = Some(origin);
         self.config.overlay_mut(patch);
         self
     }
@@ -186,6 +204,7 @@ impl SandboxBuilder {
         builder.config.http_defaults_implicit = Some(implicit_http);
         // This API accepts an explicit new task declaration, not a retained sandbox record.
         builder.config.command_provenance_unknown = Some(false);
+        builder.config.environment_provenance_unknown = Some(false);
         Ok(builder)
     }
 
@@ -781,6 +800,10 @@ impl SandboxBuilder {
             args: Vec::new(),
             env: Vec::new(),
         });
+        self.config
+            .environment_provenance
+            .get_or_insert_with(Default::default)
+            .declare_init(self.config.spec.init.as_ref());
         self.config.init_provenance =
             Some(InitProvenance::from_init(self.config.spec.init.as_ref()));
         self
@@ -806,12 +829,21 @@ impl SandboxBuilder {
         f: impl FnOnce(InitOptionsBuilder) -> InitOptionsBuilder,
     ) -> Self {
         self.record_prepared_boot_override(|boot| boot.init = true);
-        let (args, env) = f(InitOptionsBuilder::default()).build();
+        let PreparedInitOptions { args, env, origins } = f(InitOptionsBuilder::default()).build();
         self.config.spec.init = Some(HandoffInit {
             cmd: cmd.into(),
             args,
             env,
         });
+        self.config
+            .environment_provenance
+            .get_or_insert_with(Default::default)
+            .declare_init(self.config.spec.init.as_ref());
+        self.config
+            .environment_provenance
+            .as_mut()
+            .expect("declared above")
+            .init_env = origins;
         self.config.init_provenance =
             Some(InitProvenance::from_init(self.config.spec.init.as_ref()));
         self
@@ -1214,8 +1246,26 @@ impl SandboxBuilder {
             }
             return self;
         }
+        let value = value.into();
+        self.config
+            .environment_provenance
+            .get_or_insert_with(Default::default)
+            .declare_env(&key, &value, EnvironmentOrigin::Literal);
         self.config.spec.get_env_mut().push(EnvVar::new(key, value));
         self
+    }
+
+    /// CLI bridge for an already-resolved host value. Does not perform a second host lookup.
+    /// Existing launch values are unchanged; capture must require a binding or exclusion.
+    #[doc(hidden)]
+    pub fn host_env(self, key: String, value: String) -> Self {
+        let mut builder = self.env(&key, &value);
+        builder
+            .config
+            .environment_provenance
+            .get_or_insert_with(Default::default)
+            .declare_env(&key, &value, EnvironmentOrigin::Host);
+        builder
     }
 
     /// Set multiple environment variables at once. See [`env`](Self::env).
@@ -2756,6 +2806,11 @@ fn wrap_config_script(shell: Option<&str>, body: &str) -> String {
 
 impl From<SandboxConfig> for SandboxBuilder {
     fn from(mut config: SandboxConfig) -> Self {
+        // Only explicit setters can establish new origins after historical reconstruction.
+        config.environment_provenance_unknown = true;
+        if let Some(origin) = &mut config.environment_provenance {
+            origin.retain_matching(&config.spec.env, config.spec.init.as_ref());
+        }
         config.command_provenance_unknown = config
             .command_provenance
             .as_ref()
@@ -3077,10 +3132,19 @@ mod tests {
                         Some(SandboxConfigPatch::from_image(&image)),
                     )
                     .unwrap();
-                assert_eq!(
-                    serde_json::to_value(&actual).unwrap(),
-                    serde_json::to_value(&expected).unwrap()
-                );
+                let mut actual_launch = serde_json::to_value(&actual).unwrap();
+                let mut expected_launch = serde_json::to_value(&expected).unwrap();
+                // Private environment evidence has separate tests; all prior launch fields
+                // must still match the historical image-resolution path exactly.
+                actual_launch
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("environment_provenance");
+                expected_launch
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("environment_provenance");
+                assert_eq!(actual_launch, expected_launch);
                 assert_eq!(
                     actual.init_owns_boot_workload(),
                     expected.init_owns_boot_workload()
