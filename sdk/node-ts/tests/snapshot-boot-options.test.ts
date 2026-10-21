@@ -23,7 +23,7 @@ describe.skipIf(!archive)("snapshot destination boot options", () => {
         const name = `boot-${randomUUID()}`;
         names.push(name);
         const configure = (b: RestoreBuilder) => {
-          b.name(name).hostname("node-child").initWith("/bin/sh", init =>
+          b.name(name).cpus(1).memory(256).maxCpus(2).maxMemory(512).hostname("node-child").initWith("/bin/sh", init =>
             init.args(["-c", 'printf "%s" "$BOOT_VALUE" > /root/node-boot; exec sleep 300'])
               .env("BOOT_VALUE", "node-init"));
           return full ? b.diskOnly() : b;
@@ -32,6 +32,11 @@ describe.skipIf(!archive)("snapshot destination boot options", () => {
           ? await (await checkpoint.spawnSandboxWithProgressWith(configure)).awaitSandbox()
           : await group.spawnSandboxWith(configure);
         try {
+          const config = (await Sandbox.get(name)).config();
+          expect(config.resources.maxCpus).toBe(2);
+          expect(config.resources.maxMemoryMib).toBe(512);
+          const capacity = await child.shell("nproc; cat /sys/devices/system/cpu/possible");
+          expect(capacity.stdout().trim()).toBe("1\n0-1");
           const output = await child.shell('for i in $(seq 1 50); do test -s /root/node-boot && break; sleep 0.1; done; test "$(cat /root/node-boot)" = node-init && test "$(hostname)" = node-child && cat /proc/1/comm');
           expect(output.stdout().trim()).toBe("sleep");
         } finally {

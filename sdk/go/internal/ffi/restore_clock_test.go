@@ -24,7 +24,8 @@ func TestRestoreBootOptionsPreserveOmissionAndCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	hostname := "child"
-	for _, options := range []RestoreOptions{{Init: &InitOptions{Cmd: "auto"}}, {Hostname: &hostname}} {
+	cpus, memory := uint8(0), uint32(0)
+	for _, options := range []RestoreOptions{{Init: &InitOptions{Cmd: "auto"}}, {Hostname: &hostname}, {MaxCPUs: &cpus}, {MaxMemoryMiB: &memory}} {
 		if err := CheckRestoreBootOptions(ctx, options); !errors.Is(err, context.Canceled) {
 			t.Fatalf("lost cancellation: %v", err)
 		}

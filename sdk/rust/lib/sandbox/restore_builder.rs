@@ -143,6 +143,18 @@ impl RestoreBuilder {
         self
     }
 
+    /// Set the CPU ceiling for disk boot. Full resume requires the captured ceiling.
+    pub fn max_cpus(mut self, count: u8) -> Self {
+        self.inner = self.inner.max_cpus(count);
+        self
+    }
+
+    /// Set the memory ceiling for disk boot. Full resume requires the captured ceiling.
+    pub fn max_memory(mut self, size: impl Into<Mebibytes>) -> Self {
+        self.inner = self.inner.max_memory(size);
+        self
+    }
+
     /// Select the guest PID 1 for a disk snapshot or disk-only boot.
     /// Full-memory resume rejects this request, including an explicit `auto`.
     pub fn init(self, cmd: impl Into<String>) -> Self {
@@ -417,6 +429,51 @@ mod tests {
 
     fn config(builder: &RestoreBuilder) -> crate::SandboxConfig {
         builder.inner.config.clone().into_config()
+    }
+
+    #[test]
+    fn resource_ceilings_preserve_explicit_intent_and_validate_zero() {
+        let ordinary = Sandbox::restore("saved").name("child");
+        assert!(ordinary.inner.config.spec.resources.max_cpus.is_none());
+        assert!(
+            ordinary
+                .inner
+                .config
+                .spec
+                .resources
+                .max_memory_mib
+                .is_none()
+        );
+        let resolved = ordinary
+            .cpus(1)
+            .memory(128)
+            .max_cpus(4)
+            .max_memory(512)
+            .inner
+            // Source preparation normally supplies the captured image before finish.
+            .image("alpine")
+            .finish(None, None)
+            .unwrap();
+        assert_eq!(resolved.spec.resources.max_cpus, 4);
+        assert_eq!(resolved.spec.resources.max_memory_mib, 512);
+        // Deferred full-checkpoint admission must distinguish explicit ceilings
+        // from inherited defaults, even when the numbers happen to match.
+        assert!(resolved.restore_overrides.max_cpus);
+        assert!(resolved.restore_overrides.max_memory);
+        for builder in [
+            Sandbox::restore("saved").name("child").max_cpus(0),
+            Sandbox::restore("saved").name("child").max_memory(0),
+        ] {
+            assert!(
+                builder
+                    .inner
+                    .image("alpine")
+                    .finish(None, None)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("must be greater than 0")
+            );
+        }
     }
 
     #[test]

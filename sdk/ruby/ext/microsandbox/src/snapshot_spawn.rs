@@ -200,6 +200,8 @@ fn destination(ruby: &Ruby, args: &[Value], local: bool) -> Result<RestoreBuilde
             "name",
             "cpus",
             "memory",
+            "max_cpus",
+            "max_memory",
             "network",
             "disable_network",
             "security",
@@ -235,6 +237,12 @@ fn destination(ruby: &Ruby, args: &[Value], local: bool) -> Result<RestoreBuilde
     }
     if let Some(v) = keyword::<u32>(options, "memory")? {
         builder = builder.memory(v);
+    }
+    if let Some(v) = keyword::<u8>(options, "max_cpus")? {
+        builder = builder.max_cpus(v);
+    }
+    if let Some(v) = keyword::<u32>(options, "max_memory")? {
+        builder = builder.max_memory(v);
     }
     if let Some(v) = keyword::<String>(options, "init")? {
         builder = builder.init(v);

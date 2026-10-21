@@ -1392,6 +1392,22 @@ func WithRestoreInit(init InitConfig) RestoreOption
 
 Select guest PID 1 for disk boot using the existing `Init.Auto()` or `Init.Cmd(path, InitOptions{Args: ..., Env: ...})` factories. Available on group/checkpoint spawn and restore, including progress variants. Full-memory resume rejects explicit init choices; use `WithSnapshotDiskOnly()` for a new boot. A native library lacking this option returns an unsupported-feature error.
 
+#### WithRestoreMaxCPUs
+
+```go
+func WithRestoreMaxCPUs(cpus uint8) RestoreOption
+```
+
+Set the maximum possible CPU count for a disk boot. Must be positive and at least the requested CPU count. Full-memory resume requires the captured ceiling exactly.
+
+#### WithRestoreMaxMemory
+
+```go
+func WithRestoreMaxMemory(mebibytes uint32) RestoreOption
+```
+
+Set the memory ceiling in MiB for a disk boot. Must be positive and at least the requested memory. Full-memory resume requires the captured ceiling exactly. These options apply to group/checkpoint spawn and progress variants. An older native library must acknowledge each explicit option before launch; omission keeps ordinary behavior. The corresponding `RestoreConfig.MaxCPUs` and `MaxMemoryMiB` fields are pointers so explicit zero remains invalid rather than becoming omission.
+
 #### WithRestoreHostname
 
 ```go

@@ -1207,6 +1207,15 @@ init: str | InitConfig | Mapping[str, Any] | None = None
 
 Select guest PID 1 for disk boot using an absolute guest executable path, `"auto"`, or the existing `InitConfig(cmd, args, env)` form. Available on group/checkpoint `spawn_sandbox`, progress variants, and `Sandbox.restore`. Full-memory resume rejects an explicit choice, including `"auto"`; select `disk_only=True` for a new boot.
 
+#### max_cpus and max_memory
+
+```python
+max_cpus: int | None = None
+max_memory: int | None = None
+```
+
+Set the maximum possible CPU count and memory ceiling in MiB for a disk boot, including `disk_only=True`. Values must be positive and at least the requested capacity; full-memory resume requires the captured ceilings exactly. `None` leaves a ceiling unspecified. Available on group/checkpoint spawn and progress variants as well as restore.
+
 #### hostname
 
 ```python
