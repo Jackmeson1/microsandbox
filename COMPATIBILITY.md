@@ -666,3 +666,8 @@ Internal source projection now preserves resource observation reasons and reusab
 ## Guarded network capture projection
 
 The internal saved-config source adapter projects only portable network policy and logical destination requirements. It does not write metadata, change catalog or launch contracts, dispatch network operations or enable saved-config activation. Missing historical fields, including nested fields otherwise supplied by serde defaults, remain unknown; an explicitly recorded null remains distinct. Existing persisted TCP-count and TLS aliases are preserved. Source interface allocations, host endpoints/listeners, secret values/source references and CA paths/keys do not enter the projection. Binding inventory and full-resume backing remain caller obligations under the capture guard. No release, version bump or new private presence protocol is introduced.
+
+
+## Guarded storage capture projection
+
+The internal saved-config source adapter now projects recorded guest mount and socket-route requirements without source host paths, source volume-name lookup, file access or socket connections. Owned references must match the captured descriptor inventory. External backing kind and named-volume capacity come from caller-supplied observations under the source guard, never creation intent. Missing nested historical evidence keeps the whole relevant inventory unknown rather than selecting current defaults or silently dropping resources. Existing legacy mount decoding remains unchanged; legacy shapes lacking complete evidence are not reinterpreted as complete portable configuration. No metadata writer, catalog schema, launch protocol or public activation path is changed.

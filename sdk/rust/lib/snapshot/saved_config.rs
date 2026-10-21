@@ -72,6 +72,10 @@ mod secret_preparation_tests;
 mod secret_tests;
 mod secrets;
 mod storage;
+#[cfg(feature = "local")]
+mod storage_capture;
+#[cfg(all(test, feature = "local"))]
+mod storage_capture_tests;
 mod storage_preparation;
 #[cfg(test)]
 mod storage_preparation_tests;
@@ -140,6 +144,8 @@ pub use storage::{
     MountInputSelection, StorageApprovalRequirement, StorageInputSelection, StorageRelaxation,
     VsockInputSelection, select_storage_inputs,
 };
+#[cfg(feature = "local")]
+pub use storage_capture::StorageCaptureBindings;
 pub use storage_preparation::{
     StorageBindingInput, StorageConfigurationPlan, prepare_storage_configuration,
 };
