@@ -55,10 +55,10 @@ impl InitProvenance {
 
 #[cfg(all(test, feature = "local"))]
 mod tests {
-    use super::*;
     use microsandbox_image::ImageConfig;
     use microsandbox_types::SandboxSpecPatch;
 
+    use super::*;
     use crate::sandbox::SandboxBuilder;
     use crate::{SandboxConfig, SandboxConfigPatch};
 
