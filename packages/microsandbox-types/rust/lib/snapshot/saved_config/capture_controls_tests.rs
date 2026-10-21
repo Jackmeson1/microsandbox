@@ -432,3 +432,44 @@ fn omitting_a_command_default_cannot_remove_a_shared_gateway_requirement() {
         std::collections::BTreeSet::from([SavedBindingConsumer::Gateway])
     );
 }
+
+#[test]
+fn full_capture_can_omit_pending_only_script_without_weakening_active_protection() {
+    let target = RuntimeCaptureTarget::ScriptKey("task.sh".into());
+    let controls = BTreeMap::from([(target, RuntimeCaptureAction::Omit)]);
+    let mut draft = document();
+    draft.active.runtime.scripts = Some(value(BTreeMap::new()));
+    let projected = apply_runtime_capture_controls(draft, &controls, true).unwrap();
+    assert!(
+        !serde_json::to_string(&projected)
+            .unwrap()
+            .contains("PRIVATE_SCRIPT")
+    );
+    assert!(
+        projected
+            .active
+            .runtime
+            .scripts
+            .unwrap()
+            .value()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        projected
+            .pending
+            .unwrap()
+            .runtime
+            .scripts
+            .unwrap()
+            .value()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(apply_runtime_capture_controls(document(), &controls, true).is_err());
+    let mut unknown = document();
+    unknown.active.runtime.scripts = Some(SavedValue::Unknown {
+        reason: SavedUnknownReason::NotRecorded,
+    });
+    assert!(apply_runtime_capture_controls(unknown, &controls, true).is_err());
+}
