@@ -139,7 +139,7 @@ pub struct ModifyArgs {
     pub wait: bool,
 
     /// Resize wait budget in seconds (default 60; 0 checks once).
-    #[arg(long, requires = "wait", value_name = "SECS")]
+    #[arg(short = 't', long, requires = "wait", value_name = "SECS")]
     pub timeout: Option<u64>,
 
     /// Output format.

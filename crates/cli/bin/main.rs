@@ -1155,7 +1155,8 @@ mod sandbox_command_tests {
             let short = parse_sandbox(
                 prefix,
                 &[
-                    "modify", "demo", "-c", "2", "-m", "1G", "-e", "A=B", "-w", "/work",
+                    "modify", "demo", "-c", "2", "-m", "1G", "-e", "A=B", "-w", "/work", "--wait",
+                    "-t", "30",
                 ],
             );
             let long = parse_sandbox(
@@ -1171,6 +1172,9 @@ mod sandbox_command_tests {
                     "A=B",
                     "--workdir",
                     "/work",
+                    "--wait",
+                    "--timeout",
+                    "30",
                 ],
             );
             assert_eq!(format!("{short:?}"), format!("{long:?}"));

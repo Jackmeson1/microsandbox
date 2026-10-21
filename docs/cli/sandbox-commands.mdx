@@ -599,7 +599,7 @@ msb modify api --cpus 8 --dry-run           # Show the plan, apply nothing
 ```
 </CodeGroup>
 
-Like create/run, modify accepts `-c`/`--cpus`, `-m`/`--memory`, `-e`/`--env`, and `-w`/`--workdir`.
+Like create/run, modify accepts `-c`/`--cpus`, `-m`/`--memory`, `-e`/`--env`, and `-w`/`--workdir`. Use `--wait` to wait for resize completion and `-t`/`--timeout SECS` to bound that wait (default 60 seconds). The timeout option requires `--wait`.
 
 Set `--max-cpus` and `--max-memory` at creation to leave room for live growth. They default to the initial CPU and memory allocation; increasing the ceilings requires a restart.
 
