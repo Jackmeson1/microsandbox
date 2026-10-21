@@ -84,6 +84,19 @@ impl CapturedSandboxConfiguration {
     }
 
     fn validate_init_observation(&self) -> MicrosandboxResult<()> {
+        if let Some(origin) = &self.configuration.init_provenance
+            && (!origin.matches(self.configuration.spec.init.as_ref())
+                || self
+                    .source
+                    .source
+                    .as_ref()
+                    .and_then(|source| source.get("init"))
+                    .is_none())
+        {
+            return Err(invalid(
+                "captured init provenance contradicts its source configuration",
+            ));
+        }
         let Some(observed) = &self.init else {
             return Ok(());
         };
@@ -447,6 +460,61 @@ mod tests {
         assert!(!error.contains("PRIVATE"));
         value["init"] = serde_json::json!({"kind":"builtin"});
         assert!(fixture.read(&value).is_err());
+    }
+
+    #[test]
+    fn init_receipt_keeps_original_auto_intent_separate_from_selected_path() {
+        let fixture = Fixture::new();
+        let mut value = fixture.value.clone();
+        value["source"]["source"]["init"] =
+            serde_json::json!({"cmd":"/sbin/init","args":[],"env":[]});
+        value["source"]["source"]["init_provenance"] =
+            serde_json::json!({"kind":"auto","configured":"/sbin/init"});
+        value["init"] = serde_json::json!({"kind":"handoff","path":"/sbin/init"});
+        let selected = fixture.read(&value).unwrap().unwrap();
+        assert_eq!(
+            selected.configuration().init_provenance,
+            Some(crate::sandbox::init_provenance::InitProvenance::Auto {
+                configured: "/sbin/init".into(),
+            })
+        );
+        assert_eq!(
+            selected.source.source.as_ref().unwrap()["init"]["cmd"],
+            "/sbin/init"
+        );
+
+        // Older writers can preserve the resolved executable without preserving why it was
+        // selected. The receipt must not manufacture explicit-path intent in that case.
+        value["source"]["source"]
+            .as_object_mut()
+            .unwrap()
+            .remove("init_provenance");
+        let selected = fixture.read(&value).unwrap().unwrap();
+        assert!(selected.configuration().init_provenance.is_none());
+        assert!(selected.init.is_some());
+    }
+
+    #[test]
+    fn init_receipt_rejects_unbound_provenance_without_exposing_private_values() {
+        let fixture = Fixture::new();
+        let mut value = fixture.value.clone();
+        value["source"]["source"]["init"] =
+            serde_json::json!({"cmd":"/sbin/init","args":[],"env":[]});
+        value["source"]["source"]["init_provenance"] =
+            serde_json::json!({"kind":"auto","configured":"/PRIVATE_OTHER_INIT"});
+        let error = fixture.read(&value).err().unwrap().to_string();
+        assert!(error.contains("contradicts"));
+        assert!(!error.contains("PRIVATE"));
+
+        // A decoded default is not evidence that an older producer recorded builtin init.
+        value["source"]["source"]["init_provenance"] = serde_json::json!({"kind":"builtin"});
+        value["source"]["source"]
+            .as_object_mut()
+            .unwrap()
+            .remove("init");
+        assert!(fixture.read(&value).is_err());
+        value["source"]["source"]["init"] = serde_json::Value::Null;
+        assert!(fixture.read(&value).unwrap().is_some());
     }
 
     #[test]

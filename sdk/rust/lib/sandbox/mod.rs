@@ -28,6 +28,7 @@ pub mod fs;
 mod handle;
 pub(crate) mod identity;
 pub mod init;
+pub(crate) mod init_provenance;
 pub mod jobs;
 pub(crate) mod metrics;
 #[cfg(feature = "local")]

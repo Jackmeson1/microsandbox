@@ -30,6 +30,7 @@ use super::{
     },
     exec::{Rlimit, RlimitResource},
     init::{HandoffInit, InitOptionsBuilder},
+    init_provenance::InitProvenance,
     types::{
         DeploymentProfile, ImageBuilder, IntoImage, MountBuilder, Patch, PatchBuilder,
         RootDiskBuilder, RootfsSource, SecurityProfile, VolumeMount,
@@ -152,6 +153,10 @@ impl SandboxBuilder {
             boot.hostname |= patch.spec.runtime.hostname.is_some();
             boot.thp |= patch.spec.resources.thp.is_some();
         });
+        if let Some(init) = &patch.spec.init {
+            // Even an explicit same-path replacement ends inherited auto-selection intent.
+            patch.init_provenance = Some(InitProvenance::from_init(Some(init)));
+        }
         self.config.overlay_mut(patch);
         self
     }
@@ -760,6 +765,8 @@ impl SandboxBuilder {
             args: Vec::new(),
             env: Vec::new(),
         });
+        self.config.init_provenance =
+            Some(InitProvenance::from_init(self.config.spec.init.as_ref()));
         self
     }
 
@@ -789,6 +796,8 @@ impl SandboxBuilder {
             args,
             env,
         });
+        self.config.init_provenance =
+            Some(InitProvenance::from_init(self.config.spec.init.as_ref()));
         self
     }
 
