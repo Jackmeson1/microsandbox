@@ -15,6 +15,9 @@ use microsandbox_protocol::control::ConfigurationCaptureReceipt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::script_backing::ScriptBackingEvidence;
+#[cfg(feature = "runner")]
+use super::script_backing::ScriptBackingObservation;
 #[cfg(feature = "runner")]
 use super::{LiveConfigurationSelection, RetentionJournal};
 use super::{RetainedConfiguration, invalid};
@@ -36,12 +39,14 @@ const MAX_CAPTURE_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) struct ConfigurationCaptureContext<'a> {
     journal: &'a RetentionJournal,
     db: &'a DbWriteConnection,
+    runtime_script_root: Option<&'a fs::File>,
 }
 
 #[cfg(feature = "runner")]
 pub(crate) struct ConfigurationCaptureObservation<'a> {
     sandbox_directory: &'a Path,
     selected: Option<LiveConfigurationSelection<'a>>,
+    scripts: ScriptBackingObservation,
 }
 
 /// Host-private evidence from the checkpoint's paused configuration boundary.
@@ -53,6 +58,8 @@ pub struct CapturedConfiguration {
     checkpoint_id: String,
     capture_root: String,
     source: Option<RetainedConfiguration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scripts: Option<ScriptBackingEvidence>,
 }
 
 /// Remove an unpublished receipt on error; only checkpoint publication transfers ownership.
@@ -69,18 +76,34 @@ pub(crate) struct PreparedConfigurationReceipt {
 
 #[cfg(feature = "runner")]
 impl<'a> ConfigurationCaptureContext<'a> {
-    pub(crate) fn new(journal: &'a RetentionJournal, db: &'a DbWriteConnection) -> Self {
-        Self { journal, db }
+    pub(crate) fn new(
+        journal: &'a RetentionJournal,
+        db: &'a DbWriteConnection,
+        runtime_script_root: Option<&'a fs::File>,
+    ) -> Self {
+        Self {
+            journal,
+            db,
+            runtime_script_root,
+        }
     }
 
     pub(crate) async fn observe(&self) -> io::Result<ConfigurationCaptureObservation<'a>> {
+        let selected = self.journal.select_live_configuration(self.db).await?;
+        let scripts = ScriptBackingObservation::observe(
+            self.runtime_script_root,
+            selected
+                .as_ref()
+                .and_then(|selected| selected.configuration().source.as_ref()),
+        );
         Ok(ConfigurationCaptureObservation {
+            scripts,
             sandbox_directory: self
                 .journal
                 .directory
                 .parent()
                 .ok_or_else(|| invalid("missing capture source directory"))?,
-            selected: self.journal.select_live_configuration(self.db).await?,
+            selected,
         })
     }
 }
@@ -104,11 +127,18 @@ impl ConfigurationCaptureObservation<'_> {
             self.selected
                 .as_ref()
                 .map(LiveConfigurationSelection::configuration),
+            Some(self.scripts.finish()),
         )
     }
 }
 
 impl CapturedConfiguration {
+    /// Actual registered-file evidence, distinct from declared scripts in the source config.
+    /// This private record is not portable config or proof of full-state handle compatibility.
+    pub fn scripts(&self) -> Option<&ScriptBackingEvidence> {
+        self.scripts.as_ref()
+    }
+
     /// Local source at capture, or explicit unavailability. This is never a default config.
     pub fn source(&self) -> Option<&RetainedConfiguration> {
         self.source.as_ref()
@@ -170,6 +200,7 @@ impl PreparedConfigurationReceipt {
         checkpoint_id: &str,
         capture_root: &str,
         source: Option<&RetainedConfiguration>,
+        scripts: Option<ScriptBackingEvidence>,
     ) -> io::Result<Self> {
         let path = receipt_path(sandbox_directory, checkpoint_id)?;
         let parent = sandbox_directory.join("last-active");
@@ -182,6 +213,7 @@ impl PreparedConfigurationReceipt {
             checkpoint_id: checkpoint_id.into(),
             capture_root: capture_root.into(),
             source: source.cloned(),
+            scripts,
         };
         let bytes = serde_json::to_vec(&record)
             .map_err(|_| invalid("could not encode configuration capture"))?;
@@ -273,8 +305,10 @@ fn require_directory(path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
-    use crate::retention::RetentionOwner;
+    use crate::retention::{CapturedScriptBacking, CapturedScriptDirectory, RetentionOwner};
 
     fn source() -> RetainedConfiguration {
         RetainedConfiguration {
@@ -300,6 +334,7 @@ mod tests {
             "checkpoint_one",
             "full:root",
             Some(&source),
+            None,
         )
         .unwrap();
         let receipt = prepared.publish();
@@ -316,7 +351,8 @@ mod tests {
                 home.path(),
                 "checkpoint_one",
                 "other:root",
-                None
+                None,
+                None,
             )
             .is_err()
         );
@@ -344,29 +380,99 @@ mod tests {
     }
 
     #[test]
+    fn private_receipt_digest_binds_actual_script_evidence() {
+        let home = tempfile::tempdir().unwrap();
+        let scripts = ScriptBackingEvidence::Observed {
+            runtime_directory: CapturedScriptDirectory {
+                uid: 0,
+                gid: 0,
+                mode: 0o755,
+            },
+            scripts_directory: CapturedScriptDirectory {
+                uid: 44,
+                gid: 45,
+                mode: 0o710,
+            },
+            files: BTreeMap::from([(
+                "task".into(),
+                CapturedScriptBacking {
+                    content: "ACTUAL_PRIVATE_SCRIPT".into(),
+                    uid: 42,
+                    gid: 43,
+                    mode: 0o640,
+                },
+            )]),
+        };
+        let receipt = PreparedConfigurationReceipt::prepare(
+            home.path(),
+            "with_scripts",
+            "full:root",
+            Some(&source()),
+            Some(scripts),
+        )
+        .unwrap()
+        .publish();
+        let captured =
+            CapturedConfiguration::read(home.path(), "with_scripts", "full:root", &receipt)
+                .unwrap();
+        let Some(ScriptBackingEvidence::Observed { files, .. }) = captured.scripts() else {
+            panic!("missing script evidence")
+        };
+        assert_eq!(files["task"].content, "ACTUAL_PRIVATE_SCRIPT");
+        assert_eq!(
+            (files["task"].uid, files["task"].gid, files["task"].mode),
+            (42, 43, 0o640)
+        );
+        let path = receipt_path(home.path(), "with_scripts").unwrap();
+        let bytes = fs::read_to_string(&path)
+            .unwrap()
+            .replace("ACTUAL_PRIVATE_SCRIPT", "FORGED_PRIVATE_SCRIPT");
+        fs::write(path, bytes).unwrap();
+        let error = CapturedConfiguration::read(home.path(), "with_scripts", "full:root", &receipt)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("digest mismatch"));
+        assert!(!error.contains("PRIVATE_SCRIPT"));
+    }
+
+    #[test]
     fn unpublished_receipt_rolls_back_and_unavailable_source_stays_unknown() {
         let home = tempfile::tempdir().unwrap();
         drop(
-            PreparedConfigurationReceipt::prepare(home.path(), "checkpoint_one", "disk:root", None)
-                .unwrap(),
+            PreparedConfigurationReceipt::prepare(
+                home.path(),
+                "checkpoint_one",
+                "disk:root",
+                None,
+                None,
+            )
+            .unwrap(),
         );
         assert!(
             !receipt_path(home.path(), "checkpoint_one")
                 .unwrap()
                 .exists()
         );
-        let receipt =
-            PreparedConfigurationReceipt::prepare(home.path(), "checkpoint_one", "disk:root", None)
-                .unwrap()
-                .publish();
+        let receipt = PreparedConfigurationReceipt::prepare(
+            home.path(),
+            "checkpoint_one",
+            "disk:root",
+            None,
+            None,
+        )
+        .unwrap()
+        .publish();
         assert!(
             CapturedConfiguration::read(home.path(), "checkpoint_one", "disk:root", &receipt)
                 .unwrap()
                 .source()
-                .is_none()
+                .is_none(),
         );
         for id in ["", "..", "../state", "a/b", "a\\b"] {
-            assert!(PreparedConfigurationReceipt::prepare(home.path(), id, "root", None).is_err());
+            assert!(
+                PreparedConfigurationReceipt::prepare(home.path(), id, "root", None, None).is_err()
+            );
         }
     }
 
@@ -378,6 +484,7 @@ mod tests {
             "checkpoint_one",
             "root",
             Some(&source()),
+            None,
         )
         .unwrap()
         .publish();

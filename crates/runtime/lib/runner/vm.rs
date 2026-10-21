@@ -463,6 +463,7 @@ type VmBuildOutput = (
     BindIdentityMapRegistration,
     Option<crate::checkpoint::RestoredAgentState>,
     std::collections::BTreeMap<String, microsandbox_filesystem::OwnedDirectoryCheckpoint>,
+    Option<std::fs::File>,
 );
 
 /// Public runtime endpoints held back until a restored guest is activated.
@@ -1128,6 +1129,7 @@ fn run(
         bind_identity_map,
         mut restored_agent,
         owned_directory_checkpoints,
+        runtime_script_root,
     ) = match build_result {
         Ok(vm) => vm,
         Err(e) => {
@@ -1207,6 +1209,7 @@ fn run(
                 .as_mut()
                 .and_then(|agent| agent.inherited_memory.take()),
             owned_directory_checkpoints,
+            runtime_script_root,
             retention,
             db.clone(),
         );
@@ -1929,6 +1932,7 @@ fn build_vm(
     let agent_queue_size = agent_primary_queue_size(bulk_console_backend.is_some());
     let vm = &config.vm;
     let mut owned_directory_checkpoints = std::collections::BTreeMap::new();
+    let runtime_script_root;
     // Decode once before constructing devices: unavailable disks need the exact
     // captured capacity/features, never guessed geometry or a temporary backing.
     let prepared_restore = vm
@@ -2140,6 +2144,16 @@ fn build_vm(
         };
         let backend = PassthroughFs::new(cfg)
             .map_err(|e| RuntimeError::Custom(format!("runtime mount: {e}")))?;
+        // Keep observation tied to the mounted inode even if a host renames its pathname.
+        // Failure only makes this optional evidence unknown; legacy launch remains supported.
+        #[cfg(unix)]
+        {
+            runtime_script_root = backend.pin_runtime_script_root().ok();
+        }
+        #[cfg(not(unix))]
+        {
+            runtime_script_root = None;
+        }
         builder = builder.fs(move |fs| fs.tag(&runtime_tag).custom(Box::new(backend)));
     }
 
@@ -2827,6 +2841,7 @@ fn build_vm(
         bind_identity_map,
         restored_agent,
         owned_directory_checkpoints,
+        runtime_script_root,
     ))
 }
 

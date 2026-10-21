@@ -38,6 +38,7 @@ pub struct RuntimeControlExecutor {
     secrets: Option<microsandbox_network::secrets::handle::SecretsHandle>,
     state: Mutex<ExecutorState>,
     retention_db: microsandbox_db::DbWriteConnection,
+    runtime_script_root: Option<std::fs::File>,
 }
 
 struct ExecutorState {
@@ -82,6 +83,7 @@ impl RuntimeControlExecutor {
             String,
             microsandbox_filesystem::OwnedDirectoryCheckpoint,
         >,
+        runtime_script_root: Option<std::fs::File>,
         retention: crate::retention::RetentionJournal,
         retention_db: microsandbox_db::DbWriteConnection,
     ) -> Result<Self, String> {
@@ -107,6 +109,7 @@ impl RuntimeControlExecutor {
         )?;
         checkpoint.inherit_local_memory(inherited_memory);
         Ok(Self {
+            runtime_script_root,
             retention_db,
             signal_runtime: runtime.clone(),
             signal_workload: std::sync::Arc::clone(&workload_control),
@@ -452,6 +455,7 @@ impl RuntimeControlExecutor {
                     crate::retention::ConfigurationCaptureContext::new(
                         &state.retention,
                         &self.retention_db,
+                        self.runtime_script_root.as_ref(),
                     )
                 });
                 match state.checkpoint.capture_disk(
@@ -637,6 +641,7 @@ impl RuntimeControlExecutor {
                     crate::retention::ConfigurationCaptureContext::new(
                         &state.retention,
                         &self.retention_db,
+                        self.runtime_script_root.as_ref(),
                     )
                 });
                 match state.checkpoint.capture(
