@@ -183,7 +183,12 @@ fn resolve_map<'a>(
                 .or_else(|| inherited.and_then(|map| map.get(key)))
             {
                 Some(entry) if entry.matches(value) => Some((key.into(), entry.clone())),
-                Some(_) => None,
+                // Keep negative evidence across layering and auto-init inheritance. Dropping
+                // it would let a later fresh-resolution pass mistake this value for a literal.
+                Some(_) => Some((
+                    key.into(),
+                    EnvironmentEntry::new(value, EnvironmentOrigin::Unknown),
+                )),
                 None if !unknown => Some((
                     key.into(),
                     EnvironmentEntry::new(value, EnvironmentOrigin::Literal),
@@ -403,5 +408,57 @@ mod tests {
         assert!(origin(&rebuilt, "HOST", false) == Some(EnvironmentOrigin::Host));
         assert!(origin(&rebuilt, "INIT_HOST", true) == Some(EnvironmentOrigin::Host));
         assert!(origin(&rebuilt, "UNKNOWN", false) == Some(EnvironmentOrigin::Unknown));
+    }
+
+    #[test]
+    fn mismatched_origin_stays_unknown_across_resolution_and_init_inheritance() {
+        let mut evidence = EnvironmentProvenance::default();
+        evidence.declare_env("KEY", "original-private-value", EnvironmentOrigin::Host);
+        let env = vec![EnvVar::new("KEY", "changed-private-value")];
+        let init = HandoffInit {
+            cmd: "/init".into(),
+            args: vec![],
+            env: vec![("KEY".into(), "changed-private-value".into())],
+        };
+        for _ in 0..2 {
+            evidence.resolve(&env, Some(&init), false);
+            assert!(
+                evidence
+                    .env
+                    .get("KEY")
+                    .is_some_and(|entry| entry.origin == EnvironmentOrigin::Unknown)
+            );
+            assert!(
+                evidence
+                    .init_env
+                    .get("KEY")
+                    .is_some_and(|entry| entry.origin == EnvironmentOrigin::Unknown)
+            );
+            evidence = serde_json::from_value(serde_json::to_value(evidence).unwrap()).unwrap();
+        }
+        assert!(evidence.matches(&env, Some(&init)));
+        // A new explicit declaration, rather than another resolution pass, can establish intent.
+        evidence.declare_env("KEY", "changed-private-value", EnvironmentOrigin::Literal);
+        evidence.resolve(&env, Some(&init), false);
+        assert!(evidence.env["KEY"].origin == EnvironmentOrigin::Literal);
+        assert!(evidence.init_env["KEY"].origin == EnvironmentOrigin::Unknown);
+    }
+
+    #[test]
+    fn repeated_layering_never_reclassifies_changed_retained_input_as_literal() {
+        let mut source = finish(
+            SandboxBuilder::new("changed-env")
+                .image("alpine")
+                .host_env("KEY".into(), "original-private-value".into()),
+        );
+        source.spec.env[0].value = "changed-private-value".into();
+        // Deferred preparation can layer a concrete config more than once. Losing an invalid
+        // hint on its first pass must not make the next pass treat the value as new input.
+        for _ in 0..2 {
+            let mut resolved = SandboxConfig::default();
+            resolved.apply_layers(None, SandboxConfigPatch::from_present_fields(source), None);
+            assert!(origin(&resolved, "KEY", false) == Some(EnvironmentOrigin::Unknown));
+            source = serde_json::from_value(serde_json::to_value(resolved).unwrap()).unwrap();
+        }
     }
 }
