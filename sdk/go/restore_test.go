@@ -388,6 +388,64 @@ func TestRestoreCeilingsRetainOmissionAndExplicitZero(t *testing.T) {
 	}
 }
 
+func TestRestoreDestinationLabelsPreserveExplicitAndOmittedValues(t *testing.T) {
+	config := RestoreConfig{}
+	for _, option := range []RestoreOption{WithRestoreLabel("team", "first"), WithRestoreLabel("team", "last")} {
+		option(&config)
+	}
+	raw, err := json.Marshal(buildFFIRestoreOptions("saved", config))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["labels"].(map[string]any)["team"] != "last" {
+		t.Fatalf("destination options lost: %s", raw)
+	}
+	raw, err = json.Marshal(buildFFIRestoreOptions("saved", RestoreConfig{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = nil
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"labels"} {
+		if _, ok := got[key]; ok {
+			t.Fatalf("omitted option became explicit: %s", raw)
+		}
+	}
+}
+
+func TestRestoreCommandDefaultsPreserveEmptyAndOmittedValues(t *testing.T) {
+	var config RestoreConfig
+	for _, option := range []RestoreOption{WithRestoreWorkdir("/root"), WithRestoreShell("/bin/ash"), WithRestoreEntrypoint(), WithRestoreCmd(), WithRestoreEnv("KEY", "")} {
+		option(&config)
+	}
+	var empty []string
+	for _, argv := range []*[]string{config.Cmd, &empty} {
+		config.Cmd = argv
+		data, err := json.Marshal(buildFFIRestoreOptions("source", config))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(data, &fields); err != nil {
+			t.Fatal(err)
+		}
+		for _, field := range []string{"cmd", "entrypoint"} {
+			if string(fields[field]) != "[]" {
+				t.Fatalf("%s lost empty intent: %s", field, data)
+			}
+		}
+		if string(fields["env"]) != `{"KEY":""}` || string(fields["workdir"]) != `"/root"` || string(fields["shell"]) != `"/bin/ash"` {
+			t.Fatal(string(data))
+		}
+	}
+}
+
 func TestRestoreProxyKeepsDestinationCredentialReference(t *testing.T) {
 	var config RestoreConfig
 	WithRestoreProxy(SOCKS5Proxy("127.0.0.1:1080").Credentials("destination", SecretSourceEnv("DEST_PROXY_PASSWORD")))(&config)

@@ -22,6 +22,13 @@ type RestoreOption func(*RestoreConfig)
 
 // RestoreConfig contains only explicit destination resource choices.
 type RestoreConfig struct {
+	// Defaults for new commands only; never replay captured execution or start a workload.
+	Workdir *string
+	Shell   *string
+	// Pointer-to-slice fields preserve explicit empty arrays as well as omission.
+	Entrypoint *[]string
+	Cmd        *[]string
+	Env        map[string]string
 	// PullPolicy controls retrieval of the digest-pinned base; empty uses the existing default.
 	PullPolicy PullPolicy
 	// CPU and memory overrides must match captured geometry for full execution restore.
@@ -30,6 +37,8 @@ type RestoreConfig struct {
 	// Explicit ceilings apply to disk boot; full resume requires captured maxima.
 	MaxCPUs      *uint8
 	MaxMemoryMiB *uint32
+	// Labels annotate the new sandbox, never its source snapshot.
+	Labels map[string]string
 	// Init and Hostname apply only to disk boot. Full-memory resume refuses either override.
 	Init *InitConfig
 	// A pointer preserves an explicit empty hostname so validation can reject it.
@@ -94,6 +103,37 @@ func RestoreSandbox[T SnapshotSeed](ctx context.Context, snapshot T, name string
 	return &Sandbox{inner: inner}, nil
 }
 
+// WithRestoreWorkdir sets the guest working directory for new commands.
+func WithRestoreWorkdir(path string) RestoreOption {
+	return func(o *RestoreConfig) { o.Workdir = &path }
+}
+
+// WithRestoreShell sets the shell for new commands without executing it at restore time.
+func WithRestoreShell(shell string) RestoreOption { return func(o *RestoreConfig) { o.Shell = &shell } }
+
+// WithRestoreEntrypoint sets future default-workload argv. No arguments explicitly clears it.
+func WithRestoreEntrypoint(argv ...string) RestoreOption {
+	value := append([]string{}, argv...)
+	return func(o *RestoreConfig) { o.Entrypoint = &value }
+}
+
+// WithRestoreCmd sets future default-workload CMD; no arguments explicitly clears it.
+// This does not request startup execution.
+func WithRestoreCmd(argv ...string) RestoreOption {
+	value := append([]string{}, argv...)
+	return func(o *RestoreConfig) { o.Cmd = &value }
+}
+
+// WithRestoreEnv adds a destination environment default for new commands.
+func WithRestoreEnv(key, value string) RestoreOption {
+	return func(o *RestoreConfig) {
+		if o.Env == nil {
+			o.Env = make(map[string]string)
+		}
+		o.Env[key] = value
+	}
+}
+
 // WithRestoreConfig replaces the restore configuration.
 func WithRestoreConfig(config RestoreConfig) RestoreOption {
 	return func(o *RestoreConfig) { *o = config }
@@ -127,6 +167,16 @@ func WithRestoreMaxCPUs(cpus uint8) RestoreOption {
 // WithRestoreMaxMemory selects the memory ceiling in MiB; full resume requires the captured maximum.
 func WithRestoreMaxMemory(mebibytes uint32) RestoreOption {
 	return func(o *RestoreConfig) { o.MaxMemoryMiB = &mebibytes }
+}
+
+// WithRestoreLabel annotates the destination sandbox, replacing an earlier value for this key.
+func WithRestoreLabel(key, value string) RestoreOption {
+	return func(o *RestoreConfig) {
+		if o.Labels == nil {
+			o.Labels = make(map[string]string)
+		}
+		o.Labels[key] = value
+	}
 }
 
 // WithRestoreInit selects guest PID 1, arguments and environment for disk boot.
@@ -272,6 +322,8 @@ func buildFFIRestoreOptions[T SnapshotSeed](snapshot T, config RestoreConfig) ff
 		CPUs: config.CPUs, MemoryMiB: config.MemoryMiB, NetworkPolicy: policy,
 		Init: resources.Init, Hostname: config.Hostname, Proxy: buildFFIOutboundProxy(config.Proxy),
 		MaxCPUs: config.MaxCPUs, MaxMemoryMiB: config.MaxMemoryMiB,
+		Labels:  config.Labels,
+		Workdir: config.Workdir, Shell: config.Shell, Entrypoint: restoreArgv(config.Entrypoint), Cmd: restoreArgv(config.Cmd), Env: config.Env,
 		MaxConnections: config.MaxConnections, MaxTCPConnections: config.MaxTCPConnections,
 		MaxUDPConnections: config.MaxUDPConnections, DisableNetwork: config.DisableNetwork,
 		SecurityProfile: string(config.SecurityProfile),
@@ -288,4 +340,13 @@ func buildFFIRestoreOptions[T SnapshotSeed](snapshot T, config RestoreConfig) ff
 		MaxInboundTCPConnections: config.MaxInboundTCPConnections,
 		Vsock:                    buildFFIVsockRoutes(config.Vsock),
 	}
+}
+
+// A pointer to a nil slice is still an explicit empty choice, not JSON null/omission.
+func restoreArgv(value *[]string) *[]string {
+	if value == nil {
+		return nil
+	}
+	copy := append([]string{}, (*value)...)
+	return &copy
 }

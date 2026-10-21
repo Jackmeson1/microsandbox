@@ -85,14 +85,25 @@ class SnapshotSpawnTest < Test::Unit::TestCase
     booted.kill # The test PID 1 is sleep, which has no shutdown handler.
   end
 
+  def check_command_defaults(child)
+    runtime = JSON.parse(Microsandbox::Sandbox.get(child.name).config_json).fetch("runtime")
+    assert_equal "/root", runtime.fetch("workdir")
+    assert_equal "/bin/ash", runtime.fetch("shell")
+    assert_equal ["/bin/sh", "-c"], runtime.fetch("entrypoint")
+    assert_equal ["touch /root/default-ran"], runtime.fetch("cmd")
+  end
+
   def test_disk_boot_resource_ceilings
     [false, true].each do |progress|
-      options = { name: child_name("ceilings"), cpus: 1, memory: 256, max_cpus: 2, max_memory: 512 }
+      options = { name: child_name("ceilings"), cpus: 1, memory: 256, max_cpus: 2, max_memory: 512, labels: { "destination" => "ruby-child" }, workdir: "/root", shell: "/bin/ash", env: { "DEST_VALUE" => "ruby-value" }, entrypoint: ["/bin/sh", "-c"], cmd: ["touch /root/default-ran"] }
       child = progress ? @checkpoint.spawn_sandbox_with_progress(**options).result : @group.spawn_sandbox(**options)
       check_guest(child)
+      check_command_defaults(child)
+      assert_equal "/root:ruby-value", child.shell('test ! -e /root/default-ran && printf "%s:%s" "$PWD" "$DEST_VALUE"').stdout
       resources = JSON.parse(Microsandbox::Sandbox.get(child.name).config_json).fetch("resources")
       assert_equal 2, resources.fetch("max_cpus")
       assert_equal 512, resources.fetch("max_memory_mib")
+      assert_equal "ruby-child", JSON.parse(Microsandbox::Sandbox.get(child.name).config_json).fetch("labels").fetch("destination")
       assert_equal "0-1", child.shell("cat /sys/devices/system/cpu/possible").stdout.strip
       child.stop
     end
@@ -138,8 +149,10 @@ class SnapshotSpawnTest < Test::Unit::TestCase
       assert_match(/captured CPU and memory geometry/, error.message)
       assert_raise(Microsandbox::SandboxNotFoundError) { Microsandbox::Sandbox.get(name) }
     end
-    session = created.checkpoint.spawn_sandbox_with_progress(name: child_name("full"), max_cpus: 2, max_memory: 512)
+    session = created.checkpoint.spawn_sandbox_with_progress(name: child_name("full"), max_cpus: 2, max_memory: 512, workdir: "/root", shell: "/bin/ash", env: { "DEST_VALUE" => "ruby-full" }, entrypoint: ["/bin/sh", "-c"], cmd: ["touch /root/default-ran"])
     child = session.result
+    check_command_defaults(child)
+    assert_equal "/root:ruby-full", child.shell('test ! -e /root/default-ran && printf "%s:%s" "$PWD" "$DEST_VALUE"').stdout
     assert_equal "ruby-full-memory", child.shell("cat /mnt/volatile/marker").stdout.strip
     child.stop
   end

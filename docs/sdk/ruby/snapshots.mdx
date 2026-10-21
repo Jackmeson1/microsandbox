@@ -213,7 +213,7 @@ Control retrieval of the snapshot's recorded image digest. The default `if-missi
 
 `ports` is an array of `{ host: 8080, guest: 80, bind: "127.0.0.1", protocol: :tcp }` hashes; bind is optional and protocol defaults to TCP. `vsock` is an array of `{ path: "/run/service.sock", port: 5000, datagram: false }`. `volumes` maps guest paths to hashes containing exactly one of `bind`, `named`, or `disk`, with optional `readonly: true`. For example: `volumes: { "/data" => { bind: "./data", readonly: true } }`. `captured_volumes` lists guest paths whose private captured disks should be selected. Explicit local host paths are captured when the method is called; remote backend paths are not resolved against the client directory.
 
-Unknown keywords are rejected. Source/image replacement and new entrypoint instructions are not accepted. Full-memory restore preserves captured execution and refuses changes to boot security, init, or hostname before child execution.
+Unknown keywords are rejected. Source/image replacement and automatic startup commands are not accepted; entrypoint/CMD configure future commands only. Full-memory restore preserves captured execution and refuses changes to boot security, init, or hostname before child execution.
 
 #### init
 
@@ -230,6 +230,18 @@ max_cpus: 2, max_memory: 512
 ```
 
 Set the maximum possible CPU count and memory ceiling in MiB for a disk boot, including `disk_only: true`. Values must be positive and at least the requested capacity; full-memory resume requires the captured ceilings exactly. Omission retains the existing inherited/default choice. Available on group/checkpoint spawn and progress variants.
+
+#### Destination command defaults
+
+Use `workdir:`, `shell:`, `entrypoint:`, `cmd:` and `env:` keyword arguments to configure new commands in the destination. They work for disk boots and full resumes without changing captured processes or starting a workload during restoration. An explicit empty entrypoint or CMD clears that default; omission keeps existing resolution. Environment defaults combine with per-command overrides through the ordinary SDK rules. Guest working directories must exist. These are explicit destination settings, not automatically saved snapshot configuration. Unsupported native bindings reject new explicit options before dispatch.
+
+#### labels
+
+```ruby
+labels: { "team" => "development" }
+```
+
+Attach destination sandbox labels without changing source snapshot labels. Available on group/checkpoint spawn and progress variants. Normal sandbox label validation applies.
 
 #### hostname
 

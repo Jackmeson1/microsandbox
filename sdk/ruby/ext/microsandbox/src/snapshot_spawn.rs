@@ -21,7 +21,7 @@ use tokio::{
 use super::snapshot_group::RubyGroup;
 use super::{
     RubyOutboundProxy, RubyOutboundProxyConfig, RubySandbox, RubySnapshot, argument_error, keyword,
-    reject_unknown_keywords, run, string_value, symbol,
+    reject_unknown_keywords, run, string_array, string_map, string_value, symbol,
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -203,6 +203,12 @@ fn destination(ruby: &Ruby, args: &[Value], local: bool) -> Result<RestoreBuilde
             "memory",
             "max_cpus",
             "max_memory",
+            "labels",
+            "workdir",
+            "shell",
+            "entrypoint",
+            "cmd",
+            "env",
             "network",
             "pull_policy",
             "proxy",
@@ -283,6 +289,24 @@ fn destination(ruby: &Ruby, args: &[Value], local: bool) -> Result<RestoreBuilde
     }
     if let Some(v) = keyword::<u32>(options, "max_memory")? {
         builder = builder.max_memory(v);
+    }
+    if let Some(v) = options.get(symbol("labels")).filter(|v| !v.is_nil()) {
+        builder = builder.labels(string_map(v, "labels")?);
+    }
+    if let Some(v) = keyword::<String>(options, "workdir")? {
+        builder = builder.workdir(v);
+    }
+    if let Some(v) = keyword::<String>(options, "shell")? {
+        builder = builder.shell(v);
+    }
+    if let Some(v) = options.get(symbol("entrypoint")).filter(|v| !v.is_nil()) {
+        builder = builder.entrypoint(string_array(v, "entrypoint")?);
+    }
+    if let Some(v) = options.get(symbol("cmd")).filter(|v| !v.is_nil()) {
+        builder = builder.cmd(string_array(v, "cmd")?);
+    }
+    if let Some(v) = options.get(symbol("env")).filter(|v| !v.is_nil()) {
+        builder = builder.envs(string_map(v, "env")?);
     }
     if let Some(v) = keyword::<String>(options, "init")? {
         builder = builder.init(v);

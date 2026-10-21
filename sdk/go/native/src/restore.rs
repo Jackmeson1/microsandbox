@@ -26,6 +26,12 @@ pub(super) struct RestoreOptions {
     memory_mib: Option<u32>,
     max_cpus: Option<u8>,
     max_memory_mib: Option<u32>,
+    labels: Option<HashMap<String, String>>,
+    workdir: Option<String>,
+    shell: Option<String>,
+    entrypoint: Option<Vec<String>>,
+    cmd: Option<Vec<String>>,
+    env: Option<HashMap<String, String>>,
     init: Option<super::InitOpts>,
     hostname: Option<String>,
     proxy: Option<super::OutboundProxyOpts>,
@@ -114,6 +120,24 @@ pub(super) fn builder(name: String, opts: &RestoreOptions) -> Result<RestoreBuil
     }
     if let Some(max_memory) = opts.max_memory_mib {
         builder = builder.max_memory(max_memory);
+    }
+    if let Some(labels) = &opts.labels {
+        builder = builder.labels(labels);
+    }
+    if let Some(value) = &opts.workdir {
+        builder = builder.workdir(value);
+    }
+    if let Some(value) = &opts.shell {
+        builder = builder.shell(value);
+    }
+    if let Some(value) = &opts.entrypoint {
+        builder = builder.entrypoint(value);
+    }
+    if let Some(value) = &opts.cmd {
+        builder = builder.cmd(value);
+    }
+    if let Some(value) = &opts.env {
+        builder = builder.envs(value);
     }
     if let Some(init) = &opts.init {
         builder = builder.init_with(&init.cmd, |options| {
@@ -366,13 +390,33 @@ mod tests {
         for field in [
             "image",
             "network",
-            "cmd",
+            "foreground_command",
             "replace",
             "detached",
-            "entrypoint",
+            "background_command",
         ] {
             let mut value = serde_json::json!({"snapshot":"saved"});
             value[field] = serde_json::Value::Null;
+            assert!(
+                serde_json::from_value::<RestoreOptions>(value).is_err(),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn restore_command_defaults_keep_empty_argv_and_reject_invalid_shapes() {
+        let options: RestoreOptions = serde_json::from_value(serde_json::json!({
+            "snapshot":"saved", "workdir":"/root", "shell":"/bin/ash",
+            "entrypoint":[], "cmd":[], "env":{"KEY":"", "OTHER":"literal"}
+        }))
+        .unwrap();
+        assert_eq!(options.entrypoint, Some(vec![]));
+        assert_eq!(options.cmd, Some(vec![]));
+        assert!(builder("child".into(), &options).is_ok());
+        for field in ["workdir", "shell", "entrypoint", "cmd", "env"] {
+            let mut value = serde_json::json!({"snapshot":"saved"});
+            value[field] = serde_json::json!(42);
             assert!(
                 serde_json::from_value::<RestoreOptions>(value).is_err(),
                 "{field}"

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use microsandbox::sandbox::{
     CpuPlacement, DeploymentProfile, NetworkPolicy, Patch, PullPolicy, SandboxBuilder,
     SecretSource, SecurityProfile, TransparentHugePagePolicy,
@@ -335,6 +337,12 @@ pub(crate) fn restore_builder_from_reference(
             "memory",
             "max_cpus",
             "max_memory",
+            "labels",
+            "workdir",
+            "shell",
+            "entrypoint",
+            "cmd",
+            "env",
             "network_policy",
             "pull_policy",
             "proxy",
@@ -382,6 +390,24 @@ pub(crate) fn restore_builder_from_reference(
     }
     if let Some(max_memory) = extract_opt::<u32>(kwargs, "max_memory")? {
         builder = builder.max_memory(max_memory);
+    }
+    if let Some(value) = extract_opt::<HashMap<String, String>>(kwargs, "labels")? {
+        builder = builder.labels(value);
+    }
+    if let Some(value) = extract_opt::<String>(kwargs, "workdir")? {
+        builder = builder.workdir(value);
+    }
+    if let Some(value) = extract_opt::<String>(kwargs, "shell")? {
+        builder = builder.shell(value);
+    }
+    if let Some(value) = extract_opt::<Vec<String>>(kwargs, "entrypoint")? {
+        builder = builder.entrypoint(value);
+    }
+    if let Some(value) = extract_opt::<Vec<String>>(kwargs, "cmd")? {
+        builder = builder.cmd(value);
+    }
+    if let Some(value) = extract_opt::<HashMap<String, String>>(kwargs, "env")? {
+        builder = builder.envs(value);
     }
     if let Some(value) = kwargs.get_item("init")?.filter(|v| !v.is_none()) {
         let (cmd, args, env) = parse_init_kwarg(&value)?;

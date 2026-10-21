@@ -94,7 +94,8 @@ func TestRestoreCeilingsRefuseOlderNativeLibrary(t *testing.T) {
 		t.Fatal(err)
 	}
 	cpus, memory := uint8(2), uint32(512)
-	for _, options := range []RestoreOptions{{MaxCPUs: &cpus}, {MaxMemoryMiB: &memory}} {
+	policy := "inherit"
+	for _, options := range []RestoreOptions{{MaxCPUs: &cpus}, {MaxMemoryMiB: &memory}, {Labels: map[string]string{"team": "dev"}}, {Workdir: &policy}, {Shell: &policy}, {Entrypoint: &[]string{}}, {Cmd: &[]string{}}, {Env: map[string]string{"KEY": ""}}} {
 		var unsupported *Error
 		err := CheckRestoreBootOptions(context.Background(), options)
 		if !errors.As(err, &unsupported) || unsupported.Kind != KindUnsupportedOperation {

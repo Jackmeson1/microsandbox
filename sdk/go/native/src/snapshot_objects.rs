@@ -395,7 +395,13 @@ async fn dispatch(id: u64, request: Request, pending: &PendingObjects) -> Result
             "hostname",
             "max_cpus",
             "max_memory_mib",
-            "proxy"
+            "proxy",
+            "labels",
+            "workdir",
+            "shell",
+            "entrypoint",
+            "cmd",
+            "env"
         ])),
         Request::InspectGroup => {
             let info = group(id)?.inspect().await?;
