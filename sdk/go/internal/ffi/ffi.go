@@ -2760,7 +2760,13 @@ func ResizeOperationsSandboxByName(ctx context.Context, name, id, request string
 
 // ResizeOperations dispatches one new operation on a retained live handle.
 func (s *Sandbox) ResizeOperations(ctx context.Context, request string) (string, error) {
-	return resizeOperations(ctx, s.h(), "", "", request)
+	handle := s.h()
+	if handle == 0 {
+		return "", &Error{Kind: KindInvalidHandle, Message: "sandbox handle already closed"}
+	}
+	// Zero selects name lookup in the native entry point. Keep the admitted handle
+	// instead of reading it again after a concurrent Close or Detach clears it.
+	return resizeOperations(ctx, handle, "", "", request)
 }
 
 func resizeOperations(ctx context.Context, handle C.uint64_t, name, id, request string) (string, error) {

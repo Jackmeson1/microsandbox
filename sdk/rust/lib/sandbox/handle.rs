@@ -357,6 +357,28 @@ impl SandboxHandle {
         .await
     }
 
+    /// Binding hook for one check after identity lookup has consumed part of its budget.
+    ///
+    /// The remaining setup/read budget never enables polling. Timeout errors retain each
+    /// completed resource reply and report the original zero-timeout single-check request.
+    #[doc(hidden)]
+    #[cfg(feature = "local")]
+    pub async fn check_resize_operations_with_budget(
+        &self,
+        operations: Option<&[super::ResizeOperation]>,
+        budget: std::time::Duration,
+    ) -> MicrosandboxResult<Vec<ResourceResizeStatus>> {
+        super::resize::wait_for_operations_with_budget(
+            &self.backend,
+            &self.name,
+            &self.identity(),
+            operations,
+            Some(std::time::Duration::ZERO),
+            Some(budget),
+        )
+        .await
+    }
+
     /// Wait for the initially selected operations to be guest-confirmed.
     ///
     /// Returns an error when the sandbox is not running, and

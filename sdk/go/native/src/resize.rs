@@ -94,13 +94,11 @@ where
         .filter(|left| !left.is_zero())
         .ok_or_else(|| expired(Vec::new()))?;
     let result = if timeout.is_zero() {
-        // Zero still means one read, with lookup charged against its transport budget.
-        tokio::time::timeout(
-            remaining,
-            wait_selected(&handle, operations, Some(Duration::ZERO)),
-        )
-        .await
-        .map_err(|_| expired(Vec::new()))?
+        // The SDK owns this reduced budget so a stalled later resource cannot erase
+        // replies already received. Zero still means one check, never a polling wait.
+        handle
+            .check_resize_operations_with_budget(operations, remaining)
+            .await
     } else {
         // Let the SDK own the polling deadline: a competing outer timer can discard
         // its last observed status when both deadlines expire together.

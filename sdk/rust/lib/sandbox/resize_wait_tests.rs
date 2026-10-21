@@ -124,7 +124,14 @@ async fn delayed_memory_peer(listener: tokio::net::UnixListener, delay_pass: usi
 
 #[tokio::test]
 async fn timeout_keeps_each_completed_resource_reply() {
-    for delay_pass in [1, 2] {
+    for (delay_pass, check_once, expected_cpu_reads, expected_statuses) in [
+        (1, false, 1, 1),
+        (2, false, 2, 2),
+        (1, true, 1, 1),
+        // Both resources reply Pending. A single check must return immediately,
+        // rather than use the remaining transport budget for additional polls.
+        (3, true, 1, 2),
+    ] {
         let home = tempfile::Builder::new()
             .prefix("msb-rsz-")
             .tempdir_in("/tmp")
@@ -170,29 +177,47 @@ async fn timeout_keeps_each_completed_resource_reply() {
             .await
             .unwrap();
         let selected = [recorded(ResourceKind::Cpus), recorded(ResourceKind::Memory)];
-        let result = wait_for_operations(
-            &backend,
-            "resize-wait",
-            &identity,
-            Some(&selected),
-            Some(Duration::from_secs(2)),
-        )
-        .await;
+        let result = if check_once {
+            let handle = super::super::SandboxHandle::from_local_model(backend, sandbox, None);
+            handle
+                .check_resize_operations_with_budget(Some(&selected), Duration::from_secs(2))
+                .await
+        } else {
+            wait_for_operations(
+                &backend,
+                "resize-wait",
+                &identity,
+                Some(&selected),
+                Some(Duration::from_secs(2)),
+            )
+            .await
+        };
         peer.abort();
         if let Err(error) = peer.await {
             assert!(error.is_cancelled(), "peer failed: {error}");
         }
-        let Err(MicrosandboxError::ResizeTimeout { status, .. }) = result else {
+        let Err(MicrosandboxError::ResizeTimeout {
+            status, timeout, ..
+        }) = result
+        else {
             panic!("expected response timeout, got {result:?}");
         };
         assert_eq!(
             status.len(),
-            delay_pass,
+            expected_statuses,
             "retain only replies actually received"
         );
         assert_eq!(status[0].resource, ResourceKind::Cpus);
-        assert_eq!(status[0].actual, delay_pass.to_string());
-        if delay_pass == 2 {
+        assert_eq!(status[0].actual, expected_cpu_reads.to_string());
+        assert_eq!(
+            timeout,
+            if check_once {
+                Duration::ZERO
+            } else {
+                Duration::from_secs(2)
+            }
+        );
+        if expected_statuses == 2 {
             assert_eq!(status[1].resource, ResourceKind::Memory);
             assert_eq!(status[1].actual, "1");
         }

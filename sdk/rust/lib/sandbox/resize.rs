@@ -143,6 +143,27 @@ pub(crate) async fn wait_for_operations(
     selected: Option<&[ResizeOperation]>,
     timeout: Option<Duration>,
 ) -> MicrosandboxResult<Vec<ResourceResizeStatus>> {
+    wait_for_operations_with_budget(
+        backend,
+        name,
+        identity,
+        selected,
+        timeout,
+        timeout.map(wait_budget),
+    )
+    .await
+}
+
+/// Keep the single-check/polling policy separate from its remaining transport budget.
+/// Bindings can charge lookup time without placing a competing timer around partial replies.
+pub(crate) async fn wait_for_operations_with_budget(
+    backend: &Arc<dyn Backend>,
+    name: &str,
+    identity: &SandboxIdentity,
+    selected: Option<&[ResizeOperation]>,
+    timeout: Option<Duration>,
+    budget: Option<Duration>,
+) -> MicrosandboxResult<Vec<ResourceResizeStatus>> {
     let started = Instant::now();
     let mut last = Vec::new();
     let mut reading_id = None;
@@ -210,7 +231,7 @@ pub(crate) async fn wait_for_operations(
             }
         }
     };
-    let result = match timeout.map(wait_budget) {
+    let result = match budget {
         Some(budget) => tokio::time::timeout(budget, wait)
             .await
             .unwrap_or_else(|_| Err(resize_timeout(name, timeout, last.clone()))),

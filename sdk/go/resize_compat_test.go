@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,7 +52,8 @@ func TestResizeRefusesOlderNativeLibrary(t *testing.T) {
 }
 
 // The older binding may support ordinary resize status but lacks the additive
-// operation entry point. Invalid handles prove no native dispatch happens.
+// operation entry point. Closed handles retain invalid-handle semantics; named
+// requests must report the missing capability before entering the native library.
 func TestResizeOperationsRefuseOlderNativeLibrary(t *testing.T) {
 	path := os.Getenv("MSB_OLD_RESIZE_OPERATIONS_NATIVE")
 	if path == "" {
@@ -79,8 +81,12 @@ func TestResizeOperationsRefuseOlderNativeLibrary(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := call()
-			if !IsKind(err, ErrUnsupportedOperation) {
-				t.Fatalf("did not refuse before dispatch: %v", err)
+			kind := ErrUnsupportedOperation
+			if strings.HasPrefix(name, "sandbox ") {
+				kind = ErrInvalidHandle
+			}
+			if !IsKind(err, kind) {
+				t.Fatalf("did not refuse before dispatch with %s: %v", kind, err)
 			}
 		})
 	}
