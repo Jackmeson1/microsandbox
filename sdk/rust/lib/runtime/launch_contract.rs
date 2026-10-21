@@ -1272,6 +1272,10 @@ mod tests {
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let path = dir.join(name);
+        // Exercise the fresh script's loader before measuring probe behavior. On macOS,
+        // first execution can stall before the shell body starts, even with serial tests.
+        // This setup-only argument must not execute fixture side effects or slow bodies.
+        let body = format!("if [ \"$1\" = __msb_probe_fixture_ready ]; then exit 0; fi\n{body}");
         // Keep writable script descriptors out of the test process: concurrent
         // forks can inherit them and make Linux exec fail with ETXTBSY.
         let status = std::process::Command::new("/bin/sh")
@@ -1284,6 +1288,26 @@ mod tests {
             .unwrap();
         assert!(status.success());
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut ready = std::process::Command::new(&path)
+            .arg("__msb_probe_fixture_ready")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = ready.try_wait().unwrap() {
+                assert!(status.success(), "probe fixture setup failed");
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = ready.kill();
+                let _ = ready.wait();
+                panic!("probe fixture setup timed out before the test started");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
         path
     }
 
