@@ -21,6 +21,9 @@ mod live;
 #[path = "retention/selection.rs"]
 mod selection;
 
+#[path = "retention/script_backing.rs"]
+mod script_backing;
+
 //--------------------------------------------------------------------------------------------------
 // Constants
 //--------------------------------------------------------------------------------------------------
@@ -1012,4 +1015,7 @@ mod tests {
 pub(crate) use capture::ConfigurationCaptureContext;
 pub use capture::{CapturedConfiguration, disk_configuration_root};
 pub use live::LiveConfigurationSelection;
+pub use script_backing::{
+    CapturedScriptBacking, CapturedScriptDirectory, ScriptBackingEvidence, ScriptBackingUnknown,
+};
 pub use selection::select_stopped_configuration;

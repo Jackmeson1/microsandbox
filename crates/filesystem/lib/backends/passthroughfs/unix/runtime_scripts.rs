@@ -94,6 +94,14 @@ struct FileStamp {
 // Methods
 //--------------------------------------------------------------------------------------------------
 
+impl PassthroughFs {
+    /// Pin the exact mounted root for guarded runtime-script observation.
+    /// The caller must still hold capture authority; a pathname reopened later is not equivalent.
+    pub fn pin_runtime_script_root(&self) -> io::Result<File> {
+        self.root_fd.try_clone()
+    }
+}
+
 impl CapturedRuntimeScripts {
     /// Observe exact registered backing below an already pinned runtime directory.
     ///
@@ -152,6 +160,12 @@ impl CapturedRuntimeScripts {
         self.files
             .iter()
             .map(|(name, file)| (name.as_str(), file.content.as_str(), file.metadata))
+    }
+
+    /// Guest metadata for the pinned runtime and scripts directories, in that order.
+    /// Directory permissions participate in full backing fidelity independently of file bytes.
+    pub fn directory_metadata(&self) -> (RuntimeScriptMetadata, RuntimeScriptMetadata) {
+        (self.runtime_metadata, self.scripts_metadata)
     }
 
     /// Recheck namespace, bytes and guest metadata while the source guard remains held.
