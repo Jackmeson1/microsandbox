@@ -459,6 +459,8 @@ fn network_capture_generated_interception_still_requires_identity() {
 #[test]
 fn network_capture_nested_missing_fields_cannot_gain_implicit_authority() {
     let mut raw = source();
+    // Historical omission has no private evidence distinguishing a known default.
+    raw.as_object_mut().unwrap().remove("field_presence");
     raw["network"]["ports"] =
         json!([{"guest_port": 80, "host_port": 59999, "host_bind": "PRIVATE_LISTENER"}]);
     assert!(is_unknown(

@@ -166,6 +166,15 @@ impl SandboxBuilder {
                 self.config.launch_cmd_before_override = Some(patch.spec.runtime.cmd.clone());
             }
         }
+        // Reconstruction patches are evidence, not new declarations of omitted defaults.
+        let mut presence = self.config.field_presence.take().unwrap_or_default();
+        if let Some(supplied) = patch.field_presence.take() {
+            presence.overlay(supplied);
+        }
+        if patch.field_presence_unknown != Some(true) {
+            presence.apply_explicit(&patch.spec);
+        }
+        patch.field_presence = Some(presence);
         // Sparse public inputs are new declarations. Preserve origin for untouched keys;
         // an explicit same-value declaration intentionally replaces a prior host forwarding.
         let mut origin = self
@@ -205,6 +214,7 @@ impl SandboxBuilder {
         // This API accepts an explicit new task declaration, not a retained sandbox record.
         builder.config.command_provenance_unknown = Some(false);
         builder.config.environment_provenance_unknown = Some(false);
+        builder.config.field_presence_unknown = Some(false);
         Ok(builder)
     }
 
@@ -570,6 +580,10 @@ impl SandboxBuilder {
     pub fn thp(mut self, policy: super::TransparentHugePagePolicy) -> Self {
         self.record_prepared_boot_override(|boot| boot.thp = true);
         self.config.spec.resources.thp = Some(policy);
+        self.config
+            .field_presence
+            .get_or_insert_with(Default::default)
+            .declare_thp(policy);
         self
     }
 
@@ -2808,6 +2822,10 @@ impl From<SandboxConfig> for SandboxBuilder {
     fn from(mut config: SandboxConfig) -> Self {
         // Only explicit setters can establish new origins after historical reconstruction.
         config.environment_provenance_unknown = true;
+        config.field_presence_unknown = true;
+        if let Some(presence) = &mut config.field_presence {
+            presence.retain_matching(&config.spec);
+        }
         if let Some(origin) = &mut config.environment_provenance {
             origin.retain_matching(&config.spec.env, config.spec.init.as_ref());
         }
@@ -3134,7 +3152,7 @@ mod tests {
                     .unwrap();
                 let mut actual_launch = serde_json::to_value(&actual).unwrap();
                 let mut expected_launch = serde_json::to_value(&expected).unwrap();
-                // Private environment evidence has separate tests; all prior launch fields
+                // Private environment/presence evidence has separate tests; prior launch fields
                 // must still match the historical image-resolution path exactly.
                 actual_launch
                     .as_object_mut()
@@ -3144,6 +3162,14 @@ mod tests {
                     .as_object_mut()
                     .unwrap()
                     .remove("environment_provenance");
+                actual_launch
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("field_presence");
+                expected_launch
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("field_presence");
                 assert_eq!(actual_launch, expected_launch);
                 assert_eq!(
                     actual.init_owns_boot_workload(),

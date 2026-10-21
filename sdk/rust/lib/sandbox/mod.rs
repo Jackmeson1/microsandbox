@@ -24,6 +24,7 @@ mod environment_provenance;
 pub mod exec;
 #[cfg(feature = "local")]
 mod exit;
+mod field_presence;
 #[cfg(feature = "local")]
 pub(crate) mod flat_rootfs;
 pub mod fs;

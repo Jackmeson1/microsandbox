@@ -102,6 +102,8 @@ fn active_capacity_uses_independent_observations_instead_of_targets() {
 #[test]
 fn unknown_allocations_and_absent_static_fields_do_not_become_defaults() {
     let mut raw = source();
+    // Model a historical producer with no evidence for serializer-omitted defaults.
+    raw.as_object_mut().unwrap().remove("field_presence");
     raw["resources"].as_object_mut().unwrap().remove("max_cpus");
     raw["resources"]
         .as_object_mut()

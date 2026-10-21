@@ -30,6 +30,7 @@ use crate::config::{
 
 use super::command_provenance::CommandProvenance;
 use super::environment_provenance::EnvironmentProvenance;
+use super::field_presence::FieldPresence;
 use super::init_provenance::InitProvenance;
 use super::types::{MountOptions, RootDisk, RootfsSource, VolumeMount};
 use crate::snapshot::SnapshotReference;
@@ -164,6 +165,12 @@ pub struct SandboxConfig {
     /// Builder-only guard against turning historical values into new literal declarations.
     #[serde(skip)]
     pub(crate) environment_provenance_unknown: bool,
+    /// Optional, value-bound evidence for omitted nonsecret defaults. Old records stay unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) field_presence: Option<FieldPresence>,
+    /// Reconstructing retained configuration must not manufacture declarations from defaults.
+    #[serde(skip)]
+    pub(crate) field_presence_unknown: bool,
     /// Protect the installed source while a local restore builder materializes child-owned files.
     #[cfg(feature = "local")]
     #[serde(skip)]
@@ -656,6 +663,11 @@ impl SandboxConfig {
         let http_defaults_implicit = patch.http_defaults_are_implicit();
         let max_cpus = patch.spec.resources.max_cpus;
         let max_memory_mib = patch.spec.resources.max_memory_mib;
+        let mut explicit_presence = patch
+            .field_presence
+            .clone()
+            .or_else(|| self.field_presence.clone())
+            .unwrap_or_default();
         patch.apply_to(self);
         self.http_defaults_implicit = Some(http_defaults_implicit);
         if self.command_provenance_unknown {
@@ -715,6 +727,12 @@ impl SandboxConfig {
                 self.spec.init.as_ref(),
                 self.environment_provenance_unknown,
             );
+        self.field_presence = Some(if self.field_presence_unknown {
+            explicit_presence.retain_matching(&self.spec);
+            explicit_presence
+        } else {
+            FieldPresence::declared(&self.spec)
+        });
     }
 
     /// Resolve the effective metrics sampling interval, accounting for the disable override.
@@ -735,6 +753,9 @@ impl SandboxConfig {
     /// transient launch markers and any workload argv routed through an inherited init are removed.
     pub(crate) fn clone_for_persistence(&self) -> Self {
         let mut config = self.clone();
+        if let Some(presence) = &mut config.field_presence {
+            presence.retain_matching(&config.spec);
+        }
         if let Some(origin) = &mut config.environment_provenance {
             origin.retain_matching(&config.spec.env, config.spec.init.as_ref());
         }
@@ -1276,7 +1297,28 @@ impl<'de> Deserialize<'de> for SandboxConfig {
                 .entry("http_defaults_implicit")
                 .or_insert(serde_json::Value::Bool(implicit));
         }
-        Self::deserialize(value).map_err(serde::de::Error::custom)
+        // This optional private hint cannot make otherwise supported old configuration
+        // unreadable. Unknown/future/malformed evidence is unavailable, never a default.
+        if let Some(object) = value.as_object_mut()
+            && object.get("field_presence").is_some_and(|hint| {
+                serde_json::from_value::<Option<FieldPresence>>(hint.clone()).is_err()
+            })
+        {
+            object.remove("field_presence");
+        }
+        let resources_recorded = value
+            .get("resources")
+            .is_some_and(serde_json::Value::is_object);
+        let network_recorded = value
+            .get("network")
+            .is_some_and(serde_json::Value::is_object);
+        let mut config = Self::deserialize(value).map_err(serde::de::Error::custom)?;
+        config.field_presence_unknown = true;
+        if let Some(presence) = &mut config.field_presence {
+            presence.retain_recorded_parents(resources_recorded, network_recorded);
+            presence.retain_matching(&config.spec);
+        }
+        Ok(config)
     }
 }
 
@@ -1289,6 +1331,8 @@ impl Default for SandboxConfig {
             command_provenance_unknown: false,
             environment_provenance: None,
             environment_provenance_unknown: false,
+            field_presence: None,
+            field_presence_unknown: false,
             spec: SandboxSpec {
                 resources: SandboxResources {
                     cpus: default_cpus(),
@@ -1410,6 +1454,8 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("environment_provenance");
+        layered.as_object_mut().unwrap().remove("field_presence");
+        merged.as_object_mut().unwrap().remove("field_presence");
         assert_eq!(layered, merged);
     }
 
