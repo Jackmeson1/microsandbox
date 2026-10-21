@@ -262,3 +262,9 @@ The draft portable `active.script_backing` section retains observed guest UID/GI
 `SavedConfigurationPlan::stage_full_scripts` stages exact selected inline content and captured guest metadata after source deletion. It checks the original inline digests and modes before filesystem effects; changed, bound or unknown identity refuses. The filesystem primitive retains inode pins while verifying file bytes, guest metadata and directory identity, with whole-directory cleanup on failure. Existing `stage_disk_scripts` remains a separate root-owned cold-boot operation.
 
 The returned temporary directory grants no resume permission. Captured filesystem state must still admit every handle and unregistered runtime resource, with complete destination policy and ownership transfer before launch. The tests prove one registered open-handle reconstruction and refusal of unaccounted backing; they are not a complete runtime-share or VM-resume qualification. Production emission, full-state closure, binding-backed identity proof and activation integration remain unfinished.
+
+## Pending selectors and init provenance
+
+A pending script-key match cannot authorize full-state omission when active script backing is unknown/default. Known absence permits pending-only sanitation, while disk capture keeps its separate omission rules. This check runs before copying or hashing source content.
+
+Pending init records the original `auto` choice from validated private provenance, even after image resolution has replaced the configured command with a concrete path. Explicit-path provenance retains that path; a non-null historical init without provenance stays unknown because the resolved spelling alone cannot identify the original choice. Explicit null remains a known no-handoff default. Neither pending intent nor these preparation fixes changes existing boot behavior or supplies active observation.

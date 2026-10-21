@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use microsandbox_image::ImageConfig;
 use microsandbox_protocol::init_observation::InitObservation;
 use microsandbox_types::snapshot::saved_config::{
     RuntimeCaptureAction, RuntimeCaptureInput, RuntimeCaptureTarget, SavedOrigin,
@@ -14,6 +15,7 @@ use super::{
     ResourceCaptureObservation, RuntimeCaptureSource, RuntimeDefaultClear, RuntimeDefaultSelection,
     RuntimeSelectionContext, SnapshotConfigMode, prepare_runtime_inputs, select_runtime_defaults,
 };
+use crate::SandboxConfigPatch;
 use crate::sandbox::SandboxBuilder;
 
 //--------------------------------------------------------------------------------------------------
@@ -119,6 +121,44 @@ fn pending_source_does_not_substitute_guest_init_observation() {
     assert_eq!(active["init"]["value"]["resolved_path"], "/sbin/init");
     assert_eq!(pending["init"]["value"]["cmd"], "auto");
     assert_eq!(pending["init"]["origin"], "configured");
+}
+
+#[test]
+fn pending_init_preserves_image_auto_intent_and_unknown_legacy_selection() {
+    let image = ImageConfig {
+        entrypoint: Some(vec!["/sbin/init".into()]),
+        ..Default::default()
+    };
+    for (choice, expected) in [("auto", "auto"), ("/sbin/init", "/sbin/init")] {
+        let config = SandboxBuilder::new("pending-init")
+            .image("alpine")
+            .init(choice)
+            .finish(None, Some(SandboxConfigPatch::from_image(&image)))
+            .unwrap();
+        let mut raw = serde_json::to_value(config.clone_for_persistence()).unwrap();
+        assert_eq!(raw["init"]["cmd"], "/sbin/init");
+        let adapter = RuntimeCaptureSource::from_recorded(&raw, None, None).unwrap();
+        let result = project_runtime_capture(
+            RuntimeCaptureInput::default(),
+            Some(adapter.pending_input()),
+            &BTreeMap::new(),
+            false,
+        )
+        .unwrap();
+        let pending = serde_json::to_value(result.pending.unwrap()).unwrap();
+        assert_eq!(pending["init"]["value"]["cmd"], expected);
+        assert_eq!(pending["init"]["origin"], "configured");
+
+        // The same resolved path without provenance cannot distinguish these choices.
+        raw.as_object_mut().unwrap().remove("init_provenance");
+        let adapter = RuntimeCaptureSource::from_recorded(&raw, None, None).unwrap();
+        assert!(matches!(
+            adapter.pending_input().init,
+            Some(SavedValue::Unknown {
+                reason: SavedUnknownReason::NotRecorded
+            })
+        ));
+    }
 }
 
 #[test]
