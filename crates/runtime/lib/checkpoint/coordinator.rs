@@ -19,9 +19,10 @@ use microsandbox_image::snapshot::{
 use microsandbox_protocol::bootstrap::GuestBootstrap;
 use microsandbox_protocol::control::ConfigurationCaptureReceipt;
 use microsandbox_protocol::core::{
-    CoreError, CoreErrorKind, Ready, WorkloadFailureDisposition, WorkloadFreeze, WorkloadFrozen,
+    CoreError, CoreErrorKind, WorkloadFailureDisposition, WorkloadFreeze, WorkloadFrozen,
     WorkloadThaw, WorkloadThawed, WorkloadTransportCredit, WorkloadTransportPosition,
 };
+use microsandbox_protocol::init_observation::ObservedReady;
 use microsandbox_protocol::message::{Message, MessageType};
 use msb_krun::{IncrementalCaptureDecision, MemoryCaptureOptions, MemoryCapturePlan};
 
@@ -146,7 +147,7 @@ struct FrozenWorkload {
     gate: InputGate,
     attempt_id: String,
     protocol_generation: u8,
-    ready: Ready,
+    ready: ObservedReady,
     host_input: WorkloadTransportPosition,
     input_credit: WorkloadTransportCredit,
     guest_bulk_bytes: u64,
@@ -2042,10 +2043,22 @@ impl FrozenWorkload {
                     "protocol_generation".into(),
                     self.protocol_generation.to_string(),
                 ),
-                ("agent_version".into(), self.ready.agent_version.clone()),
-                ("boot_time_ns".into(), self.ready.boot_time_ns.to_string()),
-                ("init_time_ns".into(), self.ready.init_time_ns.to_string()),
-                ("ready_time_ns".into(), self.ready.ready_time_ns.to_string()),
+                (
+                    "agent_version".into(),
+                    self.ready.ready.agent_version.clone(),
+                ),
+                (
+                    "boot_time_ns".into(),
+                    self.ready.ready.boot_time_ns.to_string(),
+                ),
+                (
+                    "init_time_ns".into(),
+                    self.ready.ready.init_time_ns.to_string(),
+                ),
+                (
+                    "ready_time_ns".into(),
+                    self.ready.ready.ready_time_ns.to_string(),
+                ),
                 // Restore the negotiated physical transport as well as the agent identity.
                 (
                     "ready".into(),
@@ -2716,7 +2729,7 @@ mod tests {
             gate: control.gate(),
             attempt_id: "flush-proof".into(),
             protocol_generation: 9,
-            ready: Ready::default(),
+            ready: Ready::default().into(),
             host_input: WorkloadTransportPosition::default(),
             input_credit: WorkloadTransportCredit::default(),
             guest_bulk_bytes: 0,
@@ -3132,7 +3145,8 @@ mod tests {
                     microsandbox_protocol::core::WORKLOAD_TRANSPORT_BARRIER_VERSION,
                 ),
                 ..Ready::default()
-            },
+            }
+            .into(),
             host_input: WorkloadTransportPosition {
                 control_bytes: 90_000_000,
                 control_frames: 4_000,

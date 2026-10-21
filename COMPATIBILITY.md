@@ -112,6 +112,8 @@ Stable guest/VMM identifiers and paths include:
 
 Sources: [`crates/protocol/lib/bootstrap.rs`](crates/protocol/lib/bootstrap.rs), [`crates/protocol/lib/lib.rs`](crates/protocol/lib/lib.rs), [`crates/agentd/lib/agent.rs`](crates/agentd/lib/agent.rs), [`crates/agentd/lib/init.rs`](crates/agentd/lib/init.rs), and [`crates/runtime/lib/runner/vm.rs`](crates/runtime/lib/runner/vm.rs).
 
+Guest init selection is an optional `init_observation` field on the existing Ready payload. It distinguishes agentd retaining PID 1 from the exact guest path selected and preflighted for handoff; it does not assert that a foreign init completed exec or finished booting. It contains no arguments or environment. Older agents and relays leave this evidence unknown, and the unchanged Ready reader ignores the new field. No message kind, protocol generation, launch contract or required response field changes. The runtime preserves the observation in its existing nested Ready checkpoint resource and after restore. Absent observations retain the original Ready encoding; existing artifact readers can still decode that nested document. This transport evidence does not yet implement saved-config init projection, original SDK `auto` intent, durable stopped-source retention or portable activation. Existing handoff freezer refusals and graceful shutdown semantics are unchanged.
+
 ## 3. Local Agent IPC and Relay Routing
 
 Unix clients and runtimes recognize canonical hashed socket paths, legacy flat hashed paths, and an older deep sandbox path. Windows uses named pipes derived from the legacy hash. The runtime publishes compatibility symlinks where safe and must not overwrite a live endpoint.
