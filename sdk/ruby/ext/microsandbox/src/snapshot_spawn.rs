@@ -9,7 +9,8 @@ use magnus::{
 use microsandbox_core::{
     CreationProgressHandle, MicrosandboxError, MicrosandboxResult,
     sandbox::{
-        ExternalMountRestorePolicy, GuestClockPolicy, RestoreBuilder, Sandbox, SecurityProfile,
+        ExternalMountRestorePolicy, GuestClockPolicy, PullPolicy, RestoreBuilder, Sandbox,
+        SecurityProfile,
     },
 };
 use tokio::{
@@ -203,6 +204,7 @@ fn destination(ruby: &Ruby, args: &[Value], local: bool) -> Result<RestoreBuilde
             "max_cpus",
             "max_memory",
             "network",
+            "pull_policy",
             "proxy",
             "disable_network",
             "security",
@@ -232,6 +234,20 @@ fn destination(ruby: &Ruby, args: &[Value], local: bool) -> Result<RestoreBuilde
     let mut builder = Sandbox::restore_ref(microsandbox_core::SnapshotReference::auto(""));
     if let Some(v) = keyword::<String>(options, "name")? {
         builder = builder.name(v);
+    }
+    if let Some(v) = keyword::<String>(options, "pull_policy")? {
+        let p = match v.to_ascii_lowercase().as_str() {
+            "if_missing" | "if-missing" => PullPolicy::IfMissing,
+            "always" => PullPolicy::Always,
+            "never" => PullPolicy::Never,
+            other => {
+                return Err(argument_error(
+                    ruby,
+                    format!("pull_policy must be if_missing, always, or never; got {other}"),
+                ));
+            }
+        };
+        builder = builder.pull_policy(p);
     }
     if let Some(proxy) = keyword::<&RubyOutboundProxy>(options, "proxy")? {
         builder = match proxy.inner.borrow().clone() {

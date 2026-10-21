@@ -10,6 +10,7 @@ import (
 // startup command can cross the restore entry point. Optional pointers retain
 // explicit zero values so the native restore path can validate the user's intent.
 type RestoreOptions struct {
+	PullPolicy                  string                `json:"pull_policy,omitempty"`
 	Proxy                       *OutboundProxyOptions `json:"proxy,omitempty"`
 	Init                        *InitOptions          `json:"init,omitempty"`
 	Hostname                    *string               `json:"hostname,omitempty"`
@@ -80,6 +81,9 @@ func CheckRestoreGuestClock(ctx context.Context, policy string) error {
 // Ordinary restoration makes no capability call and retains its existing wire shape.
 func CheckRestoreBootOptions(ctx context.Context, options RestoreOptions) error {
 	var requested []string
+	if options.PullPolicy != "" {
+		requested = append(requested, "pull_policy")
+	}
 	if options.Proxy != nil {
 		requested = append(requested, "proxy")
 	}

@@ -1567,13 +1567,16 @@ impl LocalBackend {
         let original_ref: Reference = reference.parse().map_err(|e| {
             crate::MicrosandboxError::InvalidConfig(format!("invalid image reference: {e}"))
         })?;
-        if let Some((pull_result, metadata)) = Registry::pull_snapshot_cached(
-            &cache,
-            &[pinned_ref.clone(), original_ref],
-            &manifest_digest,
-            materialization,
-        )
-        .await?
+        // Explicit Always revalidates the immutable registry reference even when
+        // metadata is cached. The other policies may restore entirely offline.
+        if pull_policy != PullPolicy::Always
+            && let Some((pull_result, metadata)) = Registry::pull_snapshot_cached(
+                &cache,
+                &[pinned_ref.clone(), original_ref],
+                &manifest_digest,
+                materialization,
+            )
+            .await?
         {
             Self::emit_cached_pull_progress(progress.as_ref(), reference, &metadata);
             return Ok(ResolvedOciImage {

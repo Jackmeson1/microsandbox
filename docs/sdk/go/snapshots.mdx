@@ -1421,6 +1421,14 @@ Image, replacement, and startup-command options are not accepted. Full restore r
 Restore rejects missing external filesystems (and, for full restore, additional disks) by default. Use `WithAllowMissingResources()` to resume with unavailable devices (full restore records warnings). This is separate from strict/relaxed validation of supplied mappings; inheritance does not waive missing backing. Root and owned storage remain required.
 
 
+#### WithRestorePullPolicy
+
+```go
+func WithRestorePullPolicy(policy PullPolicy) RestoreOption
+```
+
+Control retrieval of the snapshot's recorded image digest. The default `if-missing` and explicit `never` can use complete local/archive content offline. `always` revalidates that exact digest through its registry, even when cached, and fails if the registry cannot provide it. This never follows the original mutable tag or changes the source snapshot. Explicit use requires an updated native binding and is refused before dispatch when unsupported.
+
 #### WithRestoreProxy
 
 ```go

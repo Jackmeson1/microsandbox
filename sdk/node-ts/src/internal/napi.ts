@@ -270,6 +270,8 @@ export interface NapiSandboxBuilder extends NapiSandboxBuilderSetters {
 
 /** Restore exposes destination controls, never image or startup-command selection. */
 export interface NapiRestoreBuilderSetters {
+  /** Control retrieval of the snapshot's pinned base image. */
+  pullPolicy(policy: string): this;
   /** Select the destination proxy before disk boot or full resume. */
   proxy(configure: (arg: NapiOutboundProxyBuilder) => NapiHttpConnectProxyBuilder | NapiSocks4ProxyBuilder | NapiSocks5ProxyBuilder): this;
   name(name: string): this;

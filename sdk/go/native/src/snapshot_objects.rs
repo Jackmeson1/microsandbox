@@ -390,6 +390,7 @@ async fn dispatch(id: u64, request: Request, pending: &PendingObjects) -> Result
         Request::ArchiveCompatibility => Ok(json!(["current", "0.7.8"])),
         Request::RestoreGuestClock => Ok(json!(["sync", "off"])),
         Request::RestoreBootOptions => Ok(json!([
+            "pull_policy",
             "init",
             "hostname",
             "max_cpus",

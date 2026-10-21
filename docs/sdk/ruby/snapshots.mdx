@@ -205,6 +205,10 @@ Both methods accept the same destination keywords. Progress returns a `PullSessi
   </div>
 </div>
 
+`pull_policy` accepts `"always"`, `"if-missing"` (also `"if_missing"`) or `"never"`.
+
+Control retrieval of the snapshot's recorded image digest. The default `if-missing` and explicit `never` can use complete local/archive content offline. `always` revalidates that exact digest through its registry, even when cached, and fails if the registry cannot provide it. This never follows the original mutable tag or changes the source snapshot. Explicit use requires an updated native binding and is refused before dispatch when unsupported.
+
 `proxy` accepts `Microsandbox::OutboundProxy`, including `.credentials(username, Microsandbox::SecretSource.env(variable))` for SOCKS5. Select the destination host proxy before disk boot or full-memory resume. This preserves the captured guest interface and does not inject guest trust material. SOCKS5 passwords use destination environment references; resolved passwords are not saved in snapshot configuration.
 
 `ports` is an array of `{ host: 8080, guest: 80, bind: "127.0.0.1", protocol: :tcp }` hashes; bind is optional and protocol defaults to TCP. `vsock` is an array of `{ path: "/run/service.sock", port: 5000, datagram: false }`. `volumes` maps guest paths to hashes containing exactly one of `bind`, `named`, or `disk`, with optional `readonly: true`. For example: `volumes: { "/data" => { bind: "./data", readonly: true } }`. `captured_volumes` lists guest paths whose private captured disks should be selected. Explicit local host paths are captured when the method is called; remote backend paths are not resolved against the client directory.

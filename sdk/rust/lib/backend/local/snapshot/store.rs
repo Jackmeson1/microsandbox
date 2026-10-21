@@ -1416,6 +1416,26 @@ mod tests {
 
     #[tokio::test]
     async fn pending_publication_recovers_both_sides_of_the_rename() {
+        #[cfg(unix)]
+        if std::env::var_os("MSB_TEST_PENDING_PUBLICATION_RECOVERY").is_none() {
+            // Dropping the lease simulates publisher exit. A sibling test's fork
+            // could retain that descriptor until exec, so isolate this fixture
+            // rather than weakening its immediate recovery assertions.
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backend::local::snapshot::store::tests::pending_publication_recovers_both_sides_of_the_rename",
+                    "--nocapture",
+                ])
+                .env("MSB_TEST_PENDING_PUBLICATION_RECOVERY", "1")
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "isolated publication recovery failed: {status}"
+            );
+            return;
+        }
         let home = tempfile::tempdir().unwrap();
         let local = crate::test_support::local_backend_builder(home.path())
             .build()
