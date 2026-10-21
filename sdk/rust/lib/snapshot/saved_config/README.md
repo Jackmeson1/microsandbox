@@ -268,3 +268,9 @@ The returned temporary directory grants no resume permission. Captured filesyste
 A pending script-key match cannot authorize full-state omission when active script backing is unknown/default. Known absence permits pending-only sanitation, while disk capture keeps its separate omission rules. This check runs before copying or hashing source content.
 
 Pending init records the original `auto` choice from validated private provenance, even after image resolution has replaced the configured command with a concrete path. Explicit-path provenance retains that path; a non-null historical init without provenance stays unknown because the resolved spelling alone cannot identify the original choice. Explicit null remains a known no-handoff default. Neither pending intent nor these preparation fixes changes existing boot behavior or supplies active observation.
+
+## Linked runtime scripts
+
+Registered script evidence refuses backing whose host link count is not one. The portable representation recreates independent files and cannot preserve hard-link aliases, including aliases outside the scripts directory. Initial observation and later revalidation keep those cases unknown; existing snapshot operations still succeed with unavailable optional backing evidence. Exact staging also rejects an alias introduced before its final verification and removes the temporary output. No receipt fields, catalog schemas, runtime capabilities or released capture interfaces change.
+
+This checks registered-file relationships only. Unregistered runtime files and cached filesystem handles still need full-state closure validation; a successful script observation is not permission to resume a VM.

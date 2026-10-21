@@ -320,6 +320,37 @@ fn exact_script_staging_preserves_guest_zero_mode_ownership_and_directory_metada
 }
 
 #[test]
+fn linked_scripts_cannot_claim_independent_portable_backing() {
+    for registration in [names(&["task"]), names(&["task", "alias"])] {
+        let (root, dir) = source();
+        fs::write(root.path().join("scripts/task"), "PRIVATE_BODY").unwrap();
+        fs::hard_link(
+            root.path().join("scripts/task"),
+            root.path().join("scripts/alias"),
+        )
+        .unwrap();
+        let error = capture_files(&dir, &registration).unwrap_err().to_string();
+        assert!(!error.contains("PRIVATE") && !error.contains("alias"));
+    }
+
+    // An alias outside the registered directory matters too: copying just this name
+    // would still change the guest-visible link count and future write relationships.
+    let (root, dir) = source();
+    fs::write(root.path().join("scripts/task"), "PRIVATE_BODY").unwrap();
+    let observed = capture_files(&dir, &names(&["task"])).unwrap();
+    fs::hard_link(
+        root.path().join("scripts/task"),
+        root.path().join("outside-script-directory"),
+    )
+    .unwrap();
+    assert!(capture_files(&dir, &names(&["task"])).is_err());
+    assert!(observed.revalidate().is_err());
+    let parent = tempfile::tempdir().unwrap();
+    assert!(observed.stage_exact(parent.path()).is_err());
+    assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn source_inode_replacement_cannot_reuse_observed_bytes_or_publish_staging() {
     let (root, dir) = source();
     let file = root.path().join("scripts/task");
@@ -763,7 +794,14 @@ fn portable_staging_rejects_metadata_and_late_changes_without_partial_output() {
         );
         assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0);
     }
-    for mutation in ["bytes", "mode", "replacement", "directory", "failure"] {
+    for mutation in [
+        "bytes",
+        "mode",
+        "replacement",
+        "directory",
+        "hardlink",
+        "failure",
+    ] {
         let result = stage_restored_scripts_with_check(
             parent.path(),
             &input,
@@ -781,6 +819,7 @@ fn portable_staging_rejects_metadata_and_late_changes_without_partial_output() {
                         permissions(&file, 42, 43, 0);
                     }
                     "directory" => permissions(&root.join("scripts"), 1, 2, 0),
+                    "hardlink" => fs::hard_link(file, root.join("PRIVATE_ALIAS"))?,
                     _ => return Err(std::io::Error::other("injected")),
                 }
                 Ok(())
