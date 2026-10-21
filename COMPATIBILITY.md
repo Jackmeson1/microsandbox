@@ -671,3 +671,8 @@ The internal saved-config source adapter projects only portable network policy a
 ## Guarded storage capture projection
 
 The internal saved-config source adapter now projects recorded guest mount and socket-route requirements without source host paths, source volume-name lookup, file access or socket connections. Owned references must match the captured descriptor inventory. External backing kind and named-volume capacity come from caller-supplied observations under the source guard, never creation intent. Missing nested historical evidence keeps the whole relevant inventory unknown rather than selecting current defaults or silently dropping resources. Existing legacy mount decoding remains unchanged; legacy shapes lacking complete evidence are not reinterpreted as complete portable configuration. No metadata writer, catalog schema, launch protocol or public activation path is changed.
+
+
+## Saved capture document assembly
+
+The internal capture assembler now combines sanitized active sections and separately classified pending intent, derives a cross-family binding inventory and validates aggregate/legacy/owned-backing consistency. The retained capture object supplies its original raw source, observations and confirmed generation without rereading current mutable state. The method remains gated out of production publication; no artifact extension, catalog field, launch envelope or capability advertisement changes. Pending values cannot become active defaults or add activation demand. Optional source-name provenance remains separate from captured guest hostname identity. Production pending classification, coherent resource/backing acquisition and full destination enforcement remain required before activation.
