@@ -1011,9 +1011,9 @@ mod tests {
 // Re-Exports
 //--------------------------------------------------------------------------------------------------
 
-#[cfg(feature = "runner")]
-pub(crate) use capture::ConfigurationCaptureContext;
 pub use capture::{CapturedConfiguration, disk_configuration_root};
+#[cfg(feature = "runner")]
+pub(crate) use capture::{ConfigurationCaptureContext, PreparedConfigurationReceipt};
 pub use live::LiveConfigurationSelection;
 pub use script_backing::{
     CapturedScriptBacking, CapturedScriptDirectory, ScriptBackingEvidence, ScriptBackingUnknown,

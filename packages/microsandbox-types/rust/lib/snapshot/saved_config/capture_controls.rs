@@ -204,12 +204,22 @@ fn apply_one(
 ) -> SnapshotManifestResult<bool> {
     use RuntimeCaptureTarget as T;
     if matches!(action, RuntimeCaptureAction::Omit) {
-        if full
-            && matches!(
-                target,
-                T::Scripts | T::ScriptKey(_) | T::Init | T::Hostname | T::GuestClock
-            )
-        {
+        // Only captured active state requires full-state preservation. A selector
+        // absent here may still match pending metadata, which is not running state.
+        let required_active_state = match target {
+            T::Scripts => runtime.scripts.is_some(),
+            T::ScriptKey(key) => match &runtime.scripts {
+                Some(SavedValue::Value { value, .. }) => value.contains_key(key),
+                None => false,
+                // Unknown/bound inventory is not proof that a script is absent.
+                Some(_) => true,
+            },
+            T::Init => runtime.init.is_some(),
+            T::Hostname => runtime.hostname.is_some(),
+            T::GuestClock => runtime.guest_clock.is_some(),
+            _ => false,
+        };
+        if full && required_active_state {
             return invalid(
                 "SCFG_IDENTITY",
                 target.field(),
