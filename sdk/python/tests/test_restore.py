@@ -3,7 +3,6 @@
 import pytest
 
 from microsandbox import Network, NetworkPolicy, Sandbox, SecurityProfile
-from microsandbox.errors import InvalidConfigError
 
 
 @pytest.mark.parametrize(
