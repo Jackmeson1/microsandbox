@@ -28,6 +28,7 @@ use crate::config::{
     layers::{BackendConfig, ConfigLayers, Overlay},
 };
 
+use super::command_provenance::CommandProvenance;
 use super::init_provenance::InitProvenance;
 use super::types::{MountOptions, RootDisk, RootfsSource, VolumeMount};
 use crate::snapshot::SnapshotReference;
@@ -148,6 +149,14 @@ pub struct SandboxConfig {
     /// not guest observation; older catalogs omit it and must not gain inferred provenance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) init_provenance: Option<InitProvenance>,
+    /// Private evidence distinguishing reusable CMD from a detached one-shot invocation.
+    /// The existing runtime CMD is unchanged; older records have no such evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) command_provenance: Option<CommandProvenance>,
+    /// Reconstruction from a record without command evidence cannot recover original intent.
+    /// This guard is local to building; omission in persisted data is still represented by None.
+    #[serde(skip)]
+    pub(crate) command_provenance_unknown: bool,
     /// Protect the installed source while a local restore builder materializes child-owned files.
     #[cfg(feature = "local")]
     #[serde(skip)]
@@ -610,17 +619,55 @@ impl SandboxConfig {
             options.spec.replace_env_mut(env);
         }
 
-        let layers = match backend_config {
+        let layers = || match backend_config {
             Some(config) => config.sandbox_layers(),
             // Custom backends without device settings supply their own configuration behavior.
             None => ConfigLayers::unmanaged(),
         };
-        let patch = layers.base(image_defaults).options(options).build();
+        // A detached invocation temporarily occupies runtime.cmd. Resolve its prior value
+        // through the same image/default/managed layers, without changing the launch config.
+        // Reading just launch_cmd_before_override would miss an inherited image CMD.
+        let command_defaults = options.launch_cmd_before_override.as_ref().map(|previous| {
+            let mut defaults = options.clone();
+            defaults.spec.runtime.cmd = previous.clone();
+            let mut baseline = self.clone();
+            layers()
+                .base(image_defaults.clone())
+                .options(defaults)
+                .build()
+                .apply_to(&mut baseline);
+            baseline
+                .command_provenance
+                .as_ref()
+                .filter(|origin| origin.matches(&baseline.spec.runtime.cmd))
+                .map_or_else(
+                    || baseline.spec.runtime.cmd.clone(),
+                    |origin| origin.defaults.clone(),
+                )
+        });
+        let patch = layers().base(image_defaults).options(options).build();
         let http_defaults_implicit = patch.http_defaults_are_implicit();
         let max_cpus = patch.spec.resources.max_cpus;
         let max_memory_mib = patch.spec.resources.max_memory_mib;
         patch.apply_to(self);
         self.http_defaults_implicit = Some(http_defaults_implicit);
+        if self.command_provenance_unknown {
+            self.command_provenance = None;
+        } else if let Some(defaults) = command_defaults {
+            self.command_provenance = Some(CommandProvenance::new(
+                self.spec.runtime.cmd.clone(),
+                defaults,
+            ));
+        } else if self
+            .command_provenance
+            .as_ref()
+            .is_none_or(|origin| !origin.matches(&self.spec.runtime.cmd))
+        {
+            self.command_provenance = Some(CommandProvenance::new(
+                self.spec.runtime.cmd.clone(),
+                self.spec.runtime.cmd.clone(),
+            ));
+        }
         // This is a fresh builder resolution, not deserialization/restart of an old catalog.
         // A retained valid hint survives builder reconstruction; explicit setters replace it.
         if self
@@ -678,6 +725,13 @@ impl SandboxConfig {
             .is_some_and(|origin| !origin.matches(config.spec.init.as_ref()))
         {
             config.init_provenance = None;
+        }
+        if config
+            .command_provenance
+            .as_ref()
+            .is_some_and(|origin| !origin.matches(&config.spec.runtime.cmd))
+        {
+            config.command_provenance = None;
         }
         config.local_restore_paths_resolved = false;
         #[cfg(feature = "local")]
@@ -1212,6 +1266,8 @@ impl Default for SandboxConfig {
         Self {
             http_defaults_implicit: None,
             init_provenance: None,
+            command_provenance: None,
+            command_provenance_unknown: false,
             spec: SandboxSpec {
                 resources: SandboxResources {
                     cpus: default_cpus(),
@@ -1320,6 +1376,11 @@ mod tests {
         let mut merged = serde_json::to_value(&config).unwrap();
         layered.as_object_mut().unwrap().remove("init_provenance");
         merged.as_object_mut().unwrap().remove("init_provenance");
+        layered
+            .as_object_mut()
+            .unwrap()
+            .remove("command_provenance");
+        merged.as_object_mut().unwrap().remove("command_provenance");
         assert_eq!(layered, merged);
     }
 
