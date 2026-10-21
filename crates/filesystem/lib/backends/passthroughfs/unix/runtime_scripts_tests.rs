@@ -6,7 +6,7 @@ use std::{
     fs::{self, File},
     os::unix::{
         ffi::OsStrExt,
-        fs::{PermissionsExt, symlink},
+        fs::{FileExt, MetadataExt, PermissionsExt, symlink},
     },
     path::Path,
     process::Command,
@@ -15,11 +15,13 @@ use std::{
 use cap_std::fs::Dir;
 use tempfile::TempDir;
 
-use super::PassthroughFs;
+use crate::{Context, DynFileSystem, FsOptions};
+
 use super::runtime_scripts::{
     CapturedRuntimeScripts, RuntimeBootScript, RuntimeScriptLimits, stage_boot_scripts_with_check,
     stage_runtime_boot_scripts,
 };
+use super::{PassthroughConfig, PassthroughFs};
 
 //--------------------------------------------------------------------------------------------------
 // Functions
@@ -61,6 +63,25 @@ fn boot_limits() -> RuntimeScriptLimits {
         max_entries: 4,
         max_script_bytes: 64,
         max_total_bytes: 128,
+    }
+}
+
+fn mounted_runtime(root: &Path) -> PassthroughFs {
+    let backend = PassthroughFs::new(PassthroughConfig {
+        root_dir: root.to_path_buf(),
+        inject_init: false,
+        ..Default::default()
+    })
+    .unwrap();
+    backend.init(FsOptions::empty()).unwrap();
+    backend
+}
+
+fn root_context() -> Context {
+    Context {
+        uid: 0,
+        gid: 0,
+        pid: 0,
     }
 }
 
@@ -542,4 +563,94 @@ fn relative_staging_worker() {
     );
     assert_eq!(fs::read_to_string(sentinel).unwrap(), "untouched");
     std::env::set_current_dir(original_cwd).unwrap();
+}
+
+#[test]
+fn exact_staging_restores_registered_open_handles_after_source_removal() {
+    let (root, pinned) = source();
+    let content = b"#!/bin/sh\nprintf 'captured bytes'\n";
+    let path = root.path().join("scripts/task");
+    fs::write(&path, content).unwrap();
+    permissions(&path, 42, 43, 0o750);
+    permissions(&root.path().join("scripts"), 44, 45, 0o711);
+    let source_fs = mounted_runtime(root.path());
+    let directory = source_fs.lookup(root_context(), 1, c"scripts").unwrap();
+    let entry = source_fs
+        .lookup(root_context(), directory.inode, c"task")
+        .unwrap();
+    let handle = source_fs
+        .open(root_context(), entry.inode, false, 0)
+        .unwrap()
+        .0
+        .unwrap();
+    let state = source_fs.capture_state().unwrap();
+    let observed = capture_files(&pinned, &names(&["task"])).unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let staged = observed.stage_exact(parent.path()).unwrap();
+    let original_inode = fs::metadata(&path).unwrap().ino();
+    let staged_inode = fs::metadata(staged.path().join("scripts/task"))
+        .unwrap()
+        .ino();
+    assert_ne!(original_inode, staged_inode);
+
+    // Keep only the serialized FUSE state and separately staged backing. No live source
+    // descriptors or paths may service the restored handle.
+    drop(observed);
+    drop(source_fs);
+    drop(pinned);
+    root.close().unwrap();
+    let restored = mounted_runtime(staged.path());
+    restored.validate_state(&state).unwrap();
+    restored.restore_state(&state).unwrap();
+    let reopened = restored.handles.read().unwrap()[&handle].clone();
+    assert_eq!(reopened.inode, entry.inode);
+    let file = reopened.file.read().unwrap();
+    assert_eq!(file.metadata().unwrap().ino(), staged_inode);
+    let mut tail = vec![0; content.len() - 3];
+    // FUSE carries the guest offset per request; reopening must serve those exact offsets.
+    assert_eq!(file.read_at(&mut tail, 3).unwrap(), tail.len());
+    assert_eq!(tail, content[3..]);
+    drop(file);
+    let again = restored
+        .lookup(root_context(), directory.inode, c"task")
+        .unwrap();
+    assert_eq!(again.inode, entry.inode);
+    assert_eq!(
+        (
+            again.attr.st_uid,
+            again.attr.st_gid,
+            again.attr.st_mode & 0o7777
+        ),
+        (42, 43, 0o750)
+    );
+    let dir = restored.lookup(root_context(), 1, c"scripts").unwrap();
+    assert_eq!(
+        (dir.attr.st_uid, dir.attr.st_gid, dir.attr.st_mode & 0o7777),
+        (44, 45, 0o711)
+    );
+}
+
+#[test]
+fn registered_script_staging_cannot_restore_unaccounted_runtime_handles() {
+    let (root, pinned) = source();
+    fs::write(root.path().join("scripts/task"), b"registered").unwrap();
+    fs::write(root.path().join("unregistered"), b"other captured backing").unwrap();
+    let source_fs = mounted_runtime(root.path());
+    let entry = source_fs
+        .lookup(root_context(), 1, c"unregistered")
+        .unwrap();
+    source_fs
+        .open(root_context(), entry.inode, false, 0)
+        .unwrap();
+    let state = source_fs.capture_state().unwrap();
+    let observed = capture_files(&pinned, &names(&["task"])).unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let staged = observed.stage_exact(parent.path()).unwrap();
+    let restored = mounted_runtime(staged.path());
+    let before = restored.capture_state().unwrap();
+    // Script content alone is not a complete runtime-share closure. Validation must
+    // fail before installing any of the saved handle table.
+    assert!(restored.validate_state(&state).is_err());
+    assert!(restored.restore_state(&state).is_err());
+    assert_eq!(restored.capture_state().unwrap(), before);
 }
