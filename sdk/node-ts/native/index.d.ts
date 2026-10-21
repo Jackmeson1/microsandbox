@@ -821,6 +821,10 @@ export declare class RestoreBuilder {
   cpus(count: number): this
   /** Set destination memory in MiB; full execution restore requires captured geometry. */
   memory(mib: number): this
+  /** Set the CPU ceiling for disk boot; full resume requires the captured ceiling. */
+  maxCpus(count: number): this
+  /** Set the memory ceiling in MiB; full resume requires the captured ceiling. */
+  maxMemory(mib: number): this
   /** Set guest PID 1 for disk boot. Full-memory resume rejects this request. */
   init(cmd: string, args?: Array<string> | undefined | null): this
   /** Set guest PID 1, arguments and environment for disk boot only. */

@@ -274,6 +274,9 @@ export interface NapiRestoreBuilderSetters {
   /** Full execution restore requires captured CPU and memory geometry. */
   cpus(count: number): this;
   memory(mib: number): this;
+  /** Disk-boot ceilings; full resume requires the captured maxima. */
+  maxCpus(count: number): this;
+  maxMemory(mib: number): this;
   /** Guest PID 1 for disk boot; full-memory resume rejects replacement. */
   init(cmd: string, args?: string[]): this;
   /** Guest PID 1 with arguments and environment, for disk boot only. */

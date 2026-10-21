@@ -79,3 +79,26 @@ func TestRestoreBootOptionsRefuseOlderNativeLibrary(t *testing.T) {
 		}
 	}
 }
+
+// A library may support init/hostname but predate ceilings. Acknowledgement of
+// one boot option must never authorize a different, silently ignored option.
+func TestRestoreCeilingsRefuseOlderNativeLibrary(t *testing.T) {
+	path := os.Getenv("MSB_OLD_SNAPSHOT_NATIVE")
+	if path == "" {
+		t.Skip("requires a pre-ceiling native library")
+	}
+	if err := Load(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckRestoreBootOptions(context.Background(), RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	cpus, memory := uint8(2), uint32(512)
+	for _, options := range []RestoreOptions{{MaxCPUs: &cpus}, {MaxMemoryMiB: &memory}} {
+		var unsupported *Error
+		err := CheckRestoreBootOptions(context.Background(), options)
+		if !errors.As(err, &unsupported) || unsupported.Kind != KindUnsupportedOperation {
+			t.Fatalf("ceiling not refused before dispatch: %v", err)
+		}
+	}
+}

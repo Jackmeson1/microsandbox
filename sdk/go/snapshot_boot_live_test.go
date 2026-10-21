@@ -62,6 +62,8 @@ func TestSnapshotBootOptionsLive(t *testing.T) {
 	for index, name := range names[:2] {
 		opts := []RestoreOption{
 			WithRestoreHostname("go-child"),
+			WithRestoreCPUs(1), WithRestoreMemory(256),
+			WithRestoreMaxCPUs(2), WithRestoreMaxMemory(512),
 			WithRestoreInit(Init.Cmd("/bin/sh", InitOptions{
 				Args: []string{"-c", `printf "%s" "$BOOT_VALUE" > /root/go-boot; exec sleep 300`},
 				Env:  map[string]string{"BOOT_VALUE": "go-init"},
@@ -80,6 +82,18 @@ func TestSnapshotBootOptionsLive(t *testing.T) {
 		}
 		if err != nil {
 			t.Fatal(err)
+		}
+		handle, err := GetSandbox(ctx, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		config, err := handle.Config()
+		if err != nil || config.MaxCPUs != 2 || config.MaxMemoryMiB != 512 {
+			t.Fatalf("resource ceilings: %v %+v", err, config)
+		}
+		capacity, err := child.Exec(ctx, "sh", []string{"-c", "nproc; cat /sys/devices/system/cpu/possible"})
+		if err != nil || !capacity.Success() || strings.TrimSpace(capacity.Stdout()) != "1\n0-1" {
+			t.Fatalf("guest CPU geometry: %v %+v", err, capacity)
 		}
 		output, err := child.Exec(ctx, "sh", []string{"-c", `for i in $(seq 1 50); do test -s /root/go-boot && break; sleep 0.1; done; test "$(cat /root/go-boot)" = go-init && test "$(hostname)" = go-child && cat /proc/1/comm`})
 		if err != nil || !output.Success() || strings.TrimSpace(output.Stdout()) != "sleep" {

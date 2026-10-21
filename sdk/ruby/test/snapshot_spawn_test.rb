@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test/unit"
+require "json"
 require "securerandom"
 require "tmpdir"
 require "fileutils"
@@ -84,6 +85,24 @@ class SnapshotSpawnTest < Test::Unit::TestCase
     booted.kill # The test PID 1 is sleep, which has no shutdown handler.
   end
 
+  def test_disk_boot_resource_ceilings
+    [false, true].each do |progress|
+      options = { name: child_name("ceilings"), cpus: 1, memory: 256, max_cpus: 2, max_memory: 512 }
+      child = progress ? @checkpoint.spawn_sandbox_with_progress(**options).result : @group.spawn_sandbox(**options)
+      check_guest(child)
+      resources = JSON.parse(Microsandbox::Sandbox.get(child.name).config_json).fetch("resources")
+      assert_equal 2, resources.fetch("max_cpus")
+      assert_equal 512, resources.fetch("max_memory_mib")
+      assert_equal "0-1", child.shell("cat /sys/devices/system/cpu/possible").stdout.strip
+      child.stop
+    end
+    [{ max_cpus: 0 }, { max_memory: 0 }, { cpus: 2, max_cpus: 1 }, { memory: 512, max_memory: 256 }].each do |options|
+      name = child_name("invalid-ceiling")
+      assert_raise(Microsandbox::InvalidConfigError) { @checkpoint.spawn_sandbox(name: name, **options) }
+      assert_raise(Microsandbox::SandboxNotFoundError) { Microsandbox::Sandbox.get(name) }
+    end
+  end
+
   def test_imported_unbound_history_can_spawn_but_cannot_capture
     archive = File.join(@temporary, "standalone.msb")
     @checkpoint.save(archive)
@@ -98,7 +117,7 @@ class SnapshotSpawnTest < Test::Unit::TestCase
   def test_full_capture_spawns_guest_memory_and_refuses_boot_security_override
     omit("set MSB_RUBY_FULL=1 with full-memory firmware") unless ENV["MSB_RUBY_FULL"] == "1"
     source_name = child_name("full-source")
-    source = Microsandbox::Sandbox.create(source_name, image: ENV.fetch("MSB_RUBY_TEST_IMAGE", "alpine:3.19"), cpus: 1, memory: 256)
+    source = Microsandbox::Sandbox.create(source_name, image: ENV.fetch("MSB_RUBY_TEST_IMAGE", "alpine:3.19"), cpus: 1, memory: 256, max_cpus: 2, max_memory: 512)
     assert_true source.shell("mkdir -p /mnt/volatile; mount -t tmpfs none /mnt/volatile; printf ruby-full-memory > /mnt/volatile/marker").success?
     created = source.snapshot("ruby-full-#{SecureRandom.hex(5)}", full: true, record_integrity: true)
     @extra_groups = [created.snapshot]
@@ -113,7 +132,13 @@ class SnapshotSpawnTest < Test::Unit::TestCase
         created.checkpoint.spawn_sandbox(name: child_name("full-boot"), **options)
       end
     end
-    session = created.checkpoint.spawn_sandbox_with_progress(name: child_name("full"))
+    [{ max_cpus: 3 }, { max_memory: 768 }].each do |options|
+      name = child_name("full-ceiling")
+      error = assert_raise(Microsandbox::InvalidConfigError) { created.checkpoint.spawn_sandbox(name: name, **options) }
+      assert_match(/captured CPU and memory geometry/, error.message)
+      assert_raise(Microsandbox::SandboxNotFoundError) { Microsandbox::Sandbox.get(name) }
+    end
+    session = created.checkpoint.spawn_sandbox_with_progress(name: child_name("full"), max_cpus: 2, max_memory: 512)
     child = session.result
     assert_equal "ruby-full-memory", child.shell("cat /mnt/volatile/marker").stdout.strip
     child.stop

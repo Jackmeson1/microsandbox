@@ -23,6 +23,8 @@ pub(super) struct RestoreOptions {
     snapshot_reference_kind: Option<String>,
     cpus: Option<u8>,
     memory_mib: Option<u32>,
+    max_cpus: Option<u8>,
+    max_memory_mib: Option<u32>,
     init: Option<super::InitOpts>,
     hostname: Option<String>,
     #[serde(default, deserialize_with = "deserialize_network_policy")]
@@ -104,6 +106,12 @@ pub(super) fn builder(name: String, opts: &RestoreOptions) -> Result<RestoreBuil
     }
     if let Some(memory) = opts.memory_mib {
         builder = builder.memory(memory);
+    }
+    if let Some(max_cpus) = opts.max_cpus {
+        builder = builder.max_cpus(max_cpus);
+    }
+    if let Some(max_memory) = opts.max_memory_mib {
+        builder = builder.max_memory(max_memory);
     }
     if let Some(init) = &opts.init {
         builder = builder.init_with(&init.cmd, |options| {
@@ -299,6 +307,34 @@ mod tests {
         assert_eq!(options.max_duration_secs, Some(0));
         assert_eq!(options.idle_timeout_secs, Some(0));
         assert!(builder("destination".into(), &options).is_ok());
+    }
+
+    #[test]
+    fn restore_ceilings_preserve_omission_and_reject_unrepresentable_values() {
+        let omitted: RestoreOptions =
+            serde_json::from_value(serde_json::json!({"snapshot": "saved"})).unwrap();
+        assert!(omitted.max_cpus.is_none() && omitted.max_memory_mib.is_none());
+        for (field, invalid) in [("max_cpus", 256_u64), ("max_memory_mib", 1_u64 << 32)] {
+            for value in [
+                serde_json::json!(-1),
+                serde_json::json!(1.5),
+                serde_json::json!(invalid),
+            ] {
+                let mut raw = serde_json::json!({"snapshot": "saved"});
+                raw[field] = value;
+                assert!(serde_json::from_value::<RestoreOptions>(raw).is_err());
+            }
+        }
+        for (cpus, memory) in [(0, 0), (2, 512)] {
+            let options: RestoreOptions = serde_json::from_value(serde_json::json!({
+                "snapshot": "saved", "max_cpus": cpus, "max_memory_mib": memory,
+            }))
+            .unwrap();
+            // Zero stays explicit so ordinary SDK resource admission can reject it.
+            assert_eq!(options.max_cpus, Some(cpus));
+            assert_eq!(options.max_memory_mib, Some(memory));
+            assert!(builder("child".into(), &options).is_ok());
+        }
     }
 
     #[test]

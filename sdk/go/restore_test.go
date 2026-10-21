@@ -355,3 +355,35 @@ func TestRestoreBootOptionsRetainExplicitEmptyHostnameAndInit(t *testing.T) {
 		t.Fatal("init argv retained caller backing")
 	}
 }
+
+func TestRestoreCeilingsRetainOmissionAndExplicitZero(t *testing.T) {
+	for _, value := range []uint32{0, 512} {
+		var config RestoreConfig
+		WithRestoreMaxCPUs(uint8(value / 256))(&config)
+		WithRestoreMaxMemory(value)(&config)
+		raw, err := json.Marshal(buildFFIRestoreOptions("saved", config))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got["max_cpus"] != float64(value/256) || got["max_memory_mib"] != float64(value) {
+			t.Fatalf("explicit ceilings changed: %s", raw)
+		}
+	}
+	raw, err := json.Marshal(buildFFIRestoreOptions("saved", RestoreConfig{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var omitted map[string]any
+	if err := json.Unmarshal(raw, &omitted); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"max_cpus", "max_memory_mib"} {
+		if _, found := omitted[key]; found {
+			t.Fatalf("omission became a ceiling: %s", raw)
+		}
+	}
+}

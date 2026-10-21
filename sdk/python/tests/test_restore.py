@@ -201,3 +201,25 @@ async def test_restore_boot_controls_reach_source_validation(tmp_path, method, i
         else:
             progress = Sandbox.restore_with_progress(tmp_path / "missing", **options)
             await progress.result()
+
+
+@pytest.mark.parametrize("method", ["restore", "restore_with_progress"])
+@pytest.mark.parametrize("option, value", [
+    ("max_cpus", -1), ("max_cpus", 256), ("max_memory", -1), ("max_memory", 2**32),
+])
+def test_restore_rejects_unrepresentable_resource_ceilings(method, option, value):
+    with pytest.raises(OverflowError):
+        getattr(Sandbox, method)("missing", name="ceiling-validation", **{option: value})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["restore", "restore_with_progress"])
+async def test_restore_ceilings_reach_source_validation(tmp_path, method):
+    with pytest.raises(FileNotFoundError):
+        result = getattr(Sandbox, method)(
+            tmp_path / "missing", name="ceiling-validation", max_cpus=2, max_memory=512,
+        )
+        if method == "restore":
+            await result
+        else:
+            await result.result()
