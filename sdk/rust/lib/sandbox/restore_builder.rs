@@ -7,8 +7,8 @@ use microsandbox_network::{OutboundProxyBuilder, OutboundProxyConfig};
 
 use super::config::SnapshotRestoreMode;
 use super::{
-    ExternalMountRestorePolicy, InitOptionsBuilder, MountBuilder, Sandbox, SandboxBuilder,
-    SecurityProfile,
+    ExternalMountRestorePolicy, InitOptionsBuilder, MountBuilder, PullPolicy, Sandbox,
+    SandboxBuilder, SecurityProfile,
 };
 use crate::size::Mebibytes;
 use crate::snapshot::SnapshotReference;
@@ -197,6 +197,13 @@ impl RestoreBuilder {
     #[cfg(feature = "net")]
     pub fn network_policy(mut self, policy: NetworkPolicy) -> Self {
         self.inner = self.inner.network(|network| network.policy(policy));
+        self
+    }
+
+    /// Control retrieval of the snapshot's digest-pinned base image.
+    /// This never selects a different image or updates the saved snapshot.
+    pub fn pull_policy(mut self, policy: PullPolicy) -> Self {
+        self.inner = self.inner.pull_policy(policy);
         self
     }
 
@@ -445,7 +452,24 @@ mod tests {
         builder.inner.config.clone().into_config()
     }
 
-    #[cfg(feature = "local")]
+    #[test]
+    fn snapshot_pull_policy_preserves_source_and_full_resume_admission() {
+        for policy in [PullPolicy::Always, PullPolicy::IfMissing, PullPolicy::Never] {
+            let builder = Sandbox::restore("saved").pull_policy(policy);
+            let config = config(&builder);
+            assert_eq!(config.spec.pull_policy, policy);
+            assert!(builder.inner.build_error.is_none());
+            config
+                .restore_boot_overrides
+                .validate_scope(
+                    crate::snapshot::SnapshotScope::Full,
+                    SnapshotRestoreMode::Full,
+                )
+                .unwrap();
+        }
+    }
+
+    #[cfg(all(feature = "local", feature = "net"))]
     #[test]
     fn destination_proxy_preserves_guest_identity_and_policy() {
         let builder = Sandbox::restore("saved")

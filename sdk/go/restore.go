@@ -22,6 +22,8 @@ type RestoreOption func(*RestoreConfig)
 
 // RestoreConfig contains only explicit destination resource choices.
 type RestoreConfig struct {
+	// PullPolicy controls retrieval of the digest-pinned base; empty uses the existing default.
+	PullPolicy PullPolicy
 	// CPU and memory overrides must match captured geometry for full execution restore.
 	CPUs      *uint8
 	MemoryMiB *uint32
@@ -95,6 +97,11 @@ func RestoreSandbox[T SnapshotSeed](ctx context.Context, snapshot T, name string
 // WithRestoreConfig replaces the restore configuration.
 func WithRestoreConfig(config RestoreConfig) RestoreOption {
 	return func(o *RestoreConfig) { *o = config }
+}
+
+// WithRestorePullPolicy controls retrieval of the snapshot's pinned base image.
+func WithRestorePullPolicy(policy PullPolicy) RestoreOption {
+	return func(o *RestoreConfig) { o.PullPolicy = policy }
 }
 
 // WithRestoreProxy selects the destination proxy without changing captured guest identity.
@@ -261,7 +268,7 @@ func buildFFIRestoreOptions[T SnapshotSeed](snapshot T, config RestoreConfig) ff
 		return &value
 	}
 	return ffi.RestoreOptions{
-		Snapshot: reference, SnapshotReferenceKind: referenceKind,
+		Snapshot: reference, SnapshotReferenceKind: referenceKind, PullPolicy: string(config.PullPolicy),
 		CPUs: config.CPUs, MemoryMiB: config.MemoryMiB, NetworkPolicy: policy,
 		Init: resources.Init, Hostname: config.Hostname, Proxy: buildFFIOutboundProxy(config.Proxy),
 		MaxCPUs: config.MaxCPUs, MaxMemoryMiB: config.MaxMemoryMiB,

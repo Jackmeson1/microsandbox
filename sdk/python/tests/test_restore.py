@@ -223,3 +223,22 @@ async def test_restore_ceilings_reach_source_validation(tmp_path, method):
             await result
         else:
             await result.result()
+
+
+@pytest.mark.parametrize("method", ["create", "restore"])
+@pytest.mark.parametrize("policy", ["always", "if-missing", "never"])
+def test_pull_policy_uses_existing_enum_contract_before_dispatch(method, policy):
+    from microsandbox import PullPolicy
+
+    # Without an event loop, valid parsing reaches the async boundary but cannot launch.
+    def call(**kwargs):
+        if method == "create":
+            return Sandbox.create("policy-probe", image="alpine", **kwargs)
+        return Sandbox.restore("saved", name="policy-probe", **kwargs)
+    with pytest.raises(RuntimeError) as baseline:
+        call()
+    with pytest.raises(RuntimeError) as selected:
+        call(pull_policy=PullPolicy(policy))
+    assert type(selected.value) is type(baseline.value)
+    with pytest.raises(TypeError, match="expected PullPolicy"):
+        call(pull_policy="invalid")

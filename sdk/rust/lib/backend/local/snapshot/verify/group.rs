@@ -435,8 +435,7 @@ mod tests {
 
         for recorded in [false, true] {
             let home = tempfile::tempdir().unwrap();
-            let local = LocalBackend::builder()
-                .home(home.path())
+            let local = crate::test_support::local_backend_builder(home.path())
                 .build()
                 .await
                 .unwrap();
@@ -547,8 +546,7 @@ mod tests {
     #[ignore = "subprocess-only reduced descriptor limit"]
     async fn low_descriptor_limit_verification_worker() {
         let home = tempfile::tempdir().unwrap();
-        let local = LocalBackend::builder()
-            .home(home.path())
+        let local = crate::test_support::local_backend_builder(home.path())
             .build()
             .await
             .unwrap();
@@ -577,8 +575,7 @@ mod tests {
         for cancel in [false, true] {
             let home = tempfile::tempdir().unwrap();
             let local = Arc::new(
-                LocalBackend::builder()
-                    .home(home.path())
+                crate::test_support::local_backend_builder(home.path())
                     .build()
                     .await
                     .unwrap(),
@@ -673,8 +670,7 @@ mod tests {
 
         let home = tempfile::tempdir().unwrap();
         let local = Arc::new(
-            LocalBackend::builder()
-                .home(home.path())
+            crate::test_support::local_backend_builder(home.path())
                 .build()
                 .await
                 .unwrap(),

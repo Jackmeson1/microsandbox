@@ -64,7 +64,7 @@ describe("restore resource ceiling capabilities", () => {
 });
 
 describe("restore destination policy capabilities", () => {
-  for (const option of ["proxy"] as const) {
+  for (const option of ["proxy", "pullPolicy"] as const) {
     it(`refuses missing ${option} before dispatch and preserves recognized setters`, () => {
       delete native[option];
       const restore = vi.fn();

@@ -123,3 +123,22 @@ func TestRestoreProxyRefusesOlderNativeLibrary(t *testing.T) {
 		t.Fatalf("proxy not refused before dispatch: %v", err)
 	}
 }
+
+// Explicit pull selection must not be silently ignored by a pre-option native library.
+func TestRestorePullPolicyRefusesOlderNativeLibrary(t *testing.T) {
+	path := os.Getenv("MSB_OLD_SNAPSHOT_NATIVE")
+	if path == "" {
+		t.Skip("requires an older native library")
+	}
+	if err := Load(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckRestoreBootOptions(context.Background(), RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	var unsupported *Error
+	err := CheckRestoreBootOptions(context.Background(), RestoreOptions{PullPolicy: "never"})
+	if !errors.As(err, &unsupported) || unsupported.Kind != KindUnsupportedOperation {
+		t.Fatalf("pull policy not refused before dispatch: %v", err)
+	}
+}
