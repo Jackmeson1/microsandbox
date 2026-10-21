@@ -62,3 +62,20 @@ describe("restore resource ceiling capabilities", () => {
     });
   }
 });
+
+describe("restore destination policy capabilities", () => {
+  for (const option of ["proxy"] as const) {
+    it(`refuses missing ${option} before dispatch and preserves recognized setters`, () => {
+      delete native[option];
+      const restore = vi.fn();
+      native.restore = restore;
+      const builder = Sandbox.restore("saved");
+      expect(() => (builder[option] as Function)("value")).toThrow(UnsupportedError);
+      expect(restore).not.toHaveBeenCalled();
+      const setter = vi.fn().mockReturnValue(native);
+      native[option] = setter;
+      (Sandbox.restore("saved")[option] as Function)("value");
+      expect(setter).toHaveBeenCalledWith("value");
+    });
+  }
+});

@@ -1050,7 +1050,7 @@ struct NetworkOpts {
     http: Option<microsandbox_network::config::HttpConfig>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 struct OutboundProxyOpts {
     protocol: String,
     address: String,
@@ -1062,7 +1062,7 @@ struct OutboundProxyOpts {
     password_source: Option<SecretSourceOpts>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 struct SecretSourceOpts {
     kind: String,
     #[serde(default)]

@@ -27,6 +27,7 @@ pub(super) struct RestoreOptions {
     max_memory_mib: Option<u32>,
     init: Option<super::InitOpts>,
     hostname: Option<String>,
+    proxy: Option<super::OutboundProxyOpts>,
     #[serde(default, deserialize_with = "deserialize_network_policy")]
     network_policy: Option<CustomNetworkPolicy>,
     #[serde(alias = "max_connections")]
@@ -120,6 +121,55 @@ pub(super) fn builder(name: String, opts: &RestoreOptions) -> Result<RestoreBuil
     }
     if let Some(hostname) = &opts.hostname {
         builder = builder.hostname(hostname);
+    }
+    if let Some(proxy) = opts.proxy.clone() {
+        if proxy.protocol != "socks5"
+            && (proxy.username.is_some() || proxy.password_source.is_some())
+        {
+            return Err(FfiError::invalid_argument(
+                "credentials are only supported for SOCKS5 proxies",
+            ));
+        }
+        if let Some(source) = &proxy.password_source
+            && source.kind != "env"
+        {
+            return Err(FfiError::invalid_argument(format!(
+                "unsupported SOCKS5 password source {:?}; only env is supported",
+                source.kind
+            )));
+        }
+        builder = match proxy.protocol.as_str() {
+            "http_connect" => builder.proxy(move |p| p.http_connect(proxy.address)),
+            "socks4" => builder.proxy(move |p| {
+                let proxy_builder = p.socks4(proxy.address);
+                match proxy.user_id {
+                    Some(user_id) => proxy_builder.user_id(user_id),
+                    None => proxy_builder,
+                }
+            }),
+            "socks5" => builder.proxy(move |p| {
+                let proxy_builder = p.socks5(proxy.address);
+                match (proxy.username, proxy.password_source) {
+                    (Some(username), Some(password)) if password.kind == "env" => proxy_builder
+                        .credentials(
+                            username,
+                            microsandbox::sandbox::SecretSource::env(
+                                password.var.unwrap_or_default(),
+                            ),
+                        ),
+                    (None, None) => proxy_builder,
+                    _ => proxy_builder.credentials(
+                        String::new(),
+                        microsandbox::sandbox::SecretSource::env(String::new()),
+                    ),
+                }
+            }),
+            protocol => {
+                return Err(FfiError::invalid_argument(format!(
+                    "unsupported outbound proxy protocol {protocol:?}"
+                )));
+            }
+        };
     }
     if let Some(policy) = &opts.network_policy {
         builder = builder.network_policy(parse_custom_network_policy(policy, Vec::new())?);
@@ -271,6 +321,24 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn restore_proxy_rejects_unsupported_auth_before_dispatch() {
+        for proxy in [
+            serde_json::json!({"protocol":"socks4", "address":"127.0.0.1:1080", "username":"user"}),
+            serde_json::json!({"protocol":"socks5", "address":"127.0.0.1:1080", "password_source":{"kind":"literal"}}),
+            serde_json::json!({"protocol":"invalid", "address":"127.0.0.1:1080"}),
+        ] {
+            let options: RestoreOptions =
+                serde_json::from_value(serde_json::json!({"snapshot":"saved", "proxy":proxy}))
+                    .unwrap();
+            assert!(builder("child".into(), &options).is_err());
+        }
+        for protocol in ["socks4", "socks5", "http_connect"] {
+            let options: RestoreOptions = serde_json::from_value(serde_json::json!({"snapshot":"saved", "proxy":{"protocol":protocol, "address":"127.0.0.1:1080"}})).unwrap();
+            assert!(builder("child".into(), &options).is_ok());
+        }
     }
 
     #[test]

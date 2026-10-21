@@ -4,6 +4,7 @@ use microsandbox::sandbox::{
 };
 use microsandbox::{LogLevel, RegistryAuth, SnapshotReference};
 use microsandbox_network::dns::Nameserver;
+use microsandbox_network::{OutboundProxyBuilder, OutboundProxyConfig};
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyBytes, PyDict, PyList, PyModule};
 
@@ -78,6 +79,14 @@ pub(crate) trait ResourceBuilder: Sized {
     fn vsock_dgram(self, path: impl AsRef<std::path::Path>, port: u32) -> Self;
 }
 
+/// Keep proxy authentication parsing identical for ordinary creation and snapshot spawning.
+trait ProxyDestination: Sized {
+    fn proxy<P: OutboundProxyConfig>(
+        self,
+        configure: impl FnOnce(OutboundProxyBuilder) -> P,
+    ) -> Self;
+}
+
 /// Tuple returned by [`parse_init_kwarg`]: `(cmd, args, env)`.
 type ParsedInit = (String, Vec<String>, Vec<(String, String)>);
 
@@ -140,6 +149,28 @@ impl RootDiskSpec {
 }
 
 //--------------------------------------------------------------------------------------------------
+// Trait Implementations
+//--------------------------------------------------------------------------------------------------
+
+impl ProxyDestination for SandboxBuilder {
+    fn proxy<P: OutboundProxyConfig>(
+        self,
+        configure: impl FnOnce(OutboundProxyBuilder) -> P,
+    ) -> Self {
+        SandboxBuilder::proxy(self, configure)
+    }
+}
+
+impl ProxyDestination for microsandbox::sandbox::RestoreBuilder {
+    fn proxy<P: OutboundProxyConfig>(
+        self,
+        configure: impl FnOnce(OutboundProxyBuilder) -> P,
+    ) -> Self {
+        microsandbox::sandbox::RestoreBuilder::proxy(self, configure)
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
 // Functions: Python Enums
 //--------------------------------------------------------------------------------------------------
 
@@ -195,6 +226,83 @@ pub(crate) fn restore_builder_from_args(
     restore_builder_from_reference(snapshot, name, kwargs)
 }
 
+fn apply_outbound_proxy<B: ProxyDestination>(
+    mut builder: B,
+    proxy: &Bound<'_, PyAny>,
+) -> PyResult<B> {
+    let proxy = config_dict(proxy, "OutboundProxy")?;
+    let protocol = extract_required::<String>(&proxy, "protocol")?;
+    let address = extract_required::<String>(&proxy, "address")?;
+    builder = match protocol.as_str() {
+        "http_connect" => builder.proxy(move |p| p.http_connect(address)),
+        "socks4" => {
+            let user_id = extract_opt::<String>(&proxy, "user_id")?;
+            builder.proxy(move |p| {
+                let proxy = p.socks4(address);
+                match user_id {
+                    Some(user_id) => proxy.user_id(user_id),
+                    None => proxy,
+                }
+            })
+        }
+        "socks5" => {
+            // The validated public OutboundProxy has already serialized these nested
+            // values. They are dictionaries, not separate public configuration classes.
+            let credentials = proxy
+                .get_item("credentials")?
+                .filter(|value| !value.is_none())
+                .map(|value| {
+                    value.downcast::<PyDict>().cloned().map_err(|_| {
+                        pyo3::exceptions::PyTypeError::new_err(
+                            "serialized SOCKS5 credentials must be a dict",
+                        )
+                    })
+                })
+                .transpose()?;
+            let username = credentials
+                .as_ref()
+                .map(|value| extract_required::<String>(value, "username"))
+                .transpose()?;
+            let password = credentials
+                .as_ref()
+                .map(|value| {
+                    let password = value.get_item("password")?.ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "SOCKS5 credentials requires password",
+                        )
+                    })?;
+                    let source = password.downcast::<PyDict>().map_err(|_| {
+                        pyo3::exceptions::PyTypeError::new_err(
+                            "serialized SOCKS5 password source must be a dict",
+                        )
+                    })?;
+                    let kind = extract_required::<String>(source, "kind")?;
+                    if kind != "env" {
+                        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                            "unsupported SOCKS5 password source {kind:?}; only env is supported"
+                        )));
+                    }
+                    let var = extract_required::<String>(source, "var")?;
+                    Ok(SecretSource::env(var))
+                })
+                .transpose()?;
+            builder.proxy(move |p| {
+                let proxy = p.socks5(address);
+                match (username, password) {
+                    (Some(username), Some(password)) => proxy.credentials(username, password),
+                    _ => proxy,
+                }
+            })
+        }
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unsupported outbound proxy protocol {protocol:?}"
+            )));
+        }
+    };
+    Ok(builder)
+}
+
 /// Apply destination options without allowing them to replace a receiver-selected source.
 pub(crate) fn restore_builder_from_reference(
     snapshot: SnapshotReference,
@@ -213,6 +321,7 @@ pub(crate) fn restore_builder_from_reference(
             "max_cpus",
             "max_memory",
             "network_policy",
+            "proxy",
             "max_connections",
             "max_tcp_connections",
             "max_udp_connections",
@@ -273,6 +382,9 @@ pub(crate) fn restore_builder_from_reference(
         if let Some(policy) = parse_network_policy(&net)? {
             builder = builder.network_policy(policy);
         }
+    }
+    if let Some(proxy) = kwargs.get_item("proxy")?.filter(|v| !v.is_none()) {
+        builder = apply_outbound_proxy(builder, &proxy)?;
     }
     let legacy = extract_opt::<usize>(kwargs, "max_connections")?;
     let tcp = extract_opt::<usize>(kwargs, "max_tcp_connections")?;
@@ -765,68 +877,8 @@ pub fn sandbox_builder_from_args(
         builder = builder.intercept_tls();
     }
 
-    // Outbound proxy.
-    if let Some(proxy) = kwargs.get_item("proxy")?
-        && !proxy.is_none()
-    {
-        let proxy = config_dict(&proxy, "OutboundProxy")?;
-        let protocol = extract_required::<String>(&proxy, "protocol")?;
-        let address = extract_required::<String>(&proxy, "address")?;
-        builder = match protocol.as_str() {
-            "http_connect" => builder.proxy(move |p| p.http_connect(address)),
-            "socks4" => {
-                let user_id = extract_opt::<String>(&proxy, "user_id")?;
-                builder.proxy(move |p| {
-                    let proxy = p.socks4(address);
-                    match user_id {
-                        Some(user_id) => proxy.user_id(user_id),
-                        None => proxy,
-                    }
-                })
-            }
-            "socks5" => {
-                let credentials = proxy
-                    .get_item("credentials")?
-                    .filter(|value| !value.is_none())
-                    .map(|value| config_dict(&value, "SOCKS5 credentials"))
-                    .transpose()?;
-                let username = credentials
-                    .as_ref()
-                    .map(|value| extract_required::<String>(value, "username"))
-                    .transpose()?;
-                let password = credentials
-                    .as_ref()
-                    .map(|value| {
-                        let password = value.get_item("password")?.ok_or_else(|| {
-                            pyo3::exceptions::PyValueError::new_err(
-                                "SOCKS5 credentials requires password",
-                            )
-                        })?;
-                        let source = config_dict(&password, "SOCKS5 password source")?;
-                        let kind = extract_required::<String>(&source, "kind")?;
-                        if kind != "env" {
-                            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                                "unsupported SOCKS5 password source {kind:?}; only env is supported"
-                            )));
-                        }
-                        let var = extract_required::<String>(&source, "var")?;
-                        Ok(SecretSource::env(var))
-                    })
-                    .transpose()?;
-                builder.proxy(move |p| {
-                    let proxy = p.socks5(address);
-                    match (username, password) {
-                        (Some(username), Some(password)) => proxy.credentials(username, password),
-                        _ => proxy,
-                    }
-                })
-            }
-            _ => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "unsupported outbound proxy protocol {protocol:?}"
-                )));
-            }
-        };
+    if let Some(proxy) = kwargs.get_item("proxy")?.filter(|v| !v.is_none()) {
+        builder = apply_outbound_proxy(builder, &proxy)?;
     }
 
     // Secrets.
