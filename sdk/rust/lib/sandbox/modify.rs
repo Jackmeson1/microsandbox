@@ -1143,6 +1143,7 @@ pub(crate) async fn control_checkpoint_create(
         ));
     }
     let request = microsandbox_protocol::control::CheckpointCreate {
+        retain_configuration: None,
         guest_flush: capture_flush_policy(Some(capabilities), guest_flush, false)?,
         record_integrity,
         checkpoint_id,
@@ -1189,6 +1190,7 @@ pub(crate) async fn control_disk_checkpoint_create(
             UnsupportedReason::NotAvailable("this runtime does not support live disk-only snapshots; recreate the sandbox with the updated runtime".into())));
     }
     let request = microsandbox_protocol::control::DiskCheckpointCreate {
+        retain_configuration: None,
         checkpoint_id,
         guest_flush: capture_flush_policy(Some(capabilities), guest_flush, true)?,
     };
@@ -1197,6 +1199,7 @@ pub(crate) async fn control_disk_checkpoint_create(
         .await
         .map_err(crate::MicrosandboxError::ControlClient)?;
     Ok(microsandbox_runtime::control::DiskCheckpointControlState {
+        configuration: response.configuration,
         checkpoint_id: response.checkpoint_id,
         path: response.path,
         disk: response.disk,
@@ -3521,6 +3524,7 @@ mod tests {
     fn checkpoint_reply(ok: bool) -> microsandbox_protocol::control::CheckpointResult {
         microsandbox_protocol::control::CheckpointResult {
             checkpoint: Some(microsandbox_protocol::control::CheckpointState {
+                configuration: None,
                 checkpoint_id: "checkpoint_test".into(),
                 checkpoint_root: format!("sha256:{}", "a".repeat(64)),
                 path: "/runtime/checkpoint_test".into(),

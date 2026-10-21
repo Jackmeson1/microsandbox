@@ -211,6 +211,7 @@ impl Handler for ControlContext {
         } else if let Some(checkpoint) = result.checkpoint.clone() {
             Reply::Checkpoint(CheckpointResult {
                 checkpoint: Some(CheckpointState {
+                    configuration: checkpoint.configuration,
                     checkpoint_id: checkpoint.checkpoint_id,
                     checkpoint_root: checkpoint.checkpoint_root,
                     path: checkpoint.path,
@@ -224,6 +225,7 @@ impl Handler for ControlContext {
             Reply::Error(error())
         } else if let Some(caps) = result.capabilities {
             let capabilities = RuntimeCapabilities {
+                configuration_capture: caps.configuration_capture,
                 root_disk_grow: caps.root_disk_grow,
                 guest_flush_policy: caps.guest_flush_policy,
                 optional_disk_integrity: caps.optional_disk_integrity,
@@ -259,6 +261,7 @@ impl Handler for ControlContext {
             })
         } else if let Some(state) = result.disk_checkpoint {
             Reply::DiskCheckpoint(DiskCheckpointState {
+                configuration: state.configuration,
                 checkpoint_id: state.checkpoint_id,
                 path: state.path,
                 disk: state.disk,
@@ -331,6 +334,7 @@ fn operation_to_legacy(
             },
         },
         ControlOperation::CheckpointCreate(request) => Legacy::CheckpointCreate {
+            retain_configuration: request.retain_configuration,
             guest_flush: request.guest_flush,
             record_integrity: request.record_integrity,
             checkpoint_id: request.checkpoint_id,
@@ -341,6 +345,7 @@ fn operation_to_legacy(
             },
         },
         ControlOperation::DiskCheckpointCreate(request) => Legacy::DiskCheckpointCreate {
+            retain_configuration: request.retain_configuration,
             guest_flush: request.guest_flush,
             checkpoint_id: request.checkpoint_id,
         },

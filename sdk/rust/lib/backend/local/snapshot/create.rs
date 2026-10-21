@@ -2362,6 +2362,7 @@ mod tests {
         };
         disk.validate().unwrap();
         microsandbox_runtime::control::DiskCheckpointControlState {
+            configuration: None,
             checkpoint_id: "disk_capture".into(),
             path: root.to_path_buf(),
             disk,

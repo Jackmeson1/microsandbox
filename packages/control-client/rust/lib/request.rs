@@ -332,8 +332,9 @@ impl Request<ControlProtocol> for GetPauseState {
 }
 
 macro_rules! compatible_v2 {
-    ($request:ty, $json:expr, $decode:expr) => {
+    ($request:ty, $json:expr, $decode:expr $(, $configuration:expr)?) => {
         impl CompatibleControlRequest for $request {
+            $(fn requires_configuration_capture(&self) -> bool { ($configuration)(self) })?
             fn min_generation(&self) -> u8 {
                 2
             }
@@ -369,23 +370,37 @@ compatible_v2!(
 
 compatible_v2!(
     CreateCheckpoint,
-    |request: &CreateCheckpoint| serde_json::json!({
-        "op": "checkpoint_create",
-        "guest_flush": request.0.guest_flush,
-        "record_integrity": request.0.record_integrity,
-        "checkpoint_id": request.0.checkpoint_id,
-        "intent": request.0.intent,
-    }),
-    decode_checkpoint_json
+    |request: &CreateCheckpoint| {
+        let mut value = serde_json::json!({
+            "op": "checkpoint_create",
+            "guest_flush": request.0.guest_flush,
+            "record_integrity": request.0.record_integrity,
+            "checkpoint_id": request.0.checkpoint_id,
+            "intent": request.0.intent,
+        });
+        if let Some(retain) = request.0.retain_configuration {
+            value["retain_configuration"] = retain.into();
+        }
+        value
+    },
+    decode_checkpoint_json,
+    |request: &CreateCheckpoint| request.0.retain_configuration == Some(true)
 );
 compatible_v2!(
     CreateDiskCheckpoint,
-    |request: &CreateDiskCheckpoint| serde_json::json!({
-        "op": "disk_checkpoint_create",
-        "guest_flush": request.0.guest_flush,
-        "checkpoint_id": request.0.checkpoint_id,
-    }),
-    |reply| decode_json_field(reply, "disk_checkpoint")
+    |request: &CreateDiskCheckpoint| {
+        let mut value = serde_json::json!({
+            "op": "disk_checkpoint_create",
+            "guest_flush": request.0.guest_flush,
+            "checkpoint_id": request.0.checkpoint_id,
+        });
+        if let Some(retain) = request.0.retain_configuration {
+            value["retain_configuration"] = retain.into();
+        }
+        value
+    },
+    |reply| decode_json_field(reply, "disk_checkpoint"),
+    |request: &CreateDiskCheckpoint| request.0.retain_configuration == Some(true)
 );
 compatible_v2!(
     CreateBranch,

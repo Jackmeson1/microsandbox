@@ -34,6 +34,9 @@ pub struct Capabilities {
 /// with a struct literal keep compiling. This additive record is returned to generation-two peers.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeCapabilities {
+    /// Captures can retain configuration under runtime mutation authority.
+    #[serde(default)]
+    pub configuration_capture: bool,
     /// Runtime supports online root-disk growth over its extended control API.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub root_disk_grow: bool,
@@ -87,6 +90,9 @@ pub enum CheckpointCaptureIntent {
 /// Create one same-epoch full checkpoint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckpointCreate {
+    /// Retain host-private configuration evidence for this exact capture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retain_configuration: Option<bool>,
     /// Optional writeback policy; omission preserves released behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guest_flush: Option<microsandbox_types::GuestFlush>,
@@ -99,9 +105,20 @@ pub struct CheckpointCreate {
     pub intent: CheckpointCaptureIntent,
 }
 
+/// Digest of a host-private configuration receipt stored outside the portable checkpoint tree.
+/// The independently selected source sandbox and checkpoint ID determine its location.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigurationCaptureReceipt {
+    /// SHA-256 of the complete private receipt bytes.
+    pub sha256: String,
+}
+
 /// Published full-checkpoint state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckpointState {
+    /// Optional private receipt; absence never establishes configuration evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<ConfigurationCaptureReceipt>,
     /// Stable checkpoint identity.
     pub checkpoint_id: String,
     /// Content-addressed composite root.
@@ -130,6 +147,9 @@ pub struct CheckpointResult {
 /// Seal the owned root disk without capturing RAM or execution state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiskCheckpointCreate {
+    /// Retain host-private configuration evidence for this exact capture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retain_configuration: Option<bool>,
     /// Optional writeback policy; omission preserves released behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guest_flush: Option<microsandbox_types::GuestFlush>,
@@ -140,6 +160,9 @@ pub struct DiskCheckpointCreate {
 /// Complete disk-only capture result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiskCheckpointState {
+    /// Optional private receipt; absence never establishes configuration evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<ConfigurationCaptureReceipt>,
     /// Capture identity echoed from the request.
     pub checkpoint_id: String,
     /// Runtime-owned closure containing the sealed manifests and layers.
