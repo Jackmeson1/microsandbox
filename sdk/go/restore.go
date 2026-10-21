@@ -34,6 +34,8 @@ type RestoreConfig struct {
 	Hostname *string
 	// NetworkPolicy accepts only Rules, DefaultEgress, and DefaultIngress.
 	NetworkPolicy *NetworkConfig
+	// Proxy is resolved on the destination host before boot or full resume.
+	Proxy *OutboundProxy
 	// MaxConnections caps TCP connections.
 	// Deprecated: use MaxTCPConnections instead; specifying both is an error.
 	MaxConnections *uint
@@ -93,6 +95,11 @@ func RestoreSandbox[T SnapshotSeed](ctx context.Context, snapshot T, name string
 // WithRestoreConfig replaces the restore configuration.
 func WithRestoreConfig(config RestoreConfig) RestoreOption {
 	return func(o *RestoreConfig) { *o = config }
+}
+
+// WithRestoreProxy selects the destination proxy without changing captured guest identity.
+func WithRestoreProxy(proxy *OutboundProxy) RestoreOption {
+	return func(o *RestoreConfig) { o.Proxy = proxy }
 }
 
 // WithRestoreCPUs selects CPUs; full execution restore requires the captured count.
@@ -256,7 +263,7 @@ func buildFFIRestoreOptions[T SnapshotSeed](snapshot T, config RestoreConfig) ff
 	return ffi.RestoreOptions{
 		Snapshot: reference, SnapshotReferenceKind: referenceKind,
 		CPUs: config.CPUs, MemoryMiB: config.MemoryMiB, NetworkPolicy: policy,
-		Init: resources.Init, Hostname: config.Hostname,
+		Init: resources.Init, Hostname: config.Hostname, Proxy: buildFFIOutboundProxy(config.Proxy),
 		MaxCPUs: config.MaxCPUs, MaxMemoryMiB: config.MaxMemoryMiB,
 		MaxConnections: config.MaxConnections, MaxTCPConnections: config.MaxTCPConnections,
 		MaxUDPConnections: config.MaxUDPConnections, DisableNetwork: config.DisableNetwork,

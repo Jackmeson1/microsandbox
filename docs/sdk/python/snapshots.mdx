@@ -1229,6 +1229,14 @@ Image, replacement, and startup-command options are not accepted. Full restore r
 Restore rejects missing external filesystems (and, for full restore, additional disks) by default. Use `allow_missing_resources=True` to resume with unavailable devices (full restore records warnings). This is separate from strict/relaxed validation of supplied mappings; inheritance does not waive missing backing. Root and owned storage remain required.
 
 
+#### proxy
+
+```python
+proxy: OutboundProxy | None = None
+```
+
+Select the destination host proxy before disk boot or full-memory resume. This preserves the captured guest interface and does not inject guest trust material. SOCKS5 passwords use destination environment references; resolved passwords are not saved in snapshot configuration. `None` leaves destination resolution unchanged.
+
 <div className="msb-params">
   <div className="msb-param">
     <div className="msb-param-key"><code>cpus, memory</code></div>

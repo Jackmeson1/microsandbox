@@ -2,6 +2,8 @@
 
 #[cfg(feature = "net")]
 use microsandbox_network::policy::NetworkPolicy;
+#[cfg(feature = "net")]
+use microsandbox_network::{OutboundProxyBuilder, OutboundProxyConfig};
 
 use super::config::SnapshotRestoreMode;
 use super::{
@@ -195,6 +197,18 @@ impl RestoreBuilder {
     #[cfg(feature = "net")]
     pub fn network_policy(mut self, policy: NetworkPolicy) -> Self {
         self.inner = self.inner.network(|network| network.policy(policy));
+        self
+    }
+
+    /// Select the destination proxy before disk boot or full-memory resume.
+    /// This does not replace the captured guest interface or inject guest trust material.
+    /// Proxy credentials use the existing destination secret-source resolution.
+    #[cfg(feature = "net")]
+    pub fn proxy<P>(mut self, configure: impl FnOnce(OutboundProxyBuilder) -> P) -> Self
+    where
+        P: OutboundProxyConfig,
+    {
+        self.inner = self.inner.proxy(configure);
         self
     }
 
@@ -429,6 +443,37 @@ mod tests {
 
     fn config(builder: &RestoreBuilder) -> crate::SandboxConfig {
         builder.inner.config.clone().into_config()
+    }
+
+    #[cfg(feature = "local")]
+    #[test]
+    fn destination_proxy_preserves_guest_identity_and_policy() {
+        let builder = Sandbox::restore("saved")
+            .network_policy(NetworkPolicy::none())
+            .proxy(|proxy| {
+                proxy.socks5("127.0.0.1:1080").credentials(
+                    "destination",
+                    crate::sandbox::SecretSource::env("DEST_PROXY_PASSWORD"),
+                )
+            });
+        let config = config(&builder);
+        let network = config.local_network_config().unwrap();
+        let proxy = serde_json::to_value(network.outbound_proxy.unwrap()).unwrap();
+        assert!(proxy.to_string().contains("DEST_PROXY_PASSWORD"));
+        assert!(network.interface.mac.is_none());
+        assert_eq!(
+            serde_json::to_value(network.policy).unwrap(),
+            serde_json::to_value(NetworkPolicy::none()).unwrap()
+        );
+        // A destination host proxy does not ask to replay boot configuration or commands.
+        config
+            .restore_boot_overrides
+            .validate_scope(
+                crate::snapshot::SnapshotScope::Full,
+                SnapshotRestoreMode::Full,
+            )
+            .unwrap();
+        assert!(builder.inner.build_error.is_none());
     }
 
     #[test]

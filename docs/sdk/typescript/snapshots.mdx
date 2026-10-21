@@ -1626,6 +1626,14 @@ networkPolicy(policy: NetworkPolicy | NetworkPolicyBuilder): this
 
 Replace host traffic filtering; guest DNS and TLS settings stay unchanged.
 
+#### <span className="msb-recv">restore.</span><span className="msb-hn">proxy()</span>
+
+```typescript
+proxy(configure: (proxy: OutboundProxyBuilder) => HttpConnectProxyBuilder | Socks4ProxyBuilder | Socks5ProxyBuilder): this
+```
+
+Select the destination host proxy before disk boot or full-memory resume. This preserves the captured guest interface and does not inject guest trust material. SOCKS5 passwords use destination environment references; resolved passwords are not saved in snapshot configuration. Older native bindings missing this setter reject explicit use before dispatch.
+
 #### <span className="msb-recv">restore.</span><span className="msb-hn">maxConnections()</span>
 
 ```typescript

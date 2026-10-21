@@ -8,6 +8,7 @@ use crate::init_options_builder::JsInitOptionsBuilder;
 use crate::mount_builder::JsMountBuilder;
 use crate::network_builder::accept_queue_size;
 use crate::network_policy_builder::JsNetworkPolicyBuilder;
+use crate::outbound_proxy_builder::{JsOutboundProxyBuilder, take_selected_proxy};
 use crate::pull_progress::JsPullProgressStream;
 use crate::sandbox::Sandbox;
 use crate::sandbox_builder::{JsPullProgressCreate, parse_bind_addr};
@@ -52,6 +53,23 @@ impl JsRestoreBuilder {
     pub fn name(&mut self, name: String) -> Result<&Self> {
         let inner = self.take_inner()?;
         self.inner = Some(inner.name(name));
+        Ok(self)
+    }
+
+    /// Set the destination proxy before boot or resume, preserving captured guest identity.
+    #[napi(
+        ts_args_type = "configure: (arg: OutboundProxyBuilder) => HttpConnectProxyBuilder | Socks4ProxyBuilder | Socks5ProxyBuilder"
+    )]
+    pub fn proxy(
+        &mut self,
+        env: &Env,
+        configure: Function<ClassInstance<JsOutboundProxyBuilder>, Unknown<'_>>,
+    ) -> Result<&Self> {
+        let selector = JsOutboundProxyBuilder::new();
+        let selection = selector.selection();
+        configure.call(selector.into_instance(env)?)?;
+        let proxy = take_selected_proxy(&selection)?;
+        self.inner = Some(self.take_inner()?.proxy(|_| proxy));
         Ok(self)
     }
 

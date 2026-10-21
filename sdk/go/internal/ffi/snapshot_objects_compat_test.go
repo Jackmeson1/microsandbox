@@ -102,3 +102,24 @@ func TestRestoreCeilingsRefuseOlderNativeLibrary(t *testing.T) {
 		}
 	}
 }
+
+// A native library that supports ordinary creation proxies does not necessarily
+// support restore proxies. Require restore-option admission before mutation.
+func TestRestoreProxyRefusesOlderNativeLibrary(t *testing.T) {
+	path := os.Getenv("MSB_OLD_SNAPSHOT_NATIVE")
+	if path == "" {
+		t.Skip("requires a native library predating restore proxy admission")
+	}
+	if err := Load(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckRestoreBootOptions(context.Background(), RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	options := RestoreOptions{Proxy: &OutboundProxyOptions{Protocol: "socks5", Address: "127.0.0.1:1080"}}
+	err := CheckRestoreBootOptions(context.Background(), options)
+	var unsupported *Error
+	if !errors.As(err, &unsupported) || unsupported.Kind != KindUnsupportedOperation {
+		t.Fatalf("proxy not refused before dispatch: %v", err)
+	}
+}

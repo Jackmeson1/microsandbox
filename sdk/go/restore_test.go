@@ -387,3 +387,15 @@ func TestRestoreCeilingsRetainOmissionAndExplicitZero(t *testing.T) {
 		}
 	}
 }
+
+func TestRestoreProxyKeepsDestinationCredentialReference(t *testing.T) {
+	var config RestoreConfig
+	WithRestoreProxy(SOCKS5Proxy("127.0.0.1:1080").Credentials("destination", SecretSourceEnv("DEST_PROXY_PASSWORD")))(&config)
+	proxy := buildFFIRestoreOptions("saved", config).Proxy
+	if proxy == nil || proxy.Protocol != "socks5" || proxy.Username == nil || *proxy.Username != "destination" || proxy.PasswordSource == nil || proxy.PasswordSource.Var != "DEST_PROXY_PASSWORD" {
+		t.Fatal("destination proxy or unresolved credential source was lost")
+	}
+	if buildFFIRestoreOptions("saved", RestoreConfig{}).Proxy != nil {
+		t.Fatal("omitted destination proxy must remain absent")
+	}
+}
