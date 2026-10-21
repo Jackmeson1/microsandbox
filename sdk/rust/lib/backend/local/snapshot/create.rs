@@ -23,6 +23,7 @@ use crate::{
     SnapshotArtifactKind, SnapshotSourceRecoveryError, UnsupportedReason,
 };
 
+use super::configuration_capture::StoppedConfigurationCapture;
 use super::{Snapshot, SnapshotArchive, SnapshotConfig};
 
 //--------------------------------------------------------------------------------------------------
@@ -1570,6 +1571,7 @@ async fn capture_disk_source(
         let lifecycle_guard = lifecycle_guard.ok_or_else(|| {
             MicrosandboxError::Runtime("stopped disk capture requires lifecycle ownership".into())
         })?;
+        let db = local.db().await?.write().clone();
         let sandbox_dir = sandbox_dir.to_path_buf();
         let root_disk = root_disk.clone();
         let mounts = mounts.to_vec();
@@ -1577,6 +1579,20 @@ async fn capture_disk_source(
             // These synchronous helpers own a current-thread runtime. Run the whole cut away
             // from Tokio's async executor, and retain ownership even if its await is canceled.
             let _lifecycle_guard = lifecycle_guard;
+            let observer = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            let selected = observer.block_on(StoppedConfigurationCapture::prepare(
+                db,
+                sandbox_dir.clone(),
+                source_id,
+                Arc::clone(&_lifecycle_guard),
+            ))?;
+            let configuration = selected.configuration()?;
+            let mounts = configuration
+                .as_ref()
+                .map(|config| config.spec.mounts.as_slice())
+                .unwrap_or(&mounts);
             let mut disk = snapshot_disk_closure(&sandbox_dir, &root_disk)?;
             if mounts
                 .iter()
@@ -1588,9 +1604,11 @@ async fn capture_disk_source(
                     .prefix(".owned-disk-snapshot-")
                     .tempdir_in(&sandbox_dir)?;
                 disk.owned_volumes =
-                    capture_stopped_owned_volumes(&sandbox_dir, staging.path(), &mounts)?;
+                    capture_stopped_owned_volumes(&sandbox_dir, staging.path(), mounts)?;
                 disk.capture_root = Some(staging.keep());
             }
+            observer.block_on(selected.finish())?;
+            disk.configuration = configuration;
             Ok(disk)
         })
         .await
@@ -3247,6 +3265,9 @@ mod tests {
                     .build()
                     .await
                     .unwrap();
+                // Finish lazy catalog setup before occupying the only blocking worker.
+                // The cancellation below must target a queued disk cut, not catalog opening.
+                local.db().await.unwrap();
                 let sandbox = temp.path().join("sandbox");
                 let mounts = stopped_async_capture_fixture(&sandbox);
                 let run = temp.path().join("run");
