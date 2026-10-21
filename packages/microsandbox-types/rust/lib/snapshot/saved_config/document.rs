@@ -122,6 +122,7 @@ impl SavedSandboxConfig {
         }
         self.active.validate()?;
         self.active.runtime.validate_active_role()?;
+        self.active.storage.validate_active()?;
         self.active.resources.validate_active_observations()?;
         self.provenance.validate()?;
         let mut uses = collect_binding_uses(&self.active.runtime, &self.active.network)?;

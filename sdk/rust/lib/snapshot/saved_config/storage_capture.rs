@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use microsandbox_types::VolumeMount;
 use microsandbox_types::snapshot::Manifest;
 use microsandbox_types::snapshot::saved_config::{
     MAX_SAVED_CONFIG_ENTRIES, SavedBindingReference, SavedExternalMountCapture, SavedMount,
@@ -38,8 +39,26 @@ impl RuntimeCaptureSource<'_> {
     /// This method performs no filesystem access, named-volume lookup or socket connection.
     pub fn project_storage(
         &self,
-        mut bindings: StorageCaptureBindings,
+        bindings: StorageCaptureBindings,
         manifest: &Manifest,
+    ) -> MicrosandboxResult<SavedStorageConfig> {
+        self.project_storage_sections(bindings, Some(manifest))
+    }
+
+    /// Preserve next-start requirements without claiming that requested owned storage
+    /// belongs to the active descriptor. External kinds still need independently classified
+    /// requirements; source paths, volume names and transient provisioning are not exported.
+    pub fn project_pending_storage(
+        &self,
+        bindings: StorageCaptureBindings,
+    ) -> MicrosandboxResult<SavedStorageConfig> {
+        self.project_storage_sections(bindings, None)
+    }
+
+    fn project_storage_sections(
+        &self,
+        mut bindings: StorageCaptureBindings,
+        manifest: Option<&Manifest>,
     ) -> MicrosandboxResult<SavedStorageConfig> {
         if bindings.mounts.len() > MAX_SAVED_CONFIG_ENTRIES
             || bindings.routes.len() > MAX_SAVED_CONFIG_ENTRIES
@@ -52,8 +71,17 @@ impl RuntimeCaptureSource<'_> {
             .recorded
             .get("mounts")
             .and_then(Value::as_array)
-            .is_some_and(|mounts| mounts.iter().all(complete_mount))
-        {
+            .is_some_and(|mounts| {
+                mounts.iter().all(|raw| {
+                    if manifest.is_none()
+                        && raw.get("type").and_then(Value::as_str) == Some("Owned")
+                    {
+                        complete_owned_declaration(raw)
+                    } else {
+                        complete_mount(raw)
+                    }
+                })
+            }) {
             let mut mounts = self
                 .config
                 .spec
@@ -61,6 +89,16 @@ impl RuntimeCaptureSource<'_> {
                 .iter()
                 .map(|source| {
                     let external = bindings.mounts.remove(source.guest());
+                    if manifest.is_none() && matches!(source, VolumeMount::Owned { .. }) {
+                        if external.is_some() {
+                            return Err(error(
+                                "SCFG_BINDING",
+                                "owned declaration cannot use an external binding",
+                            ));
+                        }
+                        return SavedMount::requested_owned_from_source(source)
+                            .map_err(manifest_error);
+                    }
                     SavedMount::from_source(source, external).map_err(manifest_error)
                 })
                 .collect::<MicrosandboxResult<Vec<_>>>()?;
@@ -120,9 +158,13 @@ impl RuntimeCaptureSource<'_> {
             mounts: Some(mounts),
             vsock: Some(routes),
         };
-        result
-            .validate_owned_projection(manifest)
-            .map_err(manifest_error)?;
+        if let Some(manifest) = manifest {
+            result
+                .validate_owned_projection(manifest)
+                .map_err(manifest_error)?;
+        } else {
+            result.validate().map_err(manifest_error)?;
+        }
         // An ID reused for incompatible mount/socket kinds must fail at capture,
         // before a later document assembly could mistakenly unify its consumers.
         result.binding_uses().map_err(manifest_error)?;
@@ -183,6 +225,36 @@ fn complete_mount(raw: &Value) -> bool {
         "DiskImage" => fields(raw, &["format", "fstype"]),
         _ => false,
     }
+}
+
+fn complete_owned_declaration(raw: &Value) -> bool {
+    fields(
+        raw,
+        &[
+            "guest",
+            "storage",
+            "stat_virtualization",
+            "host_permissions",
+        ],
+    ) && raw.get("options").is_some_and(|options| {
+        fields(
+            options,
+            &[
+                "readonly",
+                "noexec",
+                "nosuid",
+                "nodev",
+                "override_uid",
+                "override_gid",
+            ],
+        )
+    }) && raw.get("storage").is_some_and(|storage| {
+        match storage.get("kind").and_then(Value::as_str) {
+            Some("directory") => fields(storage, &["quota_mib"]),
+            Some("disk") => fields(storage, &["capacity_mib"]),
+            _ => false,
+        }
+    })
 }
 
 fn fields(raw: &Value, names: &[&str]) -> bool {

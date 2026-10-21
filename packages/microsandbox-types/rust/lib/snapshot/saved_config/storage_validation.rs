@@ -14,7 +14,7 @@ use super::validation::{
 };
 use super::{
     SavedBindRootKind, SavedBindingConsumer, SavedBindingKind, SavedBindingUses, SavedMount,
-    SavedMountOptions, SavedNamedStorage, SavedStorageConfig, SavedValue,
+    SavedMountOptions, SavedNamedStorage, SavedOrigin, SavedStorageConfig, SavedValue,
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -57,6 +57,21 @@ impl SavedStorageConfig {
                 }
                 previous = Some(order);
                 validate_mount(mount)?;
+                if matches!(mount, SavedMount::RequestedOwned { .. })
+                    && !matches!(
+                        self.mounts,
+                        Some(SavedValue::Value {
+                            origin: SavedOrigin::Configured,
+                            ..
+                        })
+                    )
+                {
+                    return invalid(
+                        "SCFG_VALUE",
+                        "active.storage.mounts",
+                        "pending storage declarations require configured origin",
+                    );
+                }
                 if let SavedMount::Owned { mount_id, .. } = mount
                     && !owned_ids.insert(mount_id)
                 {
@@ -95,6 +110,28 @@ impl SavedStorageConfig {
         Ok(())
     }
 
+    /// Reject next-start declarations before active selection, overrides or fresh mode.
+    pub fn validate_active(&self) -> SnapshotManifestResult<()> {
+        self.validate()?;
+        if self
+            .mounts
+            .as_ref()
+            .and_then(SavedValue::value)
+            .is_some_and(|mounts| {
+                mounts
+                    .iter()
+                    .any(|mount| matches!(mount, SavedMount::RequestedOwned { .. }))
+            })
+        {
+            return invalid(
+                "SCFG_VALUE",
+                "active.storage.mounts",
+                "pending storage declaration is not captured backing",
+            );
+        }
+        Ok(())
+    }
+
     /// Derive immediate resource consumers. Full resume additionally needs authoritative
     /// captured resource identity; matching this configuration alone is never sufficient.
     pub fn binding_uses(&self) -> SnapshotManifestResult<SavedBindingUses> {
@@ -122,7 +159,9 @@ impl SavedStorageConfig {
                         },
                     ),
                     SavedMount::DiskImage { binding, .. } => (binding, SavedBindingKind::DiskImage),
-                    SavedMount::Owned { .. } | SavedMount::Tmpfs { .. } => continue,
+                    SavedMount::Owned { .. }
+                    | SavedMount::RequestedOwned { .. }
+                    | SavedMount::Tmpfs { .. } => continue,
                 };
                 record(&mut uses, &reference.id, kind, SavedBindingConsumer::Mount)?;
             }
@@ -147,7 +186,7 @@ impl SavedStorageConfig {
     /// Validate references against existing authoritative private backing without rewriting it.
     /// A concrete mount list is complete; omissions/unknowns do not erase legacy requirements.
     pub fn validate_owned_projection(&self, manifest: &Manifest) -> SnapshotManifestResult<()> {
-        self.validate()?;
+        self.validate_active()?;
         let owned = manifest.owned_volumes().map_err(|_| {
             super::validation::error(
                 "SCFG_IDENTITY",
@@ -235,6 +274,27 @@ fn validate_guest(guest: &str) -> SnapshotManifestResult<()> {
 
 fn validate_mount(mount: &SavedMount) -> SnapshotManifestResult<()> {
     match mount {
+        SavedMount::RequestedOwned {
+            storage,
+            options,
+            stat_virtualization,
+            host_permissions,
+            ..
+        } => match storage {
+            OwnedVolumeStorage::Directory { .. } => {
+                validate_directory(options, *stat_virtualization, *host_permissions)?
+            }
+            OwnedVolumeStorage::Disk { capacity_mib } => {
+                if *capacity_mib == 0 {
+                    return invalid(
+                        "SCFG_VALUE",
+                        "active.storage.mounts.storage.capacity_mib",
+                        "disk capacity must be positive",
+                    );
+                }
+                validate_disk_policy(options, *stat_virtualization, *host_permissions)?;
+            }
+        },
         SavedMount::Owned { guest, mount_id } => {
             if owned_volume_mount_id(guest) != *mount_id {
                 return invalid(

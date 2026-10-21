@@ -2,7 +2,10 @@
 
 use super::value::deserialize_present;
 use super::{SavedBindingReference, SavedValue};
-use crate::{DiskImageFormat, HostPermissions, MountOptions, StatVirtualization, VsockSocketType};
+use crate::{
+    DiskImageFormat, HostPermissions, MountOptions, OwnedVolumeStorage, StatVirtualization,
+    VsockSocketType,
+};
 use serde::{Deserialize, Serialize};
 
 //--------------------------------------------------------------------------------------------------
@@ -93,6 +96,20 @@ pub enum SavedNamedStorage {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SavedMount {
+    /// Next-start owned-storage declaration, never evidence of captured private backing.
+    /// Only pending configuration may contain this variant.
+    RequestedOwned {
+        /// Canonical guest destination, without a captured mount identity.
+        guest: String,
+        /// Requested future storage; no data or payload membership is implied.
+        storage: OwnedVolumeStorage,
+        /// Requested guest mount policy.
+        options: SavedMountOptions,
+        /// Requested guest metadata behavior.
+        stat_virtualization: StatVirtualization,
+        /// Requested host permission behavior, not authorization to apply it.
+        host_permissions: HostPermissions,
+    },
     /// Exact reference to existing captured private backing; no duplicate options/layout.
     Owned {
         /// Canonical guest destination.
@@ -196,6 +213,7 @@ impl SavedMount {
     pub fn guest(&self) -> &str {
         match self {
             Self::Owned { guest, .. }
+            | Self::RequestedOwned { guest, .. }
             | Self::Bind { guest, .. }
             | Self::Named { guest, .. }
             | Self::DiskImage { guest, .. }

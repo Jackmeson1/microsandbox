@@ -11,7 +11,10 @@ use microsandbox_types::snapshot::saved_config::{
     RuntimeCaptureText, SavedBindingKind, SavedBindingReference, SavedOrigin, SavedResourcesConfig,
     SavedText, SavedUnknownReason, SavedValue, SavedVsockRoute,
 };
-use microsandbox_types::{GuestClockPolicy, VsockSocketType};
+use microsandbox_types::{
+    GuestClockPolicy, HostPermissions, MountOptions, OwnedVolumeStorage, StatVirtualization,
+    VolumeMount, VsockSocketType,
+};
 use serde_json::{Value, json};
 
 use super::storage_tests::manifest;
@@ -524,14 +527,24 @@ fn capture_document_enforces_combined_active_and_pending_script_budget() {
 fn capture_document_assembles_raw_pending_intent_without_active_fallback() {
     let active_raw = source();
     let active = RuntimeCaptureSource::from_recorded(&active_raw, None, None).unwrap();
-    let config = SandboxBuilder::new("next-start")
+    let mut config = SandboxBuilder::new("next-start")
         .image("alpine")
         .cmd(["next-default"])
         .init("auto")
         .script("next-task", "echo next-start")
         .finish(None, None)
         .unwrap();
-    let pending_raw = serde_json::to_value(config.clone_for_persistence()).unwrap();
+    config.spec.mounts.push(VolumeMount::Owned {
+        guest: "/future".into(),
+        storage: OwnedVolumeStorage::Disk { capacity_mib: 64 },
+        options: MountOptions::default(),
+        stat_virtualization: StatVirtualization::Strict,
+        host_permissions: HostPermissions::Private,
+    });
+    let mut pending_raw = serde_json::to_value(config.clone_for_persistence()).unwrap();
+    // Explicitly recorded absence: a historical serializer omission is still unknown.
+    pending_raw["mounts"][0]["options"]["override_uid"] = Value::Null;
+    pending_raw["mounts"][0]["options"]["override_gid"] = Value::Null;
     let pending_source = RuntimeCaptureSource::from_recorded(&pending_raw, None, None).unwrap();
     let descriptor = manifest(false);
     let controls = Controls::default();
@@ -541,7 +554,9 @@ fn capture_document_assembles_raw_pending_intent_without_active_fallback() {
         resources: pending_source.project_pending_resources().unwrap(),
         network: Default::default(),
         execution: Default::default(),
-        storage: Default::default(),
+        storage: pending_source
+            .project_pending_storage(StorageCaptureBindings::default())
+            .unwrap(),
     });
     let document = active.project_document(request, generation()).unwrap();
     let encoded = serde_json::to_value(&document).unwrap();
@@ -559,6 +574,12 @@ fn capture_document_assembles_raw_pending_intent_without_active_fallback() {
     );
     assert_eq!(encoded["active"]["resources"]["cpus"]["origin"], "observed");
     assert_eq!(encoded["active"]["runtime"]["init"]["state"], "unknown");
+    assert_eq!(
+        encoded["pending"]["storage"]["mounts"]["value"][0]["kind"],
+        "requested_owned"
+    );
+    assert_eq!(encoded["active"]["storage"]["mounts"]["value"], json!([]));
+    assert!(document.active_binding_uses().unwrap().is_empty());
     assert!(document.active.runtime.validate_active().is_ok());
     assert!(document.pending.unwrap().runtime.validate_active().is_err());
 }

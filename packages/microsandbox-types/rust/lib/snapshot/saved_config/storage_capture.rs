@@ -35,6 +35,41 @@ pub enum SavedExternalMountCapture {
 //--------------------------------------------------------------------------------------------------
 
 impl SavedMount {
+    /// Preserve declared owned-storage policy without inventing a captured payload ID.
+    /// Other mount kinds use the existing logical external-reference projection.
+    pub fn requested_owned_from_source(source: &VolumeMount) -> SnapshotManifestResult<Self> {
+        let VolumeMount::Owned {
+            guest,
+            storage,
+            options,
+            stat_virtualization,
+            host_permissions,
+        } = source
+        else {
+            return invalid(
+                "SCFG_VALUE",
+                "pending.storage.mounts",
+                "expected an owned-storage declaration",
+            );
+        };
+        let mount = Self::RequestedOwned {
+            guest: guest.clone(),
+            storage: storage.clone(),
+            options: SavedMountOptions::from(options),
+            stat_virtualization: *stat_virtualization,
+            host_permissions: *host_permissions,
+        };
+        SavedStorageConfig {
+            mounts: Some(SavedValue::Value {
+                value: vec![mount.clone()],
+                origin: SavedOrigin::Configured,
+            }),
+            ..Default::default()
+        }
+        .validate()?;
+        Ok(mount)
+    }
+
     /// Project a normalized active source mount, excluding source host paths, volume names,
     /// transient creation metadata and implicit destination authorization.
     pub fn from_source(

@@ -5,13 +5,15 @@ use microsandbox_types::snapshot::saved_config::{
     SavedNamedStorage, SavedStorageConfig, SavedUnknownReason, SavedValue,
 };
 use microsandbox_types::{
-    DiskImageFormat, HostPermissions, MountOptions, OwnedVolumeStorage, StatVirtualization,
-    VolumeMount, VsockRouteSpec, VsockSocketType,
+    DiskImageFormat, HostPermissions, MountOptions, OwnedVolumeStorage, SandboxSpecPatch,
+    StatVirtualization, VolumeMount, VsockRouteSpec, VsockSocketType,
 };
 use serde_json::{Value, json};
 
 use super::storage_tests::{manifest, owned};
-use super::{RuntimeCaptureSource, StorageCaptureBindings};
+use super::{
+    RuntimeCaptureSource, SnapshotConfigMode, StorageCaptureBindings, select_storage_inputs,
+};
 use crate::sandbox::SandboxBuilder;
 
 //--------------------------------------------------------------------------------------------------
@@ -144,6 +146,115 @@ fn assert_error(raw: &Value, bindings: StorageCaptureBindings, code: &str) {
 //--------------------------------------------------------------------------------------------------
 // Tests
 //--------------------------------------------------------------------------------------------------
+
+#[test]
+fn pending_storage_records_requests_without_borrowing_active_owned_payloads() {
+    let raw = source();
+    let original = raw.clone();
+    let pending = RuntimeCaptureSource::from_recorded(&raw, None, None)
+        .unwrap()
+        .project_pending_storage(bindings())
+        .unwrap();
+    let mounts = pending.mounts.as_ref().unwrap().value().unwrap();
+    assert!(mounts.iter().any(
+        |mount| matches!(mount, SavedMount::RequestedOwned { guest, .. } if guest == "/owned")
+    ));
+    assert!(
+        !mounts
+            .iter()
+            .any(|mount| matches!(mount, SavedMount::Owned { .. }))
+    );
+    let encoded = serde_json::to_string(&pending).unwrap();
+    assert!(!encoded.contains("PRIVATE_"));
+    assert!(!encoded.contains("mount_id"));
+    assert_eq!(pending.binding_uses().unwrap().len(), 5);
+    assert!(pending.validate_owned_projection(&manifest(false)).is_err());
+    assert_eq!(raw, original);
+}
+
+#[test]
+fn pending_owned_policy_omissions_keep_the_whole_inventory_unknown() {
+    let raw = source();
+    let owned = raw["mounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|mount| mount["type"] == "Owned")
+        .unwrap()
+        .clone();
+    for missing in ["options", "stat_virtualization", "host_permissions"] {
+        let mut record = raw.clone();
+        let mut incomplete = owned.clone();
+        incomplete.as_object_mut().unwrap().remove(missing);
+        record["mounts"] = json!([incomplete]);
+        record["vsock"]["routes"] = json!([]);
+        let pending = RuntimeCaptureSource::from_recorded(&record, None, None)
+            .unwrap()
+            .project_pending_storage(StorageCaptureBindings::default())
+            .unwrap();
+        assert!(unknown(&pending.mounts), "{missing}");
+    }
+    // Storage kind is required by the retained format. Its omission is malformed,
+    // rather than an older serializer's omission of an optional policy field.
+    let mut malformed = raw.clone();
+    malformed["mounts"] = json!([owned.clone()]);
+    malformed["mounts"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("storage");
+    assert!(RuntimeCaptureSource::from_recorded(&malformed, None, None).is_err());
+    let mut record = raw;
+    record["mounts"] = json!([owned]);
+    record["mounts"][0]["options"]
+        .as_object_mut()
+        .unwrap()
+        .remove("override_uid");
+    record["vsock"]["routes"] = json!([]);
+    let pending = RuntimeCaptureSource::from_recorded(&record, None, None)
+        .unwrap()
+        .project_pending_storage(StorageCaptureBindings::default())
+        .unwrap();
+    assert!(unknown(&pending.mounts));
+}
+
+#[test]
+fn pending_owned_requests_reject_external_binding_and_cannot_be_restored_as_empty_storage() {
+    let raw = source();
+    let mut input = bindings();
+    input.mounts.insert(
+        "/owned".into(),
+        SavedExternalMountCapture::DiskImage {
+            binding: reference("extra"),
+        },
+    );
+    let error = RuntimeCaptureSource::from_recorded(&raw, None, None)
+        .unwrap()
+        .project_pending_storage(input)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("SCFG_BINDING"));
+    assert!(!error.contains("PRIVATE_"));
+    let pending = RuntimeCaptureSource::from_recorded(&raw, None, None)
+        .unwrap()
+        .project_pending_storage(bindings())
+        .unwrap();
+    for full in [false, true] {
+        for mode in [SnapshotConfigMode::Saved, SnapshotConfigMode::Fresh] {
+            let mut replacement = SandboxSpecPatch::new();
+            replacement.mounts = Some(vec![VolumeMount::Tmpfs {
+                guest: "/owned".into(),
+                size_mib: Some(1),
+                options: MountOptions::default(),
+            }]);
+            for explicit in [SandboxSpecPatch::new(), replacement] {
+                let error = select_storage_inputs(&pending, &manifest(full), &explicit, mode, full)
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains("pending storage"), "{error}");
+            }
+        }
+    }
+}
 
 #[test]
 fn storage_capture_preserves_guest_semantics_and_excludes_host_resources() {

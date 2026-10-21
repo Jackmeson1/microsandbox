@@ -467,7 +467,7 @@ fn admit_mount_shape(
         | SavedMount::Named { options, .. }
         | SavedMount::DiskImage { options, .. }
         | SavedMount::Tmpfs { options, .. } => options,
-        SavedMount::Owned { .. } => {
+        SavedMount::Owned { .. } | SavedMount::RequestedOwned { .. } => {
             return Err(error(
                 "SCFG_IDENTITY",
                 "storage.mounts",
