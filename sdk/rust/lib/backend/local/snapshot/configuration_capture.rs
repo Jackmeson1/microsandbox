@@ -10,6 +10,7 @@ use microsandbox_runtime::retention::{
     CapturedConfiguration, RetainedConfiguration, RetentionOwner, ScriptBackingEvidence,
     read_retained_init, select_stopped_configuration,
 };
+use sea_orm::{ConnectionTrait, DbBackend, Statement};
 
 use microsandbox_types::snapshot::saved_config::{
     MAX_SAVED_CONFIG_ENTRIES, MAX_SAVED_SCRIPT_BYTES, MAX_SAVED_SCRIPTS_BYTES, SavedOrigin,
@@ -18,7 +19,10 @@ use microsandbox_types::snapshot::saved_config::{
 
 use crate::backend::{ControlSession, LocalBackend};
 use crate::sandbox::SandboxConfig;
-use crate::snapshot::saved_config::{CaptureDocumentRequest, RuntimeCaptureSource};
+use crate::snapshot::saved_config::{
+    CaptureDocumentRequest, NetworkCaptureBindings, PendingCaptureSource, RuntimeCaptureSource,
+    StorageCaptureBindings,
+};
 use crate::{MicrosandboxError, MicrosandboxResult};
 
 use super::stopped_script_backing::StoppedScriptObservation;
@@ -34,6 +38,7 @@ pub(crate) struct CapturedSandboxConfiguration {
     // absent fields, and reserializing it would manufacture historical evidence. The
     // owner/generation identify the captured transition, not current mutable state.
     source: RetainedConfiguration,
+    pending: Option<serde_json::Value>,
     configuration: SandboxConfig,
     scripts: Option<ScriptBackingEvidence>,
     init: Option<InitObservation>,
@@ -53,6 +58,7 @@ pub(crate) struct StoppedConfigurationCapture {
     sandbox_id: i32,
     guard: Arc<SandboxLifecycleGuard>,
     source: Option<RetainedConfiguration>,
+    pending: Option<serde_json::Value>,
     scripts: StoppedScriptObservation,
     init: Option<InitObservation>,
 }
@@ -66,12 +72,14 @@ impl CapturedSandboxConfiguration {
         source: RetainedConfiguration,
         scripts: Option<ScriptBackingEvidence>,
         init: Option<InitObservation>,
+        pending: Option<serde_json::Value>,
     ) -> MicrosandboxResult<Option<Self>> {
         let Some(configuration) = decode_configuration(source.source.as_ref())? else {
             return Ok(None);
         };
         let captured = Self {
             source,
+            pending,
             configuration,
             scripts,
             init,
@@ -113,6 +121,22 @@ impl CapturedSandboxConfiguration {
         &self.configuration
     }
 
+    /// Build pending projection input exclusively from the selected receipt or stopped cut.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "portable publication remains gated")
+    )]
+    pub(crate) fn pending_source(
+        &self,
+        network: NetworkCaptureBindings,
+        storage: StorageCaptureBindings,
+    ) -> MicrosandboxResult<Option<PendingCaptureSource<'_>>> {
+        self.pending
+            .as_ref()
+            .map(|pending| PendingCaptureSource::from_recorded(pending, network, storage))
+            .transpose()
+    }
+
     /// Assemble only from this immutable receipt/guard selection. Do not reload current
     /// catalog intent or infer generation from a mutable sidecar during projection.
     /// Publication remains disabled until complete destination enforcement is available.
@@ -124,6 +148,17 @@ impl CapturedSandboxConfiguration {
         &self,
         request: CaptureDocumentRequest<'_>,
     ) -> MicrosandboxResult<SavedSandboxConfig> {
+        // Reject a caller substituting later catalog intent, omitting selected intent, or
+        // manufacturing pending defaults for an older receipt that did not record them.
+        if !match (&self.pending, &request.pending) {
+            (None, None) => true,
+            (Some(recorded), Some(pending)) => pending.matches_recorded(recorded),
+            _ => false,
+        } {
+            return Err(invalid(
+                "pending capture selection does not match its source evidence",
+            ));
+        }
         let raw = self
             .source
             .source
@@ -279,6 +314,7 @@ impl ExpectedConfigurationCapture {
             CapturedConfiguration::read(&self.directory, checkpoint_id, capture_root, receipt)
                 .map_err(|_| invalid("invalid checkpoint configuration receipt"))?;
         let init = captured.init().cloned();
+        let pending = captured.pending_configuration().cloned();
         let (source, scripts) = captured.into_parts();
         let Some(source) = source else {
             return Ok(None);
@@ -297,7 +333,7 @@ impl ExpectedConfigurationCapture {
                 "checkpoint configuration belongs to another source run",
             ));
         }
-        CapturedSandboxConfiguration::new(source, scripts, init)
+        CapturedSandboxConfiguration::new(source, scripts, init, pending)
     }
 }
 
@@ -311,6 +347,14 @@ impl StoppedConfigurationCapture {
         let source = select_stopped_configuration(&db, &directory, sandbox_id, &guard)
             .await
             .map_err(|_| invalid("could not select stopped capture configuration"))?;
+        // Lifecycle ownership excludes a runtime changing active state. Retain desired
+        // settings now, before the disk cut; later desired-only edits are a different intent.
+        // Unknown legacy active evidence must not be promoted from desired configuration.
+        let pending = if source.is_some() {
+            select_pending_configuration(&db, sandbox_id).await?
+        } else {
+            None
+        };
         let configuration =
             decode_configuration(source.as_ref().and_then(|source| source.source.as_ref()))?;
         let scripts = StoppedScriptObservation::observe(&directory, configuration.as_ref());
@@ -328,6 +372,7 @@ impl StoppedConfigurationCapture {
             sandbox_id,
             guard,
             source,
+            pending,
         })
     }
 
@@ -371,7 +416,9 @@ impl StoppedConfigurationCapture {
         }
         let scripts = self.scripts.finish();
         match self.source {
-            Some(source) => CapturedSandboxConfiguration::new(source, Some(scripts), self.init),
+            Some(source) => {
+                CapturedSandboxConfiguration::new(source, Some(scripts), self.init, self.pending)
+            }
             None => Ok(None),
         }
     }
@@ -380,6 +427,30 @@ impl StoppedConfigurationCapture {
 //--------------------------------------------------------------------------------------------------
 // Functions
 //--------------------------------------------------------------------------------------------------
+
+async fn select_pending_configuration(
+    db: &DbWriteConnection,
+    sandbox_id: i32,
+) -> MicrosandboxResult<Option<serde_json::Value>> {
+    let row = db
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "SELECT config FROM sandbox WHERE id = ?",
+            [sandbox_id.into()],
+        ))
+        .await
+        .map_err(|_| invalid("could not read pending capture configuration"))?
+        .ok_or_else(|| invalid("pending capture sandbox disappeared"))?;
+    let pending: Option<String> = row
+        .try_get("", "config")
+        .map_err(|_| invalid("invalid pending capture configuration"))?;
+    pending
+        .map(|pending| {
+            serde_json::from_str(&pending)
+                .map_err(|_| invalid("invalid pending capture configuration document"))
+        })
+        .transpose()
+}
 
 fn decode_configuration(
     value: Option<&serde_json::Value>,
@@ -471,6 +542,8 @@ mod tests {
         // A real captured sandbox has a valid name; the minimal receipt fixture's
         // empty default cannot establish a valid generated guest hostname.
         fixture.value["source"]["source"]["name"] = serde_json::json!("captured-source");
+        fixture.value["pending"] = fixture.value["source"]["source"].clone();
+        fixture.value["pending"]["runtime"]["user"] = "pending-user".into();
         // These files deliberately disagree. Neither is authoritative for an immutable capture.
         std::fs::write(
             fixture.home.path().join("last-active/state.json"),
@@ -500,20 +573,39 @@ mod tests {
         let runtime_controls = std::collections::BTreeMap::new();
         let execution_controls = crate::snapshot::saved_config::ExecutionCaptureControls::default();
         let network_controls = crate::snapshot::saved_config::NetworkCaptureControls::default();
-        let document = selected
-            .project_document(CaptureDocumentRequest {
-                manifest: &descriptor,
-                resources: Default::default(),
-                network: Default::default(),
-                storage: Default::default(),
-                runtime_controls: &runtime_controls,
-                execution_controls: &execution_controls,
-                network_controls: &network_controls,
-                pending: None,
-                include_source_name: false,
-                construction_resources: None,
-            })
+        let request = |pending| CaptureDocumentRequest {
+            manifest: &descriptor,
+            resources: Default::default(),
+            network: Default::default(),
+            storage: Default::default(),
+            runtime_controls: &runtime_controls,
+            execution_controls: &execution_controls,
+            network_controls: &network_controls,
+            pending,
+            include_source_name: false,
+            construction_resources: None,
+        };
+        let missing = selected
+            .project_document(request(None))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(missing.contains("pending capture selection"));
+        let different = serde_json::json!({"name":"PRIVATE_WRONG_SOURCE"});
+        let wrong =
+            PendingCaptureSource::from_recorded(&different, Default::default(), Default::default())
+                .unwrap();
+        let error = selected
+            .project_document(request(Some(wrong)))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("pending capture selection"));
+        assert!(!error.contains("PRIVATE_WRONG_SOURCE"));
+        let pending = selected
+            .pending_source(Default::default(), Default::default())
             .unwrap();
+        let document = selected.project_document(request(pending)).unwrap();
         assert_eq!(
             document
                 .provenance
@@ -533,6 +625,18 @@ mod tests {
             Some("captured-user")
         );
         let encoded = serde_json::to_value(&document).unwrap();
+        assert_eq!(
+            document
+                .pending
+                .as_ref()
+                .unwrap()
+                .runtime
+                .user
+                .as_ref()
+                .and_then(SavedValue::value)
+                .map(String::as_str),
+            Some("pending-user")
+        );
         assert!(encoded["provenance"].get("runtime_boot_id").is_none());
         assert!(encoded["provenance"].get("catalog_file").is_none());
     }
@@ -746,7 +850,7 @@ mod tests {
             db.execute_unprepared(
                 "CREATE TABLE sandbox (id INTEGER PRIMARY KEY, created_at TEXT, status TEXT, config TEXT, active_config TEXT);
                  CREATE TABLE run (id INTEGER PRIMARY KEY, sandbox_id INTEGER, started_at TEXT, status TEXT, terminated_at TEXT, pid INTEGER);
-                 INSERT INTO sandbox VALUES (1, 'created', 'Stopped', 'pending desired config', NULL);
+                 INSERT INTO sandbox VALUES (1, 'created', 'Stopped', '{\"runtime\":{\"user\":\"pending-user\"}}', NULL);
                  INSERT INTO run VALUES (1, 1, 'started', 'Terminated', 'ended', NULL);"
             ).await.unwrap();
             let guard = Arc::new(
@@ -1032,7 +1136,11 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        selected.finish().await.unwrap();
+        let captured = selected.finish().await.unwrap().unwrap();
+        assert_eq!(
+            captured.pending.as_ref().unwrap()["runtime"]["user"],
+            "pending-user"
+        );
         let _released = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 if let Some(guard) = microsandbox_runtime::ipc::try_acquire_lifecycle_guard(
