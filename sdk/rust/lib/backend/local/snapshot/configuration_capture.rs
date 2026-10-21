@@ -27,6 +27,10 @@ use super::stopped_script_backing::StoppedScriptObservation;
 /// Confirmed source and backing retained together through local publication.
 /// No Debug/serialization: portable emission must project and apply exclusions explicitly.
 pub(crate) struct CapturedSandboxConfiguration {
+    // Keep the guarded source verbatim: decoding SandboxConfig supplies defaults for
+    // absent fields, and reserializing it would manufacture historical evidence. The
+    // owner/generation identify the captured transition, not current mutable state.
+    source: RetainedConfiguration,
     configuration: SandboxConfig,
     scripts: Option<ScriptBackingEvidence>,
 }
@@ -54,15 +58,19 @@ pub(crate) struct StoppedConfigurationCapture {
 
 impl CapturedSandboxConfiguration {
     fn new(
-        configuration: SandboxConfig,
+        source: RetainedConfiguration,
         scripts: Option<ScriptBackingEvidence>,
-    ) -> MicrosandboxResult<Self> {
+    ) -> MicrosandboxResult<Option<Self>> {
+        let Some(configuration) = decode_configuration(source.source.as_ref())? else {
+            return Ok(None);
+        };
         let captured = Self {
+            source,
             configuration,
             scripts,
         };
         captured.validate_script_inventory()?;
-        Ok(captured)
+        Ok(Some(captured))
     }
 
     pub(crate) fn configuration(&self) -> &SandboxConfig {
@@ -78,11 +86,21 @@ impl CapturedSandboxConfiguration {
         else {
             return Ok(());
         };
-        let expected = &self.configuration.spec.runtime.scripts;
-        // A runtime's claimed inventory must match its confirmed source registration. Body
+        let expected = self
+            .source
+            .source
+            .as_ref()
+            .and_then(|source| source.pointer("/runtime/scripts"))
+            .and_then(serde_json::Value::as_object);
+        // A runtime's claimed inventory must match its recorded source registration. Body
         // equality is deliberately not required: the guest can have changed the actual files.
+        // An older source with no registration field still accepts an empty observation;
+        // the original absence stays in `source`, rather than becoming a recorded default.
+        let matches = expected.map_or(files.is_empty(), |expected| {
+            files.len() == expected.len() && files.keys().all(|name| expected.contains_key(name))
+        });
         if files.len() > MAX_SAVED_CONFIG_ENTRIES
-            || files.keys().ne(expected.keys())
+            || !matches
             || runtime_directory.mode > 0o777
             || scripts_directory.mode > 0o777
         {
@@ -170,9 +188,7 @@ impl ExpectedConfigurationCapture {
                 "checkpoint configuration belongs to another source run",
             ));
         }
-        decode_configuration(source.source.as_ref())?
-            .map(|configuration| CapturedSandboxConfiguration::new(configuration, scripts))
-            .transpose()
+        CapturedSandboxConfiguration::new(source, scripts)
     }
 }
 
@@ -228,11 +244,11 @@ impl StoppedConfigurationCapture {
                 "configuration evidence changed during stopped capture",
             ));
         }
-        let configuration = self.configuration()?;
         let scripts = self.scripts.finish();
-        configuration
-            .map(|configuration| CapturedSandboxConfiguration::new(configuration, Some(scripts)))
-            .transpose()
+        match self.source {
+            Some(source) => CapturedSandboxConfiguration::new(source, Some(scripts)),
+            None => Ok(None),
+        }
     }
 }
 
@@ -343,6 +359,53 @@ mod tests {
             selected.configuration().spec.runtime.user.as_deref(),
             Some("captured-user")
         );
+    }
+
+    #[test]
+    fn receipt_preserves_field_presence_and_confirmed_generation_without_defaulting_evidence() {
+        let fixture = Fixture::new();
+        let mut value = fixture.value.clone();
+        value["scripts"] = serde_json::json!({
+            "state": "observed",
+            "runtime_directory": {"uid": 0, "gid": 0, "mode": 493},
+            "scripts_directory": {"uid": 0, "gid": 0, "mode": 493},
+            "files": {},
+        });
+        // All three decode successfully, but they are different evidence for portable capture.
+        // Missing means not recorded; null and an empty command are deliberate source values.
+        for command in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!([])),
+        ] {
+            let raw = value["source"]["source"].as_object_mut().unwrap();
+            raw.remove("resources");
+            raw.remove("init");
+            let runtime = raw.get_mut("runtime").unwrap().as_object_mut().unwrap();
+            runtime.remove("scripts");
+            runtime.remove("cmd");
+            if let Some(command) = command {
+                runtime.insert("cmd".into(), command);
+            }
+            let selected = fixture.read(&value).unwrap().unwrap();
+            assert!(selected.configuration().spec.resources.cpus > 0);
+            assert_eq!(selected.source.generation, 2);
+            assert!(selected.source.owner == fixture.owner);
+            assert_eq!(
+                selected.source.source.as_ref(),
+                Some(&value["source"]["source"])
+            );
+            let source = selected.source.source.as_ref().unwrap();
+            assert!(source.get("resources").is_none());
+            assert!(source.get("init").is_none());
+            assert!(source.pointer("/runtime/scripts").is_none());
+        }
+        value["scripts"]["files"]["unregistered"] = serde_json::json!({
+            "content": "PRIVATE_INVENTED_SCRIPT", "uid": 0, "gid": 0, "mode": 493,
+        });
+        let error = fixture.read(&value).err().unwrap().to_string();
+        assert!(error.contains("captured script inventory"));
+        assert!(!error.contains("PRIVATE_INVENTED_SCRIPT"));
     }
 
     #[test]
@@ -547,6 +610,20 @@ mod tests {
             selected.configuration().spec.runtime.scripts["task"],
             "DECLARED_LAST_ACTIVE_SCRIPT"
         );
+        let retained =
+            select_stopped_configuration(&fixture.db, fixture.home.path(), 1, &fixture.guard)
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(selected.source.owner == retained.owner);
+        assert_eq!(selected.source.generation, retained.generation);
+        assert_eq!(selected.source.source, retained.source);
+        let raw = selected.source.source.as_ref().unwrap();
+        assert_eq!(
+            raw.pointer("/runtime/scripts/task").unwrap(),
+            "DECLARED_LAST_ACTIVE_SCRIPT"
+        );
+        assert!(raw.pointer("/runtime/scripts/pending").is_none());
         let Some(ScriptBackingEvidence::Observed { files, .. }) = selected.scripts else {
             panic!("stopped backing unknown")
         };
