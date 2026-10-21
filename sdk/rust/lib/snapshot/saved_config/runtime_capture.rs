@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use microsandbox_protocol::HANDOFF_INIT_AUTO;
 use microsandbox_protocol::init_observation::InitObservation;
 use microsandbox_runtime::retention::ScriptBackingEvidence;
 use microsandbox_types::snapshot::saved_config::{
@@ -252,22 +253,33 @@ impl<'a> RuntimeCaptureSource<'a> {
     /// or requires bindings, just as for active capture; pending is never a restore fallback.
     pub fn pending_input(&self) -> RuntimeCaptureInput<'_> {
         let mut input = self.input();
-        input.init = self.recorded_option(
-            "/init",
-            self.config
-                .spec
-                .init
-                .as_ref()
-                .map(|init| RuntimeCaptureInit::RequestedHandoff {
-                    cmd: &init.cmd,
+        input.init = match (&self.config.spec.init, &self.config.init_provenance) {
+            (
+                Some(init),
+                Some(origin @ (InitProvenance::Auto { .. } | InitProvenance::Path { .. })),
+            ) => {
+                // Image resolution may have replaced `auto` with an executable path.
+                // The validated, value-bound provenance preserves the requested choice.
+                let cmd = if matches!(origin, InitProvenance::Auto { .. }) {
+                    HANDOFF_INIT_AUTO
+                } else {
+                    &init.cmd
+                };
+                configured(Some(RuntimeCaptureInit::RequestedHandoff {
+                    cmd,
                     args: literals(&init.args),
                     env: init
                         .env
                         .iter()
                         .map(|(key, value)| (key.as_str(), self.environment_text(key, value, true)))
                         .collect(),
-                }),
-        );
+                }))
+            }
+            // An explicitly recorded null has unambiguous no-handoff meaning even in
+            // old records. A non-null resolved path alone cannot establish original intent.
+            (None, _) => self.recorded_option("/init", None),
+            _ => unknown(SavedUnknownReason::NotRecorded),
+        };
         input.scripts = if self.recorded.pointer("/runtime/scripts").is_some() {
             configured(Some(
                 self.config

@@ -350,6 +350,24 @@ pub fn project_runtime_capture(
         );
     }
     validate_controls(controls)?;
+    // Pending selectors share the match set with active input. An unknown active
+    // inventory must not let a pending-only match authorize losing full-state backing.
+    if full_state
+        && matches!(
+            active.scripts,
+            Some(SavedValue::Unknown { .. } | SavedValue::Default {})
+        )
+        && controls.iter().any(|(target, action)| {
+            matches!(target, RuntimeCaptureTarget::ScriptKey(_))
+                && matches!(action, RuntimeCaptureAction::Omit)
+        })
+    {
+        return invalid(
+            "SCFG_IDENTITY",
+            "runtime.scripts",
+            "full-state capture cannot omit script backing from an unknown inventory",
+        );
+    }
     let mut projector = Projector {
         controls,
         seen: BTreeSet::new(),

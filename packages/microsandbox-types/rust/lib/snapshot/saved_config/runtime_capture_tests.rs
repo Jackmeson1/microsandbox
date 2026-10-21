@@ -312,6 +312,72 @@ fn invalid_unmatched_and_overlapping_controls_refuse_without_echoing_input() {
 }
 
 #[test]
+fn pending_script_match_cannot_authorize_omission_from_unknown_full_backing() {
+    let controls = BTreeMap::from([(
+        RuntimeCaptureTarget::ScriptKey("task".into()),
+        RuntimeCaptureAction::Omit,
+    )]);
+    for scripts in [
+        Some(SavedValue::Unknown {
+            reason: SavedUnknownReason::NotRecorded,
+        }),
+        Some(SavedValue::Unknown {
+            reason: SavedUnknownReason::NotObserved,
+        }),
+        Some(SavedValue::Default {}),
+    ] {
+        let active = RuntimeCaptureInput {
+            scripts,
+            ..Default::default()
+        };
+        let error = project_runtime_capture(
+            active,
+            Some(ordinary("PRIVATE_PENDING_BODY")),
+            &controls,
+            true,
+        )
+        .err()
+        .expect("pending intent cannot prove active backing absent")
+        .to_string();
+        assert!(error.contains("SCFG_IDENTITY"));
+        assert!(!error.contains("PRIVATE_PENDING_BODY"));
+    }
+    // Known absence still permits sanitizing pending-only content, and disk capture
+    // does not claim to preserve the active runtime share.
+    for (scripts, full) in [
+        (Some(value(BTreeMap::new())), true),
+        (None, true),
+        (
+            Some(SavedValue::Unknown {
+                reason: SavedUnknownReason::NotObserved,
+            }),
+            false,
+        ),
+    ] {
+        let output = project_runtime_capture(
+            RuntimeCaptureInput {
+                scripts,
+                ..Default::default()
+            },
+            Some(ordinary("PRIVATE_PENDING_BODY")),
+            &controls,
+            full,
+        )
+        .unwrap();
+        assert!(
+            output
+                .pending
+                .unwrap()
+                .scripts
+                .unwrap()
+                .value()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
 fn retained_oversized_text_is_rejected_without_echoing_it() {
     let content = "PRIVATE".repeat(MAX_SAVED_SCRIPT_BYTES);
     let error = project_runtime_capture(ordinary(&content), None, &BTreeMap::new(), false)
