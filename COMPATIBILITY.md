@@ -122,6 +122,9 @@ The local SDK configuration now records optional `init_provenance` separately fr
 
 This optional local field changes no catalog schema, launch argument, guest protocol or cloud request. Released readers ignore the extra field and may discard it when writing; supported runtime capability selection still gates private retention. Missing evidence remains unknown. Portable init projection and activation remain required within PR3; this local provenance record is not an archive format or an activation switch.
 
+
+The local SDK's optional host-private `command_provenance` records the runtime CMD and the reusable CMD that preceded a detached invocation. It does not change the effective command, restart behavior, launch/guest protocol, or cloud request. Older configurations without this evidence, and records whose command was changed by an older writer, remain unknown during reconstruction; an explicit new CMD or complete creation spec establishes a new declaration. The reconstruction guard is not serialized. Capture checks the hint against the independently retained raw source, and error/Debug output does not expose argv. This is private source evidence only: it does not emit portable configuration or replay ancestor invocations. Portable inclusion still requires the agreed exclusion, binding and security controls.
+
 ## 3. Local Agent IPC and Relay Routing
 
 Unix clients and runtimes recognize canonical hashed socket paths, legacy flat hashed paths, and an older deep sandbox path. Windows uses named pipes derived from the legacy hash. The runtime publishes compatibility symlinks where safe and must not overwrite a live endpoint.

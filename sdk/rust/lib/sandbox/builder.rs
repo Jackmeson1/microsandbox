@@ -157,6 +157,14 @@ impl SandboxBuilder {
             // Even an explicit same-path replacement ends inherited auto-selection intent.
             patch.init_provenance = Some(InitProvenance::from_init(Some(init)));
         }
+        if patch.spec.runtime.cmd.is_some() {
+            // A caller explicitly re-declares CMD, even when equal to an earlier invocation.
+            self.config.command_provenance = None;
+            self.config.command_provenance_unknown = Some(false);
+            if self.config.launch_cmd_before_override.is_some() {
+                self.config.launch_cmd_before_override = Some(patch.spec.runtime.cmd.clone());
+            }
+        }
         self.config.overlay_mut(patch);
         self
     }
@@ -176,6 +184,8 @@ impl SandboxBuilder {
             .map_err(|e| MicrosandboxError::InvalidConfig(e.to_string()))?;
         let mut builder = Self::from(SandboxConfig::from(spec));
         builder.config.http_defaults_implicit = Some(implicit_http);
+        // This API accepts an explicit new task declaration, not a retained sandbox record.
+        builder.config.command_provenance_unknown = Some(false);
         Ok(builder)
     }
 
@@ -710,7 +720,13 @@ impl SandboxBuilder {
     /// An empty array clears the image CMD. This describes durable configuration and does not
     /// execute the command during sandbox creation.
     pub fn cmd(mut self, cmd: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.config.spec.runtime.cmd = Some(cmd.into_iter().map(Into::into).collect());
+        let cmd = cmd.into_iter().map(Into::into).collect::<Vec<_>>();
+        self.config.command_provenance = None;
+        self.config.command_provenance_unknown = Some(false);
+        if self.config.launch_cmd_before_override.is_some() {
+            self.config.launch_cmd_before_override = Some(Some(cmd.clone()));
+        }
+        self.config.spec.runtime.cmd = Some(cmd);
         self
     }
 
@@ -2740,6 +2756,10 @@ fn wrap_config_script(shell: Option<&str>, body: &str) -> String {
 
 impl From<SandboxConfig> for SandboxBuilder {
     fn from(mut config: SandboxConfig) -> Self {
+        config.command_provenance_unknown = config
+            .command_provenance
+            .as_ref()
+            .is_none_or(|origin| !origin.matches(&config.spec.runtime.cmd));
         let env = std::mem::take(&mut config.spec.env);
         let shell = config.spec.runtime.shell.take();
         let log_level = config.spec.runtime.log_level.take();

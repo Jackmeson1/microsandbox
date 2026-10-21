@@ -13,6 +13,7 @@ mod builder;
 pub(crate) use builder::prepare_local_snapshot_restore;
 #[cfg(feature = "cloud")]
 mod cloud;
+pub(crate) mod command_provenance;
 mod compact;
 pub(crate) mod config;
 #[cfg(test)]

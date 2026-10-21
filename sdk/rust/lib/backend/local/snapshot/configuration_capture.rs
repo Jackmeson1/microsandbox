@@ -74,6 +74,19 @@ impl CapturedSandboxConfiguration {
             scripts,
             init,
         };
+        if let Some(origin) = &captured.configuration.command_provenance
+            && (!origin.matches(&captured.configuration.spec.runtime.cmd)
+                || captured
+                    .source
+                    .source
+                    .as_ref()
+                    .and_then(|source| source.pointer("/runtime/cmd"))
+                    .is_none())
+        {
+            return Err(invalid(
+                "captured command provenance contradicts its source configuration",
+            ));
+        }
         captured.validate_init_observation()?;
         captured.validate_script_inventory()?;
         Ok(Some(captured))
@@ -993,5 +1006,30 @@ mod tests {
         let error = fixture.select().await.err().unwrap().to_string();
         assert!(error.contains("could not select stopped capture configuration"));
         assert!(!error.contains("PRIVATE_BAD_RECEIPT"));
+    }
+    #[test]
+    fn captured_command_origin_requires_matching_raw_configuration() {
+        let fixture = Fixture::new();
+        let mut valid = fixture.value.clone();
+        valid["source"]["source"]["runtime"]["cmd"] = serde_json::json!(["one-shot"]);
+        valid["source"]["source"]["command_provenance"] = serde_json::json!({
+            "configured": ["one-shot"], "defaults": ["configured-default"]
+        });
+        let captured = fixture.read(&valid).unwrap().unwrap();
+        assert_eq!(
+            captured.configuration.command_provenance.unwrap().defaults,
+            Some(vec!["configured-default".into()])
+        );
+        let mut changed = valid.clone();
+        changed["source"]["source"]["runtime"]["cmd"] = serde_json::json!(["private-mismatch"]);
+        let error = fixture.read(&changed).err().unwrap().to_string();
+        assert!(error.contains("command provenance"));
+        assert!(!error.contains("private-mismatch"));
+        valid["source"]["source"]["runtime"]
+            .as_object_mut()
+            .unwrap()
+            .remove("cmd");
+        valid["source"]["source"]["command_provenance"]["configured"] = serde_json::Value::Null;
+        assert!(fixture.read(&valid).is_err());
     }
 }
