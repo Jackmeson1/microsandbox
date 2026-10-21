@@ -714,3 +714,7 @@ Full capture projection retains this metadata, while disk capture does not turn 
 ## Capture projection preserves unknown backing and init intent
 
 The unshipped projector rejects a full-state script-key omission when the active inventory is unknown/default, even when the selector matches pending intent. A known absent active key can still be omitted from pending content; disk capture retains its existing omission behavior. Pending init projection uses validated private provenance to distinguish original `auto` intent from the image-resolved executable path. A non-null init without provenance remains unknown; an explicitly recorded null still means no handoff. These repairs affect gated preparation only, without changing existing launch/restore routing, released protocols, catalogs or emitted artifacts.
+
+## Registered script link relationships
+
+The optional private script observer now reports unavailable evidence for registered files with multiple hard links. Captured names, bytes and permissions alone cannot reproduce shared inode identity, so new saved-config preparation must not certify such backing. Existing disk/full capture operations retain their success/error contract and use the existing unknown-evidence representation; no protocol, receipt, catalog or archive fields change. This is a conservative evidence check, not a complete runtime-share closure validator or an enablement of portable capture/activation.

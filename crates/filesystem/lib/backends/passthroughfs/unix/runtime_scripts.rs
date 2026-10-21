@@ -116,7 +116,7 @@ impl PassthroughFs {
 impl CapturedRuntimeScripts {
     /// Observe exact registered backing below an already pinned runtime directory.
     ///
-    /// No source configuration text is reread. Symlinks, special files, invalid UTF-8,
+    /// No source configuration text is reread. Symlinks, hard links, special files, invalid UTF-8,
     /// unsupported guest mode bits and oversized observations refuse with redacted errors.
     /// Empty registration is known empty; it is not permission to omit captured open files.
     pub fn capture(
@@ -514,6 +514,15 @@ fn observe_file(directory: &Dir, name: &str, max_bytes: usize) -> io::Result<Scr
         return Err(error(
             "SCFG_BACKING",
             "registered backing is not a regular file",
+        ));
+    }
+    // Portable scripts are recreated as independent files. Even an alias outside
+    // this directory changes link counts and write visibility after reconstruction;
+    // equal bytes and permissions cannot establish that inode relationship.
+    if before.nlink() != 1 {
+        return Err(error(
+            "SCFG_BACKING",
+            "registered backing has unsupported link relationships",
         ));
     }
     let metadata = guest_metadata(&file)?;

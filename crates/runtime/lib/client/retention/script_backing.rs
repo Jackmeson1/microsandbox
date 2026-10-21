@@ -281,6 +281,36 @@ mod tests {
     }
 
     #[test]
+    fn linked_backing_is_unknown_without_changing_capture_result_contract() {
+        for link_after_observation in [false, true] {
+            let (home, root) = fixture();
+            let file = home.path().join("scripts/task");
+            fs::write(&file, "PRIVATE_BODY").unwrap();
+            let alias = home.path().join("PRIVATE_ALIAS");
+            if !link_after_observation {
+                fs::hard_link(&file, &alias).unwrap();
+            }
+            let observed = ScriptBackingObservation::observe(Some(&root), Some(&source()));
+            if link_after_observation {
+                fs::hard_link(&file, &alias).unwrap();
+            }
+            // Only the optional backing evidence becomes unavailable. Its existing
+            // representation contains neither script contents nor the alias pathname.
+            let evidence = observed.finish();
+            let expected = if link_after_observation {
+                ScriptBackingUnknown::Changed
+            } else {
+                ScriptBackingUnknown::Unreadable
+            };
+            assert!(
+                matches!(evidence, ScriptBackingEvidence::Unknown { reason } if reason == expected)
+            );
+            let encoded = serde_json::to_string(&evidence).unwrap();
+            assert!(!encoded.contains("PRIVATE") && !encoded.contains("declared"));
+        }
+    }
+
+    #[test]
     fn symlink_and_missing_backing_do_not_read_or_reuse_declared_content() {
         let (home, root) = fixture();
         let outside = tempfile::NamedTempFile::new().unwrap();
