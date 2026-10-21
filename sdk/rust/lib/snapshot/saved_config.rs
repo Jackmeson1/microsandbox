@@ -30,6 +30,12 @@ mod listeners;
 mod network_assembly;
 #[cfg(test)]
 mod network_assembly_tests;
+#[cfg(feature = "local")]
+mod network_capture;
+#[cfg(feature = "local")]
+mod network_capture_presence;
+#[cfg(all(test, feature = "local"))]
+mod network_capture_tests;
 mod network_inputs;
 mod network_policy;
 #[cfg(test)]
@@ -102,6 +108,8 @@ pub use listeners::{
     prepare_listener_configuration, select_listener_inputs,
 };
 pub use network_assembly::{NetworkPolicyConfigurationPlan, prepare_network_policy_configuration};
+#[cfg(feature = "local")]
+pub use network_capture::{NetworkCaptureBindings, NetworkCaptureControls, ProxyCaptureBindings};
 pub use network_policy::{
     DestinationNetworkBaseline, NetworkPolicyApproval, NetworkPolicyClear, NetworkPolicySelection,
     select_network_policy_defaults,
