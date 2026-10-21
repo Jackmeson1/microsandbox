@@ -1,4 +1,6 @@
-use microsandbox::sandbox::{LogLevel as RustLogLevel, RestoreBuilder, SecurityProfile};
+use microsandbox::sandbox::{
+    LogLevel as RustLogLevel, PullPolicy, RestoreBuilder, SecurityProfile,
+};
 use microsandbox::size::Mebibytes;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -53,6 +55,23 @@ impl JsRestoreBuilder {
     pub fn name(&mut self, name: String) -> Result<&Self> {
         let inner = self.take_inner()?;
         self.inner = Some(inner.name(name));
+        Ok(self)
+    }
+
+    /// Control retrieval of the snapshot's pinned base image without replacing it.
+    #[napi(js_name = "pullPolicy")]
+    pub fn pull_policy(&mut self, policy: String) -> Result<&Self> {
+        let policy = match policy.as_str() {
+            "always" => PullPolicy::Always,
+            "if-missing" => PullPolicy::IfMissing,
+            "never" => PullPolicy::Never,
+            other => {
+                return Err(napi::Error::from_reason(format!(
+                    "invalid pull policy `{other}`"
+                )));
+            }
+        };
+        self.inner = Some(self.take_inner()?.pull_policy(policy));
         Ok(self)
     }
 

@@ -399,3 +399,14 @@ func TestRestoreProxyKeepsDestinationCredentialReference(t *testing.T) {
 		t.Fatal("omitted destination proxy must remain absent")
 	}
 }
+
+func TestRestorePullPolicyPreservesExistingValues(t *testing.T) {
+	for _, policy := range []PullPolicy{PullPolicyDefault, PullPolicyAlways, PullPolicyIfMissing, PullPolicyNever} {
+		var options RestoreConfig
+		WithRestorePullPolicy(policy)(&options)
+		wire := buildFFIRestoreOptions("saved", options)
+		if wire.PullPolicy != string(policy) || wire.Snapshot != "saved" {
+			t.Fatal("pull policy changed the snapshot selection")
+		}
+	}
+}

@@ -591,6 +591,26 @@ mod tests {
 
     #[tokio::test]
     async fn pending_snapshot_publication_roots_survive_prune_until_abandoned() {
+        #[cfg(unix)]
+        if std::env::var_os("MSB_TEST_PENDING_PUBLICATION_PRUNE").is_none() {
+            // A parallel fork may retain the publisher's descriptor until exec. Keep
+            // this immediate post-drop reclamation assertion in its own process,
+            // just like the busy-image fixture; do not weaken production lock safety.
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "image::cleanup::tests::pending_snapshot_publication_roots_survive_prune_until_abandoned",
+                    "--nocapture",
+                ])
+                .env("MSB_TEST_PENDING_PUBLICATION_PRUNE", "1")
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "isolated publication prune test failed: {status}"
+            );
+            return;
+        }
         use sea_orm::Set;
         let home = tempfile::tempdir().unwrap();
         let local = local(home.path()).await;

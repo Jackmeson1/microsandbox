@@ -25,7 +25,7 @@ func TestRestoreBootOptionsPreserveOmissionAndCancellation(t *testing.T) {
 	cancel()
 	hostname := "child"
 	cpus, memory := uint8(0), uint32(0)
-	for _, options := range []RestoreOptions{{Proxy: &OutboundProxyOptions{Protocol: "socks5", Address: "127.0.0.1:1080"}}, {Init: &InitOptions{Cmd: "auto"}}, {Hostname: &hostname}, {MaxCPUs: &cpus}, {MaxMemoryMiB: &memory}} {
+	for _, options := range []RestoreOptions{{PullPolicy: "never"}, {Proxy: &OutboundProxyOptions{Protocol: "socks5", Address: "127.0.0.1:1080"}}, {Init: &InitOptions{Cmd: "auto"}}, {Hostname: &hostname}, {MaxCPUs: &cpus}, {MaxMemoryMiB: &memory}} {
 		if err := CheckRestoreBootOptions(ctx, options); !errors.Is(err, context.Canceled) {
 			t.Fatalf("lost cancellation: %v", err)
 		}

@@ -226,6 +226,21 @@ pub(crate) fn restore_builder_from_args(
     restore_builder_from_reference(snapshot, name, kwargs)
 }
 
+fn parse_pull_policy(value: &Bound<'_, PyAny>) -> PyResult<PullPolicy> {
+    let pp = extract_str_enum(value, "PullPolicy")?;
+    let policy = match pp.as_str() {
+        "always" => PullPolicy::Always,
+        "if-missing" => PullPolicy::IfMissing,
+        "never" => PullPolicy::Never,
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "invalid pull_policy: {pp}. Expected: always, if-missing, never"
+            )));
+        }
+    };
+    Ok(policy)
+}
+
 fn apply_outbound_proxy<B: ProxyDestination>(
     mut builder: B,
     proxy: &Bound<'_, PyAny>,
@@ -321,6 +336,7 @@ pub(crate) fn restore_builder_from_reference(
             "max_cpus",
             "max_memory",
             "network_policy",
+            "pull_policy",
             "proxy",
             "max_connections",
             "max_tcp_connections",
@@ -385,6 +401,9 @@ pub(crate) fn restore_builder_from_reference(
     }
     if let Some(proxy) = kwargs.get_item("proxy")?.filter(|v| !v.is_none()) {
         builder = apply_outbound_proxy(builder, &proxy)?;
+    }
+    if let Some(value) = kwargs.get_item("pull_policy")?.filter(|v| !v.is_none()) {
+        builder = builder.pull_policy(parse_pull_policy(&value)?);
     }
     let legacy = extract_opt::<usize>(kwargs, "max_connections")?;
     let tcp = extract_opt::<usize>(kwargs, "max_tcp_connections")?;
@@ -769,20 +788,8 @@ pub fn sandbox_builder_from_args(
         }
     }
 
-    // Pull policy.
-    if let Some(pp_obj) = kwargs.get_item("pull_policy")?.filter(|v| !v.is_none()) {
-        let pp = extract_str_enum(&pp_obj, "PullPolicy")?;
-        let policy = match pp.as_str() {
-            "always" => PullPolicy::Always,
-            "if-missing" => PullPolicy::IfMissing,
-            "never" => PullPolicy::Never,
-            _ => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "invalid pull_policy: {pp}. Expected: always, if-missing, never"
-                )));
-            }
-        };
-        builder = builder.pull_policy(policy);
+    if let Some(value) = kwargs.get_item("pull_policy")?.filter(|v| !v.is_none()) {
+        builder = builder.pull_policy(parse_pull_policy(&value)?);
     }
 
     // Log level.

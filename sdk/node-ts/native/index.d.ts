@@ -817,6 +817,8 @@ export declare class RestoreBuilder {
   constructor(snapshot: string, referenceKind?: string | undefined | null)
   /** Choose the destination sandbox name. */
   name(name: string): this
+  /** Control retrieval of the snapshot's pinned base image without replacing it. */
+  pullPolicy(policy: string): this
   /** Set the destination proxy before boot or resume, preserving captured guest identity. */
   proxy(configure: (arg: OutboundProxyBuilder) => HttpConnectProxyBuilder | Socks4ProxyBuilder | Socks5ProxyBuilder): this
   /** Set destination CPUs; full execution restore requires the captured count. */

@@ -20,6 +20,7 @@ use super::{
 #[serde(deny_unknown_fields)]
 pub(super) struct RestoreOptions {
     snapshot: String,
+    pull_policy: Option<String>,
     snapshot_reference_kind: Option<String>,
     cpus: Option<u8>,
     memory_mib: Option<u32>,
@@ -121,6 +122,9 @@ pub(super) fn builder(name: String, opts: &RestoreOptions) -> Result<RestoreBuil
     }
     if let Some(hostname) = &opts.hostname {
         builder = builder.hostname(hostname);
+    }
+    if let Some(policy) = &opts.pull_policy {
+        builder = builder.pull_policy(super::parse_pull_policy(policy)?);
     }
     if let Some(proxy) = opts.proxy.clone() {
         if proxy.protocol != "socks5"
@@ -295,6 +299,22 @@ pub unsafe extern "C" fn msb_sandbox_restore(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn restore_pull_policy_reuses_existing_parser_before_dispatch() {
+        for value in ["always", "if-missing", "if_missing", "never"] {
+            let options: RestoreOptions = serde_json::from_value(
+                serde_json::json!({"snapshot":"saved", "pull_policy":value}),
+            )
+            .unwrap();
+            assert!(builder("child".into(), &options).is_ok());
+        }
+        let invalid: RestoreOptions = serde_json::from_value(
+            serde_json::json!({"snapshot":"saved", "pull_policy":"invalid"}),
+        )
+        .unwrap();
+        assert!(builder("child".into(), &invalid).is_err());
+    }
+
     #[test]
     fn restore_guest_clock_preserves_explicit_policy_and_omission() {
         for (value, expected) in [
