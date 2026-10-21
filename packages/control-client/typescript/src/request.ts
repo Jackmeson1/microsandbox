@@ -111,14 +111,18 @@ abstract class GenerationTwoRequest<T> implements CompatibleControlRequest<T> {
 
 export class CreateCheckpoint extends GenerationTwoRequest<CheckpointResult> {
   readonly value: CheckpointCreate;
+  get requiresConfigurationCapture(): boolean { return this.value.retain_configuration === true; }
   constructor(value: CheckpointCreate) {
     super();
     const intent = value.intent;
     if (intent !== "full_snapshot" && intent !== "park" && intent !== "transparent_transfer") throw new WireError("invalid_record");
     this.value = {
+      ...(value.retain_configuration === undefined ? {} : { retain_configuration: bool(value.retain_configuration) }),
       ...(value.guest_flush === undefined ? {} : { guest_flush: guestFlush(value.guest_flush) }),
       record_integrity: bool(value.record_integrity), checkpoint_id: text(value.checkpoint_id), intent,
     };
+    // Freeze the new contract only; legacy callers retain their existing prepared-value API.
+    if (value.retain_configuration !== undefined) Object.freeze(this.value);
   }
   message(): EncodedMessage { return encodedMessage("control.checkpoint.create", encodeRecord(compact(this.value))); }
   decode(frame: InboundFrame): CheckpointResult {
@@ -141,12 +145,16 @@ export class CreateCheckpoint extends GenerationTwoRequest<CheckpointResult> {
 
 export class CreateDiskCheckpoint extends GenerationTwoRequest<DiskCheckpointState> {
   readonly value: DiskCheckpointCreate;
+  get requiresConfigurationCapture(): boolean { return this.value.retain_configuration === true; }
   constructor(value: DiskCheckpointCreate) {
     super();
     this.value = {
+      ...(value.retain_configuration === undefined ? {} : { retain_configuration: bool(value.retain_configuration) }),
       ...(value.guest_flush === undefined ? {} : { guest_flush: guestFlush(value.guest_flush) }),
       checkpoint_id: text(value.checkpoint_id),
     };
+    // Freeze the new contract only; legacy callers retain their existing prepared-value API.
+    if (value.retain_configuration !== undefined) Object.freeze(this.value);
   }
   message(): EncodedMessage { return encodedMessage("control.disk.checkpoint.create", encodeRecord(compact(this.value))); }
   decode(frame: InboundFrame): DiskCheckpointState {

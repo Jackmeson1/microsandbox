@@ -29,6 +29,7 @@ export type ControlWelcome = {
 };
 export type Capabilities = { root_disk_grow?: boolean; cpu_resize: boolean; memory_resize: boolean; secrets_update: boolean };
 export type RuntimeCapabilities = Capabilities & {
+  configuration_capture?: boolean;
   guest_flush_policy?: boolean; optional_disk_integrity?: boolean; branch_create?: boolean;
   branch_memfd?: boolean; pause_resume?: boolean; disk_compact?: boolean;
   disk_compact_owned?: boolean; checkpoint_create?: boolean; disk_checkpoint_create?: boolean;
@@ -50,17 +51,22 @@ export type SecretsResult =
   | { outcome: "failed"; applied_count: number; failed_index: number; error: ControlError };
 export type GuestFlush = "auto" | "required" | "skip";
 export type CheckpointCaptureIntent = "full_snapshot" | "park" | "transparent_transfer";
+/** Digest-only reference to private capture evidence; never portable configuration. */
+export type ConfigurationCaptureReceipt = { sha256: string };
 export type CheckpointCreate = {
+  retain_configuration?: boolean;
   guest_flush?: GuestFlush; record_integrity: boolean; checkpoint_id: string;
   intent: CheckpointCaptureIntent;
 };
 export type CheckpointState = {
+  configuration?: ConfigurationCaptureReceipt;
   checkpoint_id: string; checkpoint_root: string; path: string; memory_mode: string;
   memory_logical_bytes: bigint; memory_emitted_bytes: bigint;
 };
 export type CheckpointResult = { checkpoint?: CheckpointState; recovery_error?: string };
-export type DiskCheckpointCreate = { guest_flush?: GuestFlush; checkpoint_id: string };
+export type DiskCheckpointCreate = { retain_configuration?: boolean; guest_flush?: GuestFlush; checkpoint_id: string };
 export type DiskCheckpointState = {
+  configuration?: ConfigurationCaptureReceipt;
   checkpoint_id: string; path: string; disk: unknown; owned_volumes: readonly unknown[];
 };
 export type BranchCreate = {
@@ -158,6 +164,7 @@ export function decodeRuntimeCapabilities(bytes: Uint8Array): RuntimeCapabilitie
   const fields = readRecord(bytes);
   const optional = (name: string): boolean => fields.has(name) ? readBool(required(fields, name)) : false;
   return {
+    configuration_capture: optional("configuration_capture"),
     root_disk_grow: optional("root_disk_grow"), guest_flush_policy: optional("guest_flush_policy"),
     optional_disk_integrity: optional("optional_disk_integrity"), branch_create: optional("branch_create"),
     branch_memfd: optional("branch_memfd"), pause_resume: optional("pause_resume"),
@@ -213,6 +220,7 @@ export function decodeCheckpointResult(bytes: Uint8Array): CheckpointResult {
   if (fields.has("checkpoint")) {
     const checkpoint = readRecord(required(fields, "checkpoint"));
     result.checkpoint = {
+      ...(checkpoint.has("configuration") ? { configuration: { sha256: text(readRecord(required(checkpoint, "configuration")), "sha256") } } : {}),
       checkpoint_id: text(checkpoint, "checkpoint_id"), checkpoint_root: text(checkpoint, "checkpoint_root"),
       path: text(checkpoint, "path"), memory_mode: text(checkpoint, "memory_mode"),
       memory_logical_bytes: readUint(required(checkpoint, "memory_logical_bytes"), 64),
@@ -231,6 +239,7 @@ export function decodeDiskCheckpointState(bytes: Uint8Array, decoded?: unknown):
     throw new WireError("invalid_record");
   }
   return {
+    ...(fields.has("configuration") ? { configuration: { sha256: text(readRecord(required(fields, "configuration")), "sha256") } } : {}),
     checkpoint_id: text(fields, "checkpoint_id"), path: text(fields, "path"),
     disk: value.disk, owned_volumes: value.owned_volumes ?? [],
   };

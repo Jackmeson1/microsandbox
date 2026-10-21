@@ -51,6 +51,7 @@ fn secrets_update_round_trips_through_json() {
 #[test]
 fn checkpoint_request_round_trips_through_json() {
     let request = ControlRequest::CheckpointCreate {
+        retain_configuration: None,
         guest_flush: None,
         record_integrity: false,
         checkpoint_id: "checkpoint_0123456789abcdef".into(),
@@ -67,6 +68,7 @@ fn checkpoint_request_round_trips_through_json() {
     assert!(matches!(
         parsed,
         ControlRequest::CheckpointCreate {
+            retain_configuration: None,
             guest_flush: None,
             record_integrity: false,
             checkpoint_id,
@@ -78,6 +80,7 @@ fn checkpoint_request_round_trips_through_json() {
 #[test]
 fn disk_only_capture_has_a_distinct_wire_operation() {
     let request = ControlRequest::DiskCheckpointCreate {
+        retain_configuration: None,
         guest_flush: None,
         checkpoint_id: "disk_test".into(),
     };
@@ -87,7 +90,7 @@ fn disk_only_capture_has_a_distinct_wire_operation() {
         "disk_checkpoint_create"
     );
     assert!(
-        matches!(serde_json::from_str::<ControlRequest>(&json).unwrap(), ControlRequest::DiskCheckpointCreate { checkpoint_id, guest_flush: None } if checkpoint_id == "disk_test")
+        matches!(serde_json::from_str::<ControlRequest>(&json).unwrap(), ControlRequest::DiskCheckpointCreate { checkpoint_id, guest_flush: None, .. } if checkpoint_id == "disk_test")
     );
     // An older runtime's capability response cannot accidentally opt into this operation.
     let old: ControlCapabilities = serde_json::from_str(r#"{"cpu_resize":false,"memory_resize":false,"secrets_update":false,"checkpoint_create":true}"#).unwrap();
@@ -129,6 +132,7 @@ fn capabilities_response_serializes_flags() {
     let response = ControlResponse {
         ok: true,
         capabilities: Some(ControlCapabilities {
+            configuration_capture: true,
             guest_flush_policy: true,
             optional_disk_integrity: true,
             branch_memfd: false,

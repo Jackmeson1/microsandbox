@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+#[path = "retention/capture.rs"]
+mod capture;
+
 #[path = "retention/live.rs"]
 mod live;
 
@@ -1005,5 +1008,8 @@ mod tests {
 // Re-Exports
 //--------------------------------------------------------------------------------------------------
 
+#[cfg(feature = "runner")]
+pub(crate) use capture::ConfigurationCaptureContext;
+pub use capture::{CapturedConfiguration, disk_configuration_root};
 pub use live::LiveConfigurationSelection;
 pub use selection::select_stopped_configuration;

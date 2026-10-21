@@ -28,6 +28,7 @@ use super::additional_disk::RuntimeOwnedAdditionalDisk;
 use super::capture_pipeline::{MEMORY_OBJECT_PACK_SIZE, MemoryObjectSink};
 use super::disk::RuntimeOwnedRootDisk;
 use super::local_memory::{LocalMemoryCapture, LocalMemoryPin};
+use crate::retention::ConfigurationCaptureContext;
 use crate::runner::workload_control::{InputGate, WorkloadControl};
 use crate::vm::VmConfig;
 
@@ -80,6 +81,7 @@ pub(crate) struct CheckpointCoordinator {
 /// Published checkpoint identity returned to the control executor.
 #[derive(Clone, Debug)]
 pub(crate) struct CheckpointResult {
+    pub(crate) configuration: Option<microsandbox_protocol::control::ConfigurationCaptureReceipt>,
     pub(crate) checkpoint_id: String,
     pub(crate) checkpoint_root: String,
     pub(crate) path: PathBuf,
@@ -509,6 +511,7 @@ impl CheckpointCoordinator {
         checkpoint_id: &str,
         user_pause: Option<&UserPause>,
         guest_flush: Option<microsandbox_types::GuestFlush>,
+        configuration: Option<&ConfigurationCaptureContext<'_>>,
     ) -> Result<crate::control::DiskCheckpointControlState, super::disk::RootDiskRolloverError>
     {
         use super::disk::RootDiskRolloverError as Failure;
@@ -587,6 +590,10 @@ impl CheckpointCoordinator {
         // Keep every owned provider quiesced until all bytes are sealed. No RAM scan or
         // execution serialization is needed for this cold-boot storage artifact.
         let result: Result<_, Failure> = (|| {
+            let selected_configuration = configuration
+                .map(|context| self.runtime.block_on(context.observe()))
+                .transpose()
+                .map_err(Failure::pre_rebind)?;
             if !self.owned_directories.is_empty() {
                 std::fs::create_dir_all(path.join("owned")).map_err(Failure::pre_rebind)?;
             }
@@ -631,7 +638,15 @@ impl CheckpointCoordinator {
                     data,
                 });
             }
-            Ok((captured, owned_volumes))
+            let configuration_receipt = selected_configuration
+                .map(|observation| {
+                    let root = crate::retention::disk_configuration_root(&captured.manifest)?;
+                    self.runtime
+                        .block_on(observation.prepare(checkpoint_id, &root))
+                })
+                .transpose()
+                .map_err(Failure::pre_rebind)?;
+            Ok((captured, owned_volumes, configuration_receipt))
         })();
         for directory in self.owned_directories.values() {
             let _ = directory.cancel_capture();
@@ -647,11 +662,12 @@ impl CheckpointCoordinator {
         }
         let pause_us = paused_at.elapsed().as_micros();
         match result {
-            Ok((captured, owned_volumes)) => {
+            Ok((captured, owned_volumes, configuration_receipt)) => {
                 tracing::info!(target: "microsandbox_checkpoint_timing", operation = "capture_disk",
                     checkpoint_id, source_already_paused = user_pause.is_some(), pause_us,
                     total_us = started.elapsed().as_micros(), "disk-only checkpoint timing");
                 Ok(crate::control::DiskCheckpointControlState {
+                    configuration: configuration_receipt.map(|receipt| receipt.publish()),
                     checkpoint_id: checkpoint_id.into(),
                     path,
                     disk: captured.manifest,
@@ -668,6 +684,7 @@ impl CheckpointCoordinator {
     }
 
     /// Capture a same-epoch full checkpoint while preserving prior execution state.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn capture(
         &mut self,
         vm: &msb_krun::VmControl,
@@ -676,6 +693,7 @@ impl CheckpointCoordinator {
         user_pause: Option<&UserPause>,
         record_integrity: bool,
         guest_flush: Option<microsandbox_types::GuestFlush>,
+        configuration: Option<&ConfigurationCaptureContext<'_>>,
     ) -> Result<CheckpointResult, CheckpointFailure> {
         self.capture_to(
             vm,
@@ -686,6 +704,7 @@ impl CheckpointCoordinator {
             None,
             record_integrity,
             guest_flush,
+            configuration,
         )
     }
 
@@ -759,6 +778,7 @@ impl CheckpointCoordinator {
             memory_backing,
             record_integrity,
             guest_flush,
+            None,
         )
     }
 
@@ -774,6 +794,7 @@ impl CheckpointCoordinator {
         _memory_backing: Option<&std::fs::File>,
         record_integrity: bool,
         guest_flush: Option<microsandbox_types::GuestFlush>,
+        configuration: Option<&ConfigurationCaptureContext<'_>>,
     ) -> Result<CheckpointResult, CheckpointFailure> {
         // All RAM captures pass through this executor-owned method. Consume the construction
         // handoff before either durable or local capture can publish a newer token. Dirty
@@ -957,6 +978,7 @@ impl CheckpointCoordinator {
             local_destination.is_some(),
             prepared_local_memory,
             record_integrity,
+            configuration,
         );
         let paused_capture_us = paused_capture_started.elapsed().as_micros();
         for directory in self.owned_directories.values() {
@@ -1366,7 +1388,12 @@ impl CheckpointCoordinator {
         local: bool,
         prepared_local_memory: Option<LocalMemoryCapture>,
         record_integrity: bool,
+        configuration: Option<&ConfigurationCaptureContext<'_>>,
     ) -> Result<PausedCapture, CheckpointFailure> {
+        let selected_configuration = configuration
+            .map(|context| self.runtime.block_on(context.observe()))
+            .transpose()
+            .map_err(CheckpointFailure::resumable)?;
         let mut timings = PausedCaptureTimings::default();
         let batch = Arc::new(CaptureObjectBatch::new(
             self.store.clone(),
@@ -1678,6 +1705,7 @@ impl CheckpointCoordinator {
             };
             return Ok(PausedCapture {
                 result: CheckpointResult {
+                    configuration: None,
                     checkpoint_id: checkpoint_id.into(),
                     checkpoint_root: String::new(),
                     path: final_path.into(),
@@ -1844,6 +1872,20 @@ impl CheckpointCoordinator {
         timings.object_linked_bytes = object_stats.linked_bytes;
         timings.object_copied_bytes = object_stats.copied_bytes;
         timings.object_directory_syncs = object_stats.directory_syncs;
+        let configuration_receipt = match selected_configuration
+            .map(|observation| {
+                self.runtime.block_on(
+                    observation.prepare(checkpoint_id, &format!("full:{checkpoint_root}")),
+                )
+            })
+            .transpose()
+        {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                let _ = vm.abandon_memory_capture(&memory_plan);
+                return Err(CheckpointFailure::resumable(error));
+            }
+        };
         if let Err(error) = publish_root_last(staging, final_path, &checkpoint_bytes) {
             let _ = vm.abandon_memory_capture(&memory_plan);
             return Err(CheckpointFailure::resumable(error));
@@ -1852,6 +1894,7 @@ impl CheckpointCoordinator {
 
         Ok(PausedCapture {
             result: CheckpointResult {
+                configuration: configuration_receipt.map(|receipt| receipt.publish()),
                 checkpoint_id: checkpoint_id.into(),
                 checkpoint_root: checkpoint_root.to_string(),
                 path: final_path.to_path_buf(),

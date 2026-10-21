@@ -37,6 +37,7 @@ pub struct RuntimeControlExecutor {
     #[cfg(feature = "net")]
     secrets: Option<microsandbox_network::secrets::handle::SecretsHandle>,
     state: Mutex<ExecutorState>,
+    retention_db: microsandbox_db::DbWriteConnection,
 }
 
 struct ExecutorState {
@@ -82,6 +83,7 @@ impl RuntimeControlExecutor {
             microsandbox_filesystem::OwnedDirectoryCheckpoint,
         >,
         retention: crate::retention::RetentionJournal,
+        retention_db: microsandbox_db::DbWriteConnection,
     ) -> Result<Self, String> {
         let runtime_boot_id = retention.record().owner.runtime_boot_id.clone();
         let jobs = crate::runner::jobs::JobManager::open(
@@ -105,6 +107,7 @@ impl RuntimeControlExecutor {
         )?;
         checkpoint.inherit_local_memory(inherited_memory);
         Ok(Self {
+            retention_db,
             signal_runtime: runtime.clone(),
             signal_workload: std::sync::Arc::clone(&workload_control),
             jobs,
@@ -440,15 +443,23 @@ impl RuntimeControlExecutor {
         };
         let response = match request {
             ControlRequest::DiskCheckpointCreate {
+                retain_configuration,
                 checkpoint_id,
                 guest_flush,
             } => {
                 state.lifecycle = RuntimeLifecycle::Quiescing;
+                let configuration = retain_configuration.unwrap_or(false).then(|| {
+                    crate::retention::ConfigurationCaptureContext::new(
+                        &state.retention,
+                        &self.retention_db,
+                    )
+                });
                 match state.checkpoint.capture_disk(
                     &self.vm,
                     &checkpoint_id,
                     state.user_pause.as_ref(),
                     guest_flush,
+                    configuration.as_ref(),
                 ) {
                     Ok(result) => {
                         state.lifecycle = if state.user_pause.is_some() {
@@ -615,12 +626,19 @@ impl RuntimeControlExecutor {
                 }
             }
             ControlRequest::CheckpointCreate {
+                retain_configuration,
                 guest_flush,
                 checkpoint_id,
                 intent,
                 record_integrity,
             } => {
                 state.lifecycle = RuntimeLifecycle::Quiescing;
+                let configuration = retain_configuration.unwrap_or(false).then(|| {
+                    crate::retention::ConfigurationCaptureContext::new(
+                        &state.retention,
+                        &self.retention_db,
+                    )
+                });
                 match state.checkpoint.capture(
                     &self.vm,
                     &checkpoint_id,
@@ -638,6 +656,7 @@ impl RuntimeControlExecutor {
                     state.user_pause.as_ref(),
                     record_integrity,
                     guest_flush,
+                    configuration.as_ref(),
                 ) {
                     Ok(result) => {
                         state.lifecycle = if state.user_pause.is_some() {
@@ -765,6 +784,7 @@ impl RuntimeControlExecutor {
                 control_protocols: Some(vec!["json".into(), "cbor".into()]),
                 ok: true,
                 capabilities: Some(ControlCapabilities {
+                    configuration_capture: true,
                     cpu_resize: self.vm.cpu_resize_supported(),
                     memory_resize: self.vm.memory_resize_supported(),
                     secrets_update: self.secrets_update_supported(),
@@ -980,6 +1000,7 @@ fn checkpoint_response(
     error: Option<String>,
 ) -> ControlResponse {
     let checkpoint = result.map(|result| CheckpointControlState {
+        configuration: result.configuration,
         checkpoint_id: result.checkpoint_id,
         checkpoint_root: result.checkpoint_root,
         path: result.path,

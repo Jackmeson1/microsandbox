@@ -37,6 +37,12 @@ pub trait CheckedControlRequest: Request<ControlProtocol, Error = ControlClientE
 /// implementation. Generation-two requests implement it directly without expanding the released
 /// generation-one [`ControlRequest`] enum.
 pub trait CompatibleControlRequest: Request<ControlProtocol, Error = ControlClientError> {
+    /// Whether this request requires checkpoint-bound private configuration evidence.
+    /// Checked transports must establish this capability before sending mutation bytes.
+    fn requires_configuration_capture(&self) -> bool {
+        false
+    }
+
     /// First framed-control generation that defines this operation.
     fn min_generation(&self) -> u8;
     /// Encode the exact historical JSON request without a trailing newline.

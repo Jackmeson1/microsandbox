@@ -1208,6 +1208,7 @@ fn run(
                 .and_then(|agent| agent.inherited_memory.take()),
             owned_directory_checkpoints,
             retention,
+            db.clone(),
         );
         let context = super::control::ControlContext {
             executor: match executor {
