@@ -1,12 +1,13 @@
 //! Portable guest mount and IPC requirements, never executable source-host bindings.
 
+use serde::{Deserialize, Serialize};
+
 use super::value::deserialize_present;
 use super::{SavedBindingReference, SavedValue};
 use crate::{
     DiskImageFormat, HostPermissions, MountOptions, OwnedVolumeStorage, StatVirtualization,
     VsockSocketType,
 };
-use serde::{Deserialize, Serialize};
 
 //--------------------------------------------------------------------------------------------------
 // Types
