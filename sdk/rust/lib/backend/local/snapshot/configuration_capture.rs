@@ -4,10 +4,11 @@ use std::{path::PathBuf, sync::Arc};
 
 use microsandbox_db::DbWriteConnection;
 use microsandbox_protocol::control::ConfigurationCaptureReceipt;
+use microsandbox_protocol::init_observation::InitObservation;
 use microsandbox_runtime::ipc::SandboxLifecycleGuard;
 use microsandbox_runtime::retention::{
     CapturedConfiguration, RetainedConfiguration, RetentionOwner, ScriptBackingEvidence,
-    select_stopped_configuration,
+    read_retained_init, select_stopped_configuration,
 };
 
 use microsandbox_types::snapshot::saved_config::{
@@ -33,6 +34,7 @@ pub(crate) struct CapturedSandboxConfiguration {
     source: RetainedConfiguration,
     configuration: SandboxConfig,
     scripts: Option<ScriptBackingEvidence>,
+    init: Option<InitObservation>,
 }
 
 /// No Debug or serialization: the eventual receipt can contain private local configuration.
@@ -50,6 +52,7 @@ pub(crate) struct StoppedConfigurationCapture {
     guard: Arc<SandboxLifecycleGuard>,
     source: Option<RetainedConfiguration>,
     scripts: StoppedScriptObservation,
+    init: Option<InitObservation>,
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -60,6 +63,7 @@ impl CapturedSandboxConfiguration {
     fn new(
         source: RetainedConfiguration,
         scripts: Option<ScriptBackingEvidence>,
+        init: Option<InitObservation>,
     ) -> MicrosandboxResult<Option<Self>> {
         let Some(configuration) = decode_configuration(source.source.as_ref())? else {
             return Ok(None);
@@ -68,13 +72,48 @@ impl CapturedSandboxConfiguration {
             source,
             configuration,
             scripts,
+            init,
         };
+        captured.validate_init_observation()?;
         captured.validate_script_inventory()?;
         Ok(Some(captured))
     }
 
     pub(crate) fn configuration(&self) -> &SandboxConfig {
         &self.configuration
+    }
+
+    fn validate_init_observation(&self) -> MicrosandboxResult<()> {
+        let Some(observed) = &self.init else {
+            return Ok(());
+        };
+        let recorded = self
+            .source
+            .source
+            .as_ref()
+            .and_then(|source| source.get("init"));
+        let consistent = match observed {
+            InitObservation::Builtin => recorded.is_none_or(serde_json::Value::is_null),
+            InitObservation::Handoff { path } => {
+                // Guest paths remain guest paths; never resolve them on the host. Preserve
+                // the preflighted spelling, including a symlink such as /sbin/init.
+                !path.is_empty()
+                    && !path.contains('\0')
+                    && path.len() <= 4096
+                    && path != "auto"
+                    && recorded.is_none_or(|init| {
+                        init.get("cmd")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|cmd| cmd == "auto" || cmd == path)
+                    })
+            }
+        };
+        if !consistent {
+            return Err(invalid(
+                "captured init observation contradicts its source configuration",
+            ));
+        }
+        Ok(())
     }
 
     fn validate_script_inventory(&self) -> MicrosandboxResult<()> {
@@ -170,6 +209,7 @@ impl ExpectedConfigurationCapture {
         let captured =
             CapturedConfiguration::read(&self.directory, checkpoint_id, capture_root, receipt)
                 .map_err(|_| invalid("invalid checkpoint configuration receipt"))?;
+        let init = captured.init().cloned();
         let (source, scripts) = captured.into_parts();
         let Some(source) = source else {
             return Ok(None);
@@ -188,7 +228,7 @@ impl ExpectedConfigurationCapture {
                 "checkpoint configuration belongs to another source run",
             ));
         }
-        CapturedSandboxConfiguration::new(source, scripts)
+        CapturedSandboxConfiguration::new(source, scripts, init)
     }
 }
 
@@ -205,8 +245,15 @@ impl StoppedConfigurationCapture {
         let configuration =
             decode_configuration(source.as_ref().and_then(|source| source.source.as_ref()))?;
         let scripts = StoppedScriptObservation::observe(&directory, configuration.as_ref());
+        let init = source
+            .as_ref()
+            .map(|source| read_retained_init(&directory, source))
+            .transpose()
+            .map_err(|_| invalid("could not read stopped init evidence"))?
+            .flatten();
         Ok(Self {
             scripts,
+            init,
             db,
             directory,
             sandbox_id,
@@ -244,9 +291,18 @@ impl StoppedConfigurationCapture {
                 "configuration evidence changed during stopped capture",
             ));
         }
+        let current_init = current
+            .as_ref()
+            .map(|source| read_retained_init(&self.directory, source))
+            .transpose()
+            .map_err(|_| invalid("could not revalidate stopped init evidence"))?
+            .flatten();
+        if self.init != current_init {
+            return Err(invalid("init evidence changed during stopped capture"));
+        }
         let scripts = self.scripts.finish();
         match self.source {
-            Some(source) => CapturedSandboxConfiguration::new(source, Some(scripts)),
+            Some(source) => CapturedSandboxConfiguration::new(source, Some(scripts), self.init),
             None => Ok(None),
         }
     }
@@ -359,6 +415,38 @@ mod tests {
             selected.configuration().spec.runtime.user.as_deref(),
             Some("captured-user")
         );
+    }
+
+    #[test]
+    fn init_receipt_preserves_selection_and_rejects_contradictions_without_values() {
+        let fixture = Fixture::new();
+        let mut value = fixture.value.clone();
+        assert!(fixture.read(&value).unwrap().unwrap().init.is_none());
+        value["init"] = serde_json::json!({"kind":"builtin"});
+        assert_eq!(
+            fixture.read(&value).unwrap().unwrap().init,
+            Some(InitObservation::Builtin)
+        );
+        for choice in ["auto", "/sbin/init"] {
+            value["source"]["source"]["init"] =
+                serde_json::json!({"cmd":choice,"args":[],"env":[]});
+            value["init"] = serde_json::json!({"kind":"handoff","path":"/sbin/init"});
+            let selected = fixture.read(&value).unwrap().unwrap();
+            assert_eq!(
+                selected.init,
+                Some(InitObservation::Handoff {
+                    path: "/sbin/init".into()
+                })
+            );
+            // Resolved selection never rewrites the original source intent.
+            assert_eq!(selected.source.source.unwrap()["init"]["cmd"], choice);
+        }
+        value["source"]["source"]["init"]["cmd"] = serde_json::json!("/PRIVATE_OTHER_INIT");
+        let error = fixture.read(&value).err().unwrap().to_string();
+        assert!(error.contains("contradicts"));
+        assert!(!error.contains("PRIVATE"));
+        value["init"] = serde_json::json!({"kind":"builtin"});
+        assert!(fixture.read(&value).is_err());
     }
 
     #[test]
@@ -552,6 +640,48 @@ mod tests {
             )
             .await
         }
+    }
+
+    #[tokio::test]
+    async fn stopped_init_uses_owner_bound_selection_and_revalidates_it() {
+        let fixture = StoppedFixture::new().await;
+        let record = microsandbox_runtime::retention::RetentionJournal::read(fixture.home.path())
+            .unwrap()
+            .unwrap();
+        let path = fixture.home.path().join("last-active/init.json");
+        let mut init = serde_json::json!({"schema":1,"owner":record.owner,"start_generation":record.generation,"observation":{"kind":"builtin"}});
+        std::fs::write(&path, serde_json::to_vec(&init).unwrap()).unwrap();
+        fixture
+            .db
+            .execute_unprepared(r#"UPDATE sandbox SET config = '{"init":{"cmd":"/pending-init"}}'"#)
+            .await
+            .unwrap();
+        let selected = fixture
+            .select()
+            .await
+            .unwrap()
+            .finish()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.init, Some(InitObservation::Builtin));
+        let captured = fixture.select().await.unwrap();
+        init["observation"] = serde_json::json!({"kind":"handoff","path":"/PRIVATE_CHANGED_INIT"});
+        std::fs::write(&path, serde_json::to_vec(&init).unwrap()).unwrap();
+        let error = captured.finish().await.err().unwrap().to_string();
+        assert!(error.contains("init evidence changed"));
+        assert!(!error.contains("PRIVATE"));
+        init["owner"]["runtime_boot_id"] = serde_json::json!("stale-boot");
+        std::fs::write(&path, serde_json::to_vec(&init).unwrap()).unwrap();
+        let selected = fixture
+            .select()
+            .await
+            .unwrap()
+            .finish()
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(selected.init.is_none());
     }
 
     #[test]

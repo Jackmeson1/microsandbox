@@ -245,6 +245,23 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(selected.is_some(), expected == "known");
+        if let Ok(expected_init) = std::env::var("MSB_TEST_STOPPED_INIT_EXPECT") {
+            let init = selected
+                .as_ref()
+                .map(|source| {
+                    super::super::read_retained_init(
+                        &home.join(microsandbox_utils::SANDBOXES_SUBDIR).join("rt"),
+                        source,
+                    )
+                })
+                .transpose()
+                .unwrap()
+                .flatten();
+            let expected_init: Option<microsandbox_protocol::init_observation::InitObservation> =
+                serde_json::from_str(&expected_init).expect("expected init observation JSON");
+            assert_eq!(init, expected_init);
+        }
+
         if let Ok(memory) = std::env::var("MSB_TEST_STOPPED_SELECTION_MEMORY") {
             let expected_memory: u64 = memory.parse().unwrap();
             let selected = selected.expect("expected confirmed source");

@@ -12,6 +12,7 @@ use std::io::Write;
 #[cfg(feature = "runner")]
 use microsandbox_db::DbWriteConnection;
 use microsandbox_protocol::control::ConfigurationCaptureReceipt;
+use microsandbox_protocol::init_observation::InitObservation;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -19,7 +20,7 @@ use super::script_backing::ScriptBackingEvidence;
 #[cfg(feature = "runner")]
 use super::script_backing::ScriptBackingObservation;
 #[cfg(feature = "runner")]
-use super::{LiveConfigurationSelection, RetentionJournal};
+use super::{LiveConfigurationSelection, RetentionJournal, read_retained_init};
 use super::{RetainedConfiguration, invalid};
 #[cfg(any(feature = "runner", test))]
 use super::{private_directory, sync_directory};
@@ -47,6 +48,7 @@ pub(crate) struct ConfigurationCaptureObservation<'a> {
     sandbox_directory: &'a Path,
     selected: Option<LiveConfigurationSelection<'a>>,
     scripts: ScriptBackingObservation,
+    init: Option<InitObservation>,
 }
 
 /// Host-private evidence from the checkpoint's paused configuration boundary.
@@ -60,6 +62,8 @@ pub struct CapturedConfiguration {
     source: Option<RetainedConfiguration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     scripts: Option<ScriptBackingEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    init: Option<InitObservation>,
 }
 
 /// Remove an unpublished receipt on error; only checkpoint publication transfers ownership.
@@ -96,13 +100,20 @@ impl<'a> ConfigurationCaptureContext<'a> {
                 .as_ref()
                 .and_then(|selected| selected.configuration().source.as_ref()),
         );
+        let sandbox_directory = self
+            .journal
+            .directory
+            .parent()
+            .ok_or_else(|| invalid("missing capture source directory"))?;
+        let init = selected
+            .as_ref()
+            .map(|selected| read_retained_init(sandbox_directory, selected.configuration()))
+            .transpose()?
+            .flatten();
         Ok(ConfigurationCaptureObservation {
+            init,
             scripts,
-            sandbox_directory: self
-                .journal
-                .directory
-                .parent()
-                .ok_or_else(|| invalid("missing capture source directory"))?,
+            sandbox_directory,
             selected,
         })
     }
@@ -128,11 +139,17 @@ impl ConfigurationCaptureObservation<'_> {
                 .as_ref()
                 .map(LiveConfigurationSelection::configuration),
             Some(self.scripts.finish()),
+            self.init,
         )
     }
 }
 
 impl CapturedConfiguration {
+    /// Guest boot selection bound to this capture, not a portable init default or health check.
+    pub fn init(&self) -> Option<&InitObservation> {
+        self.init.as_ref()
+    }
+
     /// Actual registered-file evidence, distinct from declared scripts in the source config.
     /// This private record is not portable config or proof of full-state handle compatibility.
     pub fn scripts(&self) -> Option<&ScriptBackingEvidence> {
@@ -206,6 +223,7 @@ impl PreparedConfigurationReceipt {
         capture_root: &str,
         source: Option<&RetainedConfiguration>,
         scripts: Option<ScriptBackingEvidence>,
+        init: Option<InitObservation>,
     ) -> io::Result<Self> {
         let path = receipt_path(sandbox_directory, checkpoint_id)?;
         let parent = sandbox_directory.join("last-active");
@@ -219,6 +237,7 @@ impl PreparedConfigurationReceipt {
             capture_root: capture_root.into(),
             source: source.cloned(),
             scripts,
+            init,
         };
         let bytes = serde_json::to_vec(&record)
             .map_err(|_| invalid("could not encode configuration capture"))?;
@@ -340,6 +359,7 @@ mod tests {
             "full:root",
             Some(&source),
             None,
+            Some(InitObservation::Builtin),
         )
         .unwrap();
         let receipt = prepared.publish();
@@ -347,6 +367,15 @@ mod tests {
             CapturedConfiguration::read(home.path(), "checkpoint_one", "full:root", &receipt)
                 .unwrap();
         assert_eq!(read.source().unwrap().generation, 3);
+        assert_eq!(read.init(), Some(&InitObservation::Builtin));
+        // Later mutable runtime state cannot replace evidence sealed into this capture digest.
+        std::fs::write(home.path().join("last-active/init.json"), b"new runtime").unwrap();
+        assert_eq!(
+            CapturedConfiguration::read(home.path(), "checkpoint_one", "full:root", &receipt)
+                .unwrap()
+                .init(),
+            Some(&InitObservation::Builtin)
+        );
         assert!(
             CapturedConfiguration::read(home.path(), "checkpoint_one", "other:root", &receipt)
                 .is_err()
@@ -356,6 +385,7 @@ mod tests {
                 home.path(),
                 "checkpoint_one",
                 "other:root",
+                None,
                 None,
                 None,
             )
@@ -414,6 +444,7 @@ mod tests {
             "full:root",
             Some(&source()),
             Some(scripts),
+            None,
         )
         .unwrap()
         .publish();
@@ -451,6 +482,7 @@ mod tests {
                 "disk:root",
                 None,
                 None,
+                None,
             )
             .unwrap(),
         );
@@ -465,6 +497,7 @@ mod tests {
             "disk:root",
             None,
             None,
+            None,
         )
         .unwrap()
         .publish();
@@ -476,7 +509,8 @@ mod tests {
         );
         for id in ["", "..", "../state", "a/b", "a\\b"] {
             assert!(
-                PreparedConfigurationReceipt::prepare(home.path(), id, "root", None, None).is_err()
+                PreparedConfigurationReceipt::prepare(home.path(), id, "root", None, None, None)
+                    .is_err()
             );
         }
     }
@@ -489,6 +523,7 @@ mod tests {
             "checkpoint_one",
             "root",
             Some(&source()),
+            None,
             None,
         )
         .unwrap()

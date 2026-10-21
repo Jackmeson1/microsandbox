@@ -15,6 +15,9 @@ use sha2::{Digest, Sha256};
 #[path = "retention/capture.rs"]
 mod capture;
 
+#[path = "retention/init.rs"]
+mod init;
+
 #[path = "retention/live.rs"]
 mod live;
 
@@ -1014,6 +1017,7 @@ mod tests {
 pub use capture::{CapturedConfiguration, disk_configuration_root};
 #[cfg(feature = "runner")]
 pub(crate) use capture::{ConfigurationCaptureContext, PreparedConfigurationReceipt};
+pub use init::read_retained_init;
 pub use live::LiveConfigurationSelection;
 pub use script_backing::{
     CapturedScriptBacking, CapturedScriptDirectory, ScriptBackingEvidence, ScriptBackingUnknown,
