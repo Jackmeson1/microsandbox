@@ -1800,6 +1800,26 @@ mod tests {
 
     #[tokio::test]
     async fn stale_metadata_cannot_resurrect_a_removed_snapshot() {
+        #[cfg(unix)]
+        if std::env::var_os("MSB_TEST_STALE_SNAPSHOT_REMOVAL").is_none() {
+            // Metadata opening briefly holds a reader lease. Other test threads
+            // may fork while it is held and retain it until exec, so construct
+            // this immediate-removal fixture only after entering its own process.
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backend::local::snapshot::store::tests::stale_metadata_cannot_resurrect_a_removed_snapshot",
+                    "--nocapture",
+                ])
+                .env("MSB_TEST_STALE_SNAPSHOT_REMOVAL", "1")
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "isolated stale-metadata fixture failed: {status}"
+            );
+            return;
+        }
         let home = tempfile::tempdir().unwrap();
         let local = crate::test_support::local_backend_builder(home.path())
             .build()
