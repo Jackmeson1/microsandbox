@@ -191,6 +191,45 @@ impl<'a> RuntimeCaptureSource<'a> {
         }
     }
 
+    /// Project only desired next-start runtime intent. Guest observations and materialized
+    /// scripts are deliberately ignored. Missing private env/CMD provenance stays unknown
+    /// or requires bindings, just as for active capture; pending is never a restore fallback.
+    pub fn pending_input(&self) -> RuntimeCaptureInput<'_> {
+        let mut input = self.input();
+        input.init = self.recorded_option(
+            "/init",
+            self.config
+                .spec
+                .init
+                .as_ref()
+                .map(|init| RuntimeCaptureInit::RequestedHandoff {
+                    cmd: &init.cmd,
+                    args: literals(&init.args),
+                    env: init
+                        .env
+                        .iter()
+                        .map(|(key, value)| (key.as_str(), self.environment_text(key, value, true)))
+                        .collect(),
+                }),
+        );
+        input.scripts = if self.recorded.pointer("/runtime/scripts").is_some() {
+            configured(Some(
+                self.config
+                    .spec
+                    .runtime
+                    .scripts
+                    .iter()
+                    .map(|(name, content)| {
+                        (name.as_str(), RuntimeCaptureScript::Declaration(content))
+                    })
+                    .collect(),
+            ))
+        } else {
+            unknown(SavedUnknownReason::NotRecorded)
+        };
+        input
+    }
+
     fn recorded_option<T>(&self, path: &str, value: Option<T>) -> Option<SavedValue<T>> {
         if self.recorded.pointer(path).is_some() {
             configured(value)

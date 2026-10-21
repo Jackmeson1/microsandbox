@@ -519,3 +519,46 @@ fn capture_document_enforces_combined_active_and_pending_script_budget() {
     assert!(document.active.runtime.scripts.is_none());
     assert!(document.pending.as_ref().unwrap().runtime.scripts.is_none());
 }
+
+#[test]
+fn capture_document_assembles_raw_pending_intent_without_active_fallback() {
+    let active_raw = source();
+    let active = RuntimeCaptureSource::from_recorded(&active_raw, None, None).unwrap();
+    let config = SandboxBuilder::new("next-start")
+        .image("alpine")
+        .cmd(["next-default"])
+        .init("auto")
+        .script("next-task", "echo next-start")
+        .finish(None, None)
+        .unwrap();
+    let pending_raw = serde_json::to_value(config.clone_for_persistence()).unwrap();
+    let pending_source = RuntimeCaptureSource::from_recorded(&pending_raw, None, None).unwrap();
+    let descriptor = manifest(false);
+    let controls = Controls::default();
+    let mut request = request(&descriptor, &controls);
+    request.pending = Some(PendingCaptureSections {
+        runtime: pending_source.pending_input(),
+        resources: pending_source.project_pending_resources().unwrap(),
+        network: Default::default(),
+        execution: Default::default(),
+        storage: Default::default(),
+    });
+    let document = active.project_document(request, generation()).unwrap();
+    let encoded = serde_json::to_value(&document).unwrap();
+    assert_eq!(
+        encoded["pending"]["runtime"]["init"]["value"]["cmd"],
+        "auto"
+    );
+    assert_eq!(
+        encoded["pending"]["runtime"]["scripts"]["value"]["next-task"]["kind"],
+        "declaration"
+    );
+    assert_eq!(
+        encoded["pending"]["resources"]["cpus"]["origin"],
+        "configured"
+    );
+    assert_eq!(encoded["active"]["resources"]["cpus"]["origin"], "observed");
+    assert_eq!(encoded["active"]["runtime"]["init"]["state"], "unknown");
+    assert!(document.active.runtime.validate_active().is_ok());
+    assert!(document.pending.unwrap().runtime.validate_active().is_err());
+}

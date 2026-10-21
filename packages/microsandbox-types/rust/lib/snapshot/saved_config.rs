@@ -30,6 +30,8 @@ mod gateway_capture_tests;
 #[cfg(test)]
 mod network_tests;
 #[cfg(test)]
+mod pending_tests;
+#[cfg(test)]
 mod runtime_capture_tests;
 #[cfg(test)]
 mod storage_tests;

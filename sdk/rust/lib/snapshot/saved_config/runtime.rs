@@ -27,7 +27,7 @@ pub fn select_runtime_defaults(
     context: RuntimeSelectionContext,
 ) -> MicrosandboxResult<RuntimeDefaultSelection> {
     saved
-        .validate()
+        .validate_active()
         .map_err(|error| MicrosandboxError::InvalidConfig(error.to_string()))?;
     if context.full_resume && context.starts_command {
         return invalid(

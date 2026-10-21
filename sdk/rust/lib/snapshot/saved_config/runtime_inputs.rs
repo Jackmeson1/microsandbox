@@ -244,6 +244,9 @@ pub fn prepare_runtime_inputs(
         ));
     }
     let saved = &selection.defaults;
+    saved
+        .validate_active()
+        .map_err(|_| error("SCFG_VALUE", "runtime", "invalid active runtime metadata"))?;
     let uses = saved
         .binding_requirements()
         .map_err(|_| error("SCFG_VALUE", "runtime", "invalid selected runtime metadata"))?;
@@ -279,6 +282,11 @@ pub fn prepare_runtime_inputs(
     let env = text_env(saved.env.as_ref(), inputs, &mut budget)?;
     let init = prepare_value(saved.init.as_ref(), |init, missing| match init {
         SavedInit::Builtin {} => Ok(PreparedRuntimeInit::Builtin),
+        SavedInit::RequestedHandoff { .. } => Err(error(
+            "SCFG_IDENTITY",
+            "runtime.init",
+            "pending init cannot be activated as saved state",
+        )),
         SavedInit::Handoff {
             resolved_path,
             args,
@@ -294,6 +302,13 @@ pub fn prepare_runtime_inputs(
         let mut prepared = BTreeMap::new();
         for (name, script) in scripts {
             let (content, mode) = match script {
+                SavedScript::Declaration { .. } => {
+                    return Err(error(
+                        "SCFG_IDENTITY",
+                        "runtime.scripts",
+                        "pending script cannot be activated as saved backing",
+                    ));
+                }
                 SavedScript::Inline { content, mode, .. } => (content.as_str(), *mode),
                 SavedScript::Binding { id } => match inputs.get(id) {
                     Some(input) => (

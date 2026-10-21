@@ -14,7 +14,7 @@ use super::validation::{
     MAX_TEXT_BYTES, binding, count, decode, encoded_size, error, invalid,
 };
 use super::value::deserialize_present;
-use super::{SavedText, SavedValue};
+use super::{SavedOrigin, SavedText, SavedValue};
 
 //--------------------------------------------------------------------------------------------------
 // Types
@@ -99,13 +99,22 @@ pub struct SavedRuntimeConfig {
     pub guest_clock: Option<SavedValue<GuestClockPolicy>>,
 }
 
-/// Active init; builtin is a known choice, not missing historical information.
+/// Init evidence or pending intent; declaration-only variants cannot be active defaults.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SavedInit {
     /// The minimal microsandbox agent/init path, without a handoff executable.
     // Keep this a strict empty record; a tagged unit variant would ignore extras.
     Builtin {},
+    /// Next-start intent only. This does not claim that discovery or handoff happened.
+    RequestedHandoff {
+        /// `auto` or an absolute guest executable, never a host lookup instruction.
+        cmd: String,
+        /// Declared supplemental arguments.
+        args: Vec<SavedText>,
+        /// Declared init environment, with excluded inputs represented by bindings.
+        env: BTreeMap<String, SavedText>,
+    },
     /// A resolved in-guest executable. Auto intent does not mean rediscover on restore.
     Handoff {
         /// Original discovery or explicit-path intent.
@@ -149,6 +158,11 @@ pub enum SavedHostname {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SavedScript {
+    /// Pending source declaration; no materialization, mode or backing digest is claimed.
+    Declaration {
+        /// Declared UTF-8 script, before the normal next-start registration process.
+        content: String,
+    },
     /// Exact normalized bytes, with no second wrapping or host-file read on restore.
     Inline {
         /// UTF-8 body from the registered/materialized script.
@@ -180,7 +194,47 @@ impl SavedRuntimeConfig {
         Ok(config)
     }
 
-    /// Validate typed construction as strictly as decoding, before capture can serialize it.
+    /// Validate an active section before applying overrides, clearing fields or preparing input.
+    /// Pending declarations must never be reinterpreted as observed execution/backing.
+    pub fn validate_active(&self) -> SnapshotManifestResult<()> {
+        self.validate_active_role()?;
+        self.validate()
+    }
+
+    // Role admission must not serialize source values before capture exclusions. Keep this
+    // separate so whole-document validation can also avoid validating the same section twice.
+    pub(super) fn validate_active_role(&self) -> SnapshotManifestResult<()> {
+        if matches!(
+            self.init.as_ref().and_then(SavedValue::value),
+            Some(SavedInit::RequestedHandoff { .. })
+        ) {
+            return invalid(
+                "SCFG_IDENTITY",
+                "active.runtime.init",
+                "pending init declaration is not active evidence",
+            );
+        }
+        if self
+            .scripts
+            .as_ref()
+            .and_then(SavedValue::value)
+            .is_some_and(|scripts| {
+                scripts
+                    .values()
+                    .any(|script| matches!(script, SavedScript::Declaration { .. }))
+            })
+        {
+            return invalid(
+                "SCFG_IDENTITY",
+                "active.runtime.scripts",
+                "pending script declaration is not active backing",
+            );
+        }
+        Ok(())
+    }
+
+    /// Validate active or pending syntax, bounds and references. Active consumers must also
+    /// call `validate_active`; generic validation alone does not authorize use as defaults.
     pub fn validate(&self) -> SnapshotManifestResult<()> {
         encoded_size(self, "active.runtime")?;
         for (field, saved) in [
@@ -223,27 +277,46 @@ impl SavedRuntimeConfig {
                         "script name must be one filename",
                     );
                 }
+                if let SavedScript::Inline { content, .. } | SavedScript::Declaration { content } =
+                    script
+                {
+                    if content.len() > MAX_SAVED_SCRIPT_BYTES {
+                        return invalid(
+                            "SCFG_LIMIT",
+                            "active.runtime.scripts",
+                            "script payload is too large",
+                        );
+                    }
+                    total += content.len();
+                    if total > MAX_SAVED_SCRIPTS_BYTES {
+                        return invalid(
+                            "SCFG_LIMIT",
+                            "active.runtime.scripts",
+                            "combined script payload is too large",
+                        );
+                    }
+                }
                 match script {
+                    SavedScript::Declaration { .. } => {
+                        if !matches!(
+                            self.scripts,
+                            Some(SavedValue::Value {
+                                origin: SavedOrigin::Configured,
+                                ..
+                            })
+                        ) {
+                            return invalid(
+                                "SCFG_VALUE",
+                                "active.runtime.scripts",
+                                "script declaration requires configured origin",
+                            );
+                        }
+                    }
                     SavedScript::Inline {
                         content,
                         mode,
                         digest,
                     } => {
-                        if content.len() > MAX_SAVED_SCRIPT_BYTES {
-                            return invalid(
-                                "SCFG_LIMIT",
-                                "active.runtime.scripts",
-                                "inline script is too large",
-                            );
-                        }
-                        total += content.len();
-                        if total > MAX_SAVED_SCRIPTS_BYTES {
-                            return invalid(
-                                "SCFG_LIMIT",
-                                "active.runtime.scripts",
-                                "combined inline scripts are too large",
-                            );
-                        }
                         if *mode > 0o777 {
                             return invalid(
                                 "SCFG_VALUE",
@@ -265,16 +338,38 @@ impl SavedRuntimeConfig {
                 }
             }
         }
-        if let Some(SavedInit::Handoff {
-            resolved_path,
-            args,
-            env,
-            ..
-        }) = self.init.as_ref().and_then(SavedValue::value)
-        {
-            guest_path(resolved_path, "active.runtime.init.resolved_path")?;
-            texts(args, "active.runtime.init.args")?;
-            environment(env, "active.runtime.init.env")?;
+        match self.init.as_ref().and_then(SavedValue::value) {
+            Some(SavedInit::Handoff {
+                resolved_path,
+                args,
+                env,
+                ..
+            }) => {
+                guest_path(resolved_path, "active.runtime.init.resolved_path")?;
+                texts(args, "active.runtime.init.args")?;
+                environment(env, "active.runtime.init.env")?;
+            }
+            Some(SavedInit::RequestedHandoff { cmd, args, env }) => {
+                if !matches!(
+                    self.init,
+                    Some(SavedValue::Value {
+                        origin: SavedOrigin::Configured,
+                        ..
+                    })
+                ) {
+                    return invalid(
+                        "SCFG_VALUE",
+                        "active.runtime.init",
+                        "init declaration requires configured origin",
+                    );
+                }
+                if cmd != "auto" {
+                    guest_path(cmd, "active.runtime.init.cmd")?;
+                }
+                texts(args, "active.runtime.init.args")?;
+                environment(env, "active.runtime.init.env")?;
+            }
+            Some(SavedInit::Builtin {}) | None => {}
         }
         if let Some(hostname) = self.hostname.as_ref().and_then(SavedValue::value) {
             let (SavedHostname::Explicit { value } | SavedHostname::Generated { value }) = hostname;

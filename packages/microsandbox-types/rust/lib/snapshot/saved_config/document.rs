@@ -121,6 +121,7 @@ impl SavedSandboxConfig {
             );
         }
         self.active.validate()?;
+        self.active.runtime.validate_active_role()?;
         self.active.resources.validate_active_observations()?;
         self.provenance.validate()?;
         let mut uses = collect_binding_uses(&self.active.runtime, &self.active.network)?;
@@ -221,7 +222,8 @@ impl SavedActiveConfig {
                 scripts
                     .values()
                     .map(|script| match script {
-                        SavedScript::Inline { content, .. } => content.len(),
+                        SavedScript::Inline { content, .. }
+                        | SavedScript::Declaration { content } => content.len(),
                         SavedScript::Binding { .. } => 0,
                     })
                     .sum()
