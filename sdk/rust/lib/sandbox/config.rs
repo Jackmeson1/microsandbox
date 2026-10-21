@@ -28,6 +28,7 @@ use crate::config::{
     layers::{BackendConfig, ConfigLayers, Overlay},
 };
 
+use super::init_provenance::InitProvenance;
 use super::types::{MountOptions, RootDisk, RootfsSource, VolumeMount};
 use crate::snapshot::SnapshotReference;
 
@@ -143,6 +144,10 @@ pub struct SandboxConfig {
     /// absent historical HTTP documents are implicit, while concrete HTTP choices stay strict.
     #[serde(default, skip_serializing_if = "http_defaults_are_not_implicit")]
     pub(crate) http_defaults_implicit: Option<bool>,
+    /// Original init selection before SDK image-entrypoint resolution. This local hint is
+    /// not guest observation; older catalogs omit it and must not gain inferred provenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) init_provenance: Option<InitProvenance>,
     /// Protect the installed source while a local restore builder materializes child-owned files.
     #[cfg(feature = "local")]
     #[serde(skip)]
@@ -616,6 +621,15 @@ impl SandboxConfig {
         let max_memory_mib = patch.spec.resources.max_memory_mib;
         patch.apply_to(self);
         self.http_defaults_implicit = Some(http_defaults_implicit);
+        // This is a fresh builder resolution, not deserialization/restart of an old catalog.
+        // A retained valid hint survives builder reconstruction; explicit setters replace it.
+        if self
+            .init_provenance
+            .as_ref()
+            .is_none_or(|origin| !origin.matches(self.spec.init.as_ref()))
+        {
+            self.init_provenance = Some(InitProvenance::from_init(self.spec.init.as_ref()));
+        }
 
         if let Some(config) = backend_config
             && let RootfsSource::Oci(oci) = &mut self.spec.image
@@ -658,6 +672,13 @@ impl SandboxConfig {
     /// transient launch markers and any workload argv routed through an inherited init are removed.
     pub(crate) fn clone_for_persistence(&self) -> Self {
         let mut config = self.clone();
+        if config
+            .init_provenance
+            .as_ref()
+            .is_some_and(|origin| !origin.matches(config.spec.init.as_ref()))
+        {
+            config.init_provenance = None;
+        }
         config.local_restore_paths_resolved = false;
         #[cfg(feature = "local")]
         {
@@ -811,6 +832,11 @@ impl SandboxConfig {
         if init.cmd != HANDOFF_INIT_AUTO {
             return;
         }
+        // A still-literal auto request is positive evidence even when discovery remains in
+        // the guest. Do not infer explicit-path intent when reading an older resolved config.
+        self.init_provenance = Some(InitProvenance::Auto {
+            configured: HANDOFF_INIT_AUTO.into(),
+        });
         let Some(entrypoint) = image_entrypoint else {
             return;
         };
@@ -822,7 +848,14 @@ impl SandboxConfig {
             return;
         };
 
+        // Preserve the literal auto request before replacing the launch spelling. The guest
+        // will independently report which executable it selected; this only records intent.
+        let resolved_origin = InitProvenance::Auto {
+            configured: init_path.to_string(),
+        };
+
         if !inherited_entrypoint {
+            self.init_provenance = Some(resolved_origin);
             let init = self
                 .spec
                 .init
@@ -836,6 +869,7 @@ impl SandboxConfig {
         let Some(entrypoint) = self.spec.runtime.entrypoint.take() else {
             return;
         };
+        self.init_provenance = Some(resolved_origin);
         let mut workload_entrypoint = entrypoint.clone();
         if workload_entrypoint
             .first()
@@ -1177,6 +1211,7 @@ impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
             http_defaults_implicit: None,
+            init_provenance: None,
             spec: SandboxSpec {
                 resources: SandboxResources {
                     cpus: default_cpus(),
@@ -1279,10 +1314,13 @@ mod tests {
             Some(SandboxConfigPatch::from_image(image)),
         );
         config.merge_image_defaults(image);
-        assert_eq!(
-            serde_json::to_value(&layered).unwrap(),
-            serde_json::to_value(&config).unwrap()
-        );
+        // Fresh builder resolution records input provenance; merely merging image defaults
+        // into an older config must not invent it. Compare all pre-existing launch fields.
+        let mut layered = serde_json::to_value(&layered).unwrap();
+        let mut merged = serde_json::to_value(&config).unwrap();
+        layered.as_object_mut().unwrap().remove("init_provenance");
+        merged.as_object_mut().unwrap().remove("init_provenance");
+        assert_eq!(layered, merged);
     }
 
     #[test]
