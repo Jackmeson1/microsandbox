@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--with-mount", action="store_true", help="Also verify omitted mount ownership defaults")
     args = parser.parse_args()
     sys.path.insert(0, str(args.support.resolve()))
-    spec = importlib.util.spec_from_file_location("history", args.support / "historical-snapshots.py")
+    spec = importlib.util.spec_from_file_location("history", args.support / "lifecycle_evidence.py")
     history = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(history)
     history.install_termination_handler()
@@ -138,15 +138,18 @@ def main():
             runner.run("check", "exec", "presence", "--", "sh", "-ec", 'test "$(cat /root/presence-marker)" = retained')
             check_mount("mount-restarted", runner)
             row["status"] = "passed"
-        except Exception as error:
+        except BaseException as error:
             row.update(status="failed", error=str(error), traceback=traceback.format_exc())
+            report["status"] = "failed"
+            if not isinstance(error, Exception):
+                raise
         finally:
-            try:
+            row["cleanup"] = {}
+
+            def collect_pids():
                 pids.update(pid for (pid,) in rows("SELECT pid FROM run") if pid)
-            except sqlite3.Error:
-                pass  # A refusal before catalog creation is reported below as well.
-            row["cleanup"] = history.cleanup(runner, "final", "presence")
-            try:
+
+            def audit():
                 row["remaining_sandboxes"] = rows("SELECT count(*) FROM sandbox")[0][0]
                 row["remaining_live_runs"] = rows("SELECT count(*) FROM run WHERE terminated_at IS NULL")[0][0]
                 row["surviving_pids"] = []
@@ -158,9 +161,8 @@ def main():
                         pass
                 assert row["remaining_sandboxes"] == row["remaining_live_runs"] == 0
                 assert not row["surviving_pids"]
-            except Exception:
-                row.update(status="failed", cleanup_error=traceback.format_exc())
-            (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+            history.finish_saved_evidence(runner, {"presence": row["cleanup"]}, row,
+                                          report, args.output, audit, prepare=collect_pids)
     report["status"] = "passed" if all(row["status"] == "passed" for row in report["cases"]) else "failed"
     (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(report["status"], flush=True)
