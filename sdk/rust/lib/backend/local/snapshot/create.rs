@@ -23,7 +23,7 @@ use crate::{
     SnapshotArtifactKind, SnapshotSourceRecoveryError, UnsupportedReason,
 };
 
-use super::configuration_capture::StoppedConfigurationCapture;
+use super::configuration_capture::{CapturedSandboxConfiguration, StoppedConfigurationCapture};
 use super::{Snapshot, SnapshotArchive, SnapshotConfig};
 
 //--------------------------------------------------------------------------------------------------
@@ -89,7 +89,7 @@ struct SnapshotDiskSource {
 
 struct SnapshotDiskClosure {
     /// Private capture evidence; never copied into portable metadata wholesale.
-    configuration: Option<SandboxConfig>,
+    configuration: Option<CapturedSandboxConfiguration>,
     sources: Vec<SnapshotDiskSource>,
     virtual_size: u64,
     /// A live capture owns immutable runtime staging until artifact publication completes.
@@ -506,7 +506,11 @@ async fn capture_installed(
     )
     .await?;
     let source_configuration = &sandbox_config;
-    let sandbox_config = disk.configuration.as_ref().unwrap_or(source_configuration);
+    let sandbox_config = disk
+        .configuration
+        .as_ref()
+        .map(CapturedSandboxConfiguration::configuration)
+        .unwrap_or(source_configuration);
     if sandbox_config.manifest_digest != source_configuration.manifest_digest
         || oci_reference_string(sandbox_config)? != image_reference
         || snapshot_root_disk(sandbox_config.spec.image.oci_root_disk(), &source_sandbox)?
@@ -853,7 +857,11 @@ pub(super) async fn create_snapshot_archive(
     )
     .await?;
     let source_configuration = &sandbox_config;
-    let sandbox_config = disk.configuration.as_ref().unwrap_or(source_configuration);
+    let sandbox_config = disk
+        .configuration
+        .as_ref()
+        .map(CapturedSandboxConfiguration::configuration)
+        .unwrap_or(source_configuration);
     if sandbox_config.manifest_digest != source_configuration.manifest_digest
         || oci_reference_string(sandbox_config)? != image_reference
         || snapshot_root_disk(sandbox_config.spec.image.oci_root_disk(), &source_sandbox)?
@@ -1090,7 +1098,10 @@ async fn capture_full_snapshot(
             })
             .transpose()?
             .flatten();
-        let sandbox_config = captured_configuration.as_ref().unwrap_or(&sandbox_config);
+        let sandbox_config = captured_configuration
+            .as_ref()
+            .map(CapturedSandboxConfiguration::configuration)
+            .unwrap_or(&sandbox_config);
         // Existing metadata projections can use confirmed source values now. The complete
         // portable projection is separate and must never serialize this private config.
         if sandbox_config.manifest_digest.as_ref() != Some(&manifest_digest)
@@ -1607,8 +1618,7 @@ async fn capture_disk_source(
                     capture_stopped_owned_volumes(&sandbox_dir, staging.path(), mounts)?;
                 disk.capture_root = Some(staging.keep());
             }
-            observer.block_on(selected.finish())?;
-            disk.configuration = configuration;
+            disk.configuration = observer.block_on(selected.finish())?;
             Ok(disk)
         })
         .await
@@ -1646,7 +1656,10 @@ async fn capture_disk_source(
         .transpose()?
         .flatten();
     if let Some(configuration) = &disk.configuration {
-        validate_owned_inventory(&configuration.spec.mounts, &disk.owned_volumes)?;
+        validate_owned_inventory(
+            &configuration.configuration().spec.mounts,
+            &disk.owned_volumes,
+        )?;
     }
     // A live runtime owns the lifecycle lock, not this SDK call. If the source was replaced
     // between lookup and capture, never publish its disk under the original image/config.
