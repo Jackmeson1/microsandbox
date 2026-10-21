@@ -19,6 +19,7 @@ pub(super) mod migration;
 pub(crate) mod publication;
 mod restore;
 mod source;
+mod stopped_script_backing;
 mod store;
 mod verify;
 mod writer;

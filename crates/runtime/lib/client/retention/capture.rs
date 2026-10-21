@@ -139,6 +139,11 @@ impl CapturedConfiguration {
         self.scripts.as_ref()
     }
 
+    /// Consume private evidence without cloning script bodies for the SDK capture pipeline.
+    pub fn into_parts(self) -> (Option<RetainedConfiguration>, Option<ScriptBackingEvidence>) {
+        (self.source, self.scripts)
+    }
+
     /// Local source at capture, or explicit unavailability. This is never a default config.
     pub fn source(&self) -> Option<&RetainedConfiguration> {
         self.source.as_ref()

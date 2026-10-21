@@ -6,16 +6,30 @@ use microsandbox_db::DbWriteConnection;
 use microsandbox_protocol::control::ConfigurationCaptureReceipt;
 use microsandbox_runtime::ipc::SandboxLifecycleGuard;
 use microsandbox_runtime::retention::{
-    CapturedConfiguration, RetainedConfiguration, RetentionOwner, select_stopped_configuration,
+    CapturedConfiguration, RetainedConfiguration, RetentionOwner, ScriptBackingEvidence,
+    select_stopped_configuration,
+};
+
+use microsandbox_types::snapshot::saved_config::{
+    MAX_SAVED_CONFIG_ENTRIES, MAX_SAVED_SCRIPT_BYTES, MAX_SAVED_SCRIPTS_BYTES,
 };
 
 use crate::backend::{ControlSession, LocalBackend};
 use crate::sandbox::SandboxConfig;
 use crate::{MicrosandboxError, MicrosandboxResult};
 
+use super::stopped_script_backing::StoppedScriptObservation;
+
 //--------------------------------------------------------------------------------------------------
 // Types
 //--------------------------------------------------------------------------------------------------
+
+/// Confirmed source and backing retained together through local publication.
+/// No Debug/serialization: portable emission must project and apply exclusions explicitly.
+pub(crate) struct CapturedSandboxConfiguration {
+    configuration: SandboxConfig,
+    scripts: Option<ScriptBackingEvidence>,
+}
 
 /// No Debug or serialization: the eventual receipt can contain private local configuration.
 pub(crate) struct ExpectedConfigurationCapture {
@@ -31,11 +45,68 @@ pub(crate) struct StoppedConfigurationCapture {
     sandbox_id: i32,
     guard: Arc<SandboxLifecycleGuard>,
     source: Option<RetainedConfiguration>,
+    scripts: StoppedScriptObservation,
 }
 
 //--------------------------------------------------------------------------------------------------
 // Methods
 //--------------------------------------------------------------------------------------------------
+
+impl CapturedSandboxConfiguration {
+    fn new(
+        configuration: SandboxConfig,
+        scripts: Option<ScriptBackingEvidence>,
+    ) -> MicrosandboxResult<Self> {
+        let captured = Self {
+            configuration,
+            scripts,
+        };
+        captured.validate_script_inventory()?;
+        Ok(captured)
+    }
+
+    pub(crate) fn configuration(&self) -> &SandboxConfig {
+        &self.configuration
+    }
+
+    fn validate_script_inventory(&self) -> MicrosandboxResult<()> {
+        let Some(ScriptBackingEvidence::Observed {
+            files,
+            runtime_directory,
+            scripts_directory,
+        }) = &self.scripts
+        else {
+            return Ok(());
+        };
+        let expected = &self.configuration.spec.runtime.scripts;
+        // A runtime's claimed inventory must match its confirmed source registration. Body
+        // equality is deliberately not required: the guest can have changed the actual files.
+        if files.len() > MAX_SAVED_CONFIG_ENTRIES
+            || files.keys().ne(expected.keys())
+            || runtime_directory.mode > 0o777
+            || scripts_directory.mode > 0o777
+        {
+            return Err(invalid(
+                "captured script inventory or directory metadata is invalid",
+            ));
+        }
+        let mut total = 0usize;
+        for script in files.values() {
+            if script.mode > 0o777 || script.content.len() > MAX_SAVED_SCRIPT_BYTES {
+                return Err(invalid(
+                    "captured script backing exceeds its representation",
+                ));
+            }
+            total = total
+                .checked_add(script.content.len())
+                .ok_or_else(|| invalid("captured scripts exceed their size bound"))?;
+            if total > MAX_SAVED_SCRIPTS_BYTES {
+                return Err(invalid("captured scripts exceed their size bound"));
+            }
+        }
+        Ok(())
+    }
+}
 
 impl ExpectedConfigurationCapture {
     /// Older peers keep the original request and perform no retention catalog/file reads.
@@ -75,13 +146,14 @@ impl ExpectedConfigurationCapture {
         checkpoint_id: &str,
         capture_root: &str,
         receipt: Option<&ConfigurationCaptureReceipt>,
-    ) -> MicrosandboxResult<Option<SandboxConfig>> {
+    ) -> MicrosandboxResult<Option<CapturedSandboxConfiguration>> {
         let receipt =
             receipt.ok_or_else(|| invalid("runtime omitted requested configuration receipt"))?;
         let captured =
             CapturedConfiguration::read(&self.directory, checkpoint_id, capture_root, receipt)
                 .map_err(|_| invalid("invalid checkpoint configuration receipt"))?;
-        let Some(source) = captured.source() else {
+        let (source, scripts) = captured.into_parts();
+        let Some(source) = source else {
             return Ok(None);
         };
         // The authenticated, run-bound control response supplies the receipt digest and hence
@@ -98,7 +170,9 @@ impl ExpectedConfigurationCapture {
                 "checkpoint configuration belongs to another source run",
             ));
         }
-        decode_configuration(source.source.as_ref())
+        decode_configuration(source.source.as_ref())?
+            .map(|configuration| CapturedSandboxConfiguration::new(configuration, scripts))
+            .transpose()
     }
 }
 
@@ -112,7 +186,11 @@ impl StoppedConfigurationCapture {
         let source = select_stopped_configuration(&db, &directory, sandbox_id, &guard)
             .await
             .map_err(|_| invalid("could not select stopped capture configuration"))?;
+        let configuration =
+            decode_configuration(source.as_ref().and_then(|source| source.source.as_ref()))?;
+        let scripts = StoppedScriptObservation::observe(&directory, configuration.as_ref());
         Ok(Self {
+            scripts,
             db,
             directory,
             sandbox_id,
@@ -131,7 +209,7 @@ impl StoppedConfigurationCapture {
 
     /// Lifecycle ownership excludes a runtime restart, but older metadata writers can still
     /// change catalog provenance. Detect an observed change rather than publishing stale evidence.
-    pub(crate) async fn finish(self) -> MicrosandboxResult<()> {
+    pub(crate) async fn finish(self) -> MicrosandboxResult<Option<CapturedSandboxConfiguration>> {
         let current =
             select_stopped_configuration(&self.db, &self.directory, self.sandbox_id, &self.guard)
                 .await
@@ -150,7 +228,11 @@ impl StoppedConfigurationCapture {
                 "configuration evidence changed during stopped capture",
             ));
         }
-        Ok(())
+        let configuration = self.configuration()?;
+        let scripts = self.scripts.finish();
+        configuration
+            .map(|configuration| CapturedSandboxConfiguration::new(configuration, Some(scripts)))
+            .transpose()
     }
 }
 
@@ -178,6 +260,8 @@ fn invalid(message: &str) -> MicrosandboxError {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use microsandbox_runtime::retention::ScriptBackingUnknown;
     use sea_orm::ConnectionTrait;
     use sha2::{Digest, Sha256};
 
@@ -211,7 +295,10 @@ mod tests {
             Self { home, owner, value }
         }
 
-        fn read(&self, value: &serde_json::Value) -> MicrosandboxResult<Option<SandboxConfig>> {
+        fn read(
+            &self,
+            value: &serde_json::Value,
+        ) -> MicrosandboxResult<Option<CapturedSandboxConfiguration>> {
             let bytes = serde_json::to_vec(value).unwrap();
             std::fs::write(
                 self.home
@@ -252,7 +339,10 @@ mod tests {
         )
         .unwrap();
         let selected = fixture.read(&fixture.value).unwrap().unwrap();
-        assert_eq!(selected.spec.runtime.user.as_deref(), Some("captured-user"));
+        assert_eq!(
+            selected.configuration().spec.runtime.user.as_deref(),
+            Some("captured-user")
+        );
     }
 
     #[test]
@@ -343,6 +433,25 @@ mod tests {
                 .unwrap();
             let mut config = SandboxConfig::default();
             config.spec.runtime.user = Some("last-active-user".into());
+            config
+                .spec
+                .runtime
+                .scripts
+                .insert("task".into(), "DECLARED_LAST_ACTIVE_SCRIPT".into());
+            std::fs::create_dir_all(home.path().join("runtime/scripts")).unwrap();
+            std::fs::write(
+                home.path().join("runtime/scripts/task"),
+                "OBSERVED_LAST_ACTIVE_SCRIPT",
+            )
+            .unwrap();
+            #[cfg(unix)]
+            microsandbox_filesystem::PassthroughFs::set_runtime_backing_permissions(
+                &std::fs::File::open(home.path().join("runtime/scripts/task")).unwrap(),
+                42,
+                43,
+                0o640,
+            )
+            .unwrap();
             let source = serde_json::to_value(config.clone_for_persistence()).unwrap();
             db.execute_raw(Statement::from_sql_and_values(
                 DbBackend::Sqlite,
@@ -379,6 +488,138 @@ mod tests {
                 Arc::clone(&self.guard),
             )
             .await
+        }
+    }
+
+    #[test]
+    fn live_receipt_keeps_observed_backing_separate_and_rejects_forged_inventory() {
+        let fixture = Fixture::new();
+        let mut value = fixture.value.clone();
+        value["source"]["source"]["runtime"]["scripts"] =
+            serde_json::json!({"task": "DECLARED_SOURCE"});
+        value["scripts"] = serde_json::json!({
+            "state": "observed",
+            "runtime_directory": {"uid": 0, "gid": 0, "mode": 493},
+            "scripts_directory": {"uid": 44, "gid": 45, "mode": 456},
+            "files": {"task": {"content": "OBSERVED_BACKING", "uid": 42, "gid": 43, "mode": 416}},
+        });
+        let selected = fixture.read(&value).unwrap().unwrap();
+        assert_eq!(
+            selected.configuration().spec.runtime.scripts["task"],
+            "DECLARED_SOURCE"
+        );
+        let Some(ScriptBackingEvidence::Observed { files, .. }) = selected.scripts else {
+            panic!("discarded observed backing")
+        };
+        assert_eq!(files["task"].content, "OBSERVED_BACKING");
+        assert_eq!(files["task"].mode, 0o640);
+        for invalid_scripts in [
+            serde_json::json!({"PRIVATE_UNREGISTERED": {"content": "PRIVATE_CONTENT", "uid": 0, "gid": 0, "mode": 493}}),
+            serde_json::json!({"task": {"content": "PRIVATE_CONTENT", "uid": 0, "gid": 0, "mode": 4095}}),
+            serde_json::json!({}),
+        ] {
+            let mut invalid = value.clone();
+            invalid["scripts"]["files"] = invalid_scripts;
+            let error = fixture.read(&invalid).err().unwrap().to_string();
+            assert!(!error.contains("PRIVATE"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stopped_script_backing_uses_last_active_inventory_and_observed_bytes() {
+        let fixture = StoppedFixture::new().await;
+        fixture.db.execute_unprepared(r#"UPDATE sandbox SET config = '{"runtime":{"scripts":{"pending":"PRIVATE_PENDING"}}}'"#).await.unwrap();
+        std::fs::write(
+            fixture.home.path().join("runtime/scripts/pending"),
+            "PRIVATE_UNREGISTERED",
+        )
+        .unwrap();
+        let selected = fixture
+            .select()
+            .await
+            .unwrap()
+            .finish()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            selected.configuration().spec.runtime.scripts["task"],
+            "DECLARED_LAST_ACTIVE_SCRIPT"
+        );
+        let Some(ScriptBackingEvidence::Observed { files, .. }) = selected.scripts else {
+            panic!("stopped backing unknown")
+        };
+        assert_eq!(files.len(), 1);
+        assert_eq!(files["task"].content, "OBSERVED_LAST_ACTIVE_SCRIPT");
+        assert_eq!(
+            (files["task"].uid, files["task"].gid, files["task"].mode),
+            (42, 43, 0o640)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stopped_script_mutation_and_runtime_replacement_become_unknown() {
+        for replace_directory in [false, true] {
+            let fixture = StoppedFixture::new().await;
+            let selected = fixture.select().await.unwrap();
+            if replace_directory {
+                std::fs::rename(
+                    fixture.home.path().join("runtime"),
+                    fixture.home.path().join("old-runtime"),
+                )
+                .unwrap();
+                std::fs::create_dir_all(fixture.home.path().join("runtime/scripts")).unwrap();
+            }
+            std::fs::write(
+                fixture.home.path().join("runtime/scripts/task"),
+                "PRIVATE_CHANGED",
+            )
+            .unwrap();
+            let selected = selected.finish().await.unwrap().unwrap();
+            let evidence = selected.scripts.unwrap();
+            assert!(matches!(
+                evidence,
+                ScriptBackingEvidence::Unknown {
+                    reason: ScriptBackingUnknown::Changed
+                }
+            ));
+            assert!(
+                !serde_json::to_string(&evidence)
+                    .unwrap()
+                    .contains("PRIVATE_CHANGED")
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stopped_runtime_symlink_and_missing_backing_are_not_desired_defaults() {
+        for link_runtime in [false, true] {
+            let fixture = StoppedFixture::new().await;
+            std::fs::remove_file(fixture.home.path().join("runtime/scripts/task")).unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            if link_runtime {
+                std::fs::remove_dir_all(fixture.home.path().join("runtime")).unwrap();
+                std::fs::create_dir(outside.path().join("scripts")).unwrap();
+                std::fs::write(outside.path().join("scripts/task"), "PRIVATE_OUTSIDE").unwrap();
+                std::os::unix::fs::symlink(outside.path(), fixture.home.path().join("runtime"))
+                    .unwrap();
+            }
+            let selected = fixture
+                .select()
+                .await
+                .unwrap()
+                .finish()
+                .await
+                .unwrap()
+                .unwrap();
+            let evidence = selected.scripts.unwrap();
+            assert!(matches!(evidence, ScriptBackingEvidence::Unknown { .. }));
+            let encoded = serde_json::to_string(&evidence).unwrap();
+            assert!(!encoded.contains("PRIVATE_OUTSIDE"));
+            assert!(!encoded.contains("DECLARED_LAST_ACTIVE_SCRIPT"));
         }
     }
 
