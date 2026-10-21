@@ -87,6 +87,8 @@ struct SnapshotDiskSource {
 }
 
 struct SnapshotDiskClosure {
+    /// Private capture evidence; never copied into portable metadata wholesale.
+    configuration: Option<SandboxConfig>,
     sources: Vec<SnapshotDiskSource>,
     virtual_size: u64,
     /// A live capture owns immutable runtime staging until artifact publication completes.
@@ -502,6 +504,17 @@ async fn capture_installed(
         guest_flush,
     )
     .await?;
+    let source_configuration = &sandbox_config;
+    let sandbox_config = disk.configuration.as_ref().unwrap_or(source_configuration);
+    if sandbox_config.manifest_digest != source_configuration.manifest_digest
+        || oci_reference_string(sandbox_config)? != image_reference
+        || snapshot_root_disk(sandbox_config.spec.image.oci_root_disk(), &source_sandbox)?
+            != root_disk
+    {
+        return Err(MicrosandboxError::SnapshotIntegrity(
+            "captured configuration disagrees with the selected source image or root disk".into(),
+        ));
+    }
 
     // Stage the artifact in a sibling directory, so a failed create never
     // leaves a partial artifact at the destination (which would poison
@@ -838,6 +851,17 @@ pub(super) async fn create_snapshot_archive(
         guest_flush,
     )
     .await?;
+    let source_configuration = &sandbox_config;
+    let sandbox_config = disk.configuration.as_ref().unwrap_or(source_configuration);
+    if sandbox_config.manifest_digest != source_configuration.manifest_digest
+        || oci_reference_string(sandbox_config)? != image_reference
+        || snapshot_root_disk(sandbox_config.spec.image.oci_root_disk(), &source_sandbox)?
+            != root_disk
+    {
+        return Err(MicrosandboxError::SnapshotIntegrity(
+            "captured configuration disagrees with the selected source image or root disk".into(),
+        ));
+    }
     lineage.validate_source(local, &source_sandbox).await?;
     let integrity_started = Instant::now();
     let integrities = vec![None; disk.sources.len()];
@@ -1052,6 +1076,30 @@ async fn capture_full_snapshot(
         if closure.checkpoint().checkpoint_id != checkpoint_id {
             return Err(MicrosandboxError::SnapshotIntegrity(
                 "runtime checkpoint closure has another capture identity".into(),
+            ));
+        }
+        let captured_configuration = outcome
+            .configuration
+            .map(|expected| {
+                expected.read(
+                    &checkpoint_id,
+                    &format!("full:{}", checkpoint.checkpoint_root),
+                    checkpoint.configuration.as_ref(),
+                )
+            })
+            .transpose()?
+            .flatten();
+        let sandbox_config = captured_configuration.as_ref().unwrap_or(&sandbox_config);
+        // Existing metadata projections can use confirmed source values now. The complete
+        // portable projection is separate and must never serialize this private config.
+        if sandbox_config.manifest_digest.as_ref() != Some(&manifest_digest)
+            || oci_reference_string(sandbox_config)? != image_reference
+            || snapshot_root_disk(sandbox_config.spec.image.oci_root_disk(), source_sandbox)?
+                != root_disk
+        {
+            return Err(MicrosandboxError::SnapshotIntegrity(
+                "captured configuration disagrees with the selected source image or root disk"
+                    .into(),
             ));
         }
         validate_owned_inventory(
@@ -1564,7 +1612,24 @@ async fn capture_disk_source(
             ));
         }
     };
-    let disk = validate_live_disk_capture(captured, &id, expected_path, expected_device, mounts)?;
+    let configuration_root =
+        microsandbox_runtime::retention::disk_configuration_root(&captured.checkpoint.disk)?;
+    let receipt = captured.checkpoint.configuration.clone();
+    let mut disk = validate_live_disk_capture(
+        captured.checkpoint,
+        &id,
+        expected_path,
+        expected_device,
+        mounts,
+    )?;
+    disk.configuration = captured
+        .configuration
+        .map(|expected| expected.read(&id, &configuration_root, receipt.as_ref()))
+        .transpose()?
+        .flatten();
+    if let Some(configuration) = &disk.configuration {
+        validate_owned_inventory(&configuration.spec.mounts, &disk.owned_volumes)?;
+    }
     // A live runtime owns the lifecycle lock, not this SDK call. If the source was replaced
     // between lookup and capture, never publish its disk under the original image/config.
     let current = sandbox_entity::Entity::find()
@@ -1599,6 +1664,7 @@ fn validate_live_disk_capture(
     // Once the runtime response identifies our sealed generation, every later failure must
     // reclaim it. Never adopt a returned locator that failed the operation identity checks.
     let mut capture = SnapshotDiskClosure {
+        configuration: None,
         sources: Vec::new(),
         virtual_size: 0,
         capture_root: Some(expected_path),
@@ -1923,6 +1989,7 @@ fn validate_snapshot_disk_sources(
         }
     }
     Ok(SnapshotDiskClosure {
+        configuration: None,
         sources,
         virtual_size,
         capture_root: None,
@@ -3342,6 +3409,7 @@ mod tests {
         let source = temp.path().join("source.ext4");
         std::fs::write(&source, b"snapshot payload").unwrap();
         let disk = SnapshotDiskClosure {
+            configuration: None,
             capture_root: None,
             owned_volumes: Vec::new(),
             sources: vec![SnapshotDiskSource {
@@ -3617,6 +3685,7 @@ mod tests {
             .await
             .unwrap();
         let disk = SnapshotDiskClosure {
+            configuration: None,
             capture_root: None,
             owned_volumes: Vec::new(),
             sources: vec![

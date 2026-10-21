@@ -55,6 +55,15 @@ impl ControlSession {
         .map_err(|_| Arc::new(ControlClientError::RuntimeChanged))?
     }
 
+    /// Identity selected before dispatch, independent of values in a capture response.
+    pub(crate) fn run_identity(&self) -> crate::sandbox::identity::SandboxRunIdentity {
+        crate::sandbox::identity::SandboxRunIdentity {
+            sandbox_id: self.entry.key.sandbox_id,
+            run_id: self.entry.key.run_id,
+            pid: self.entry.key.pid,
+        }
+    }
+
     /// Whether this retained session belongs to the caller's already selected run generation.
     pub(crate) fn matches_run(&self, run: crate::sandbox::identity::SandboxRunIdentity) -> bool {
         self.entry.key.sandbox_id == run.sandbox_id
