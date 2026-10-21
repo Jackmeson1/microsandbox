@@ -366,8 +366,31 @@ mod tests {
         target.validate(&directory).await.unwrap();
     }
 
+    #[test]
+    fn reservation_is_hidden_and_last_worker_drop_releases_its_name() {
+        // A sibling test can fork while this fixture holds writer admission. Its child
+        // retains the descriptor until exec, so immediate reuse needs process isolation.
+        // Keep every ownership and cleanup assertion in the isolated worker below.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "backend::local::snapshot::group::capture::tests::hidden_reservation_cleanup_worker",
+                "--ignored",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[tokio::test]
-    async fn reservation_is_hidden_and_last_worker_drop_releases_its_name() {
+    #[ignore = "subprocess-only reservation cleanup assertions"]
+    async fn hidden_reservation_cleanup_worker() {
         let root = tempfile::tempdir().unwrap();
         let source = source(&root.path().join("home")).await;
         let directory = root.path().join("snapshots");
