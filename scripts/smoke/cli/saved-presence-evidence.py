@@ -20,6 +20,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("binary", "releases", "agent", "firmware", "image", "support", "output", "temp-root"):
         parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--with-mount", action="store_true", help="Also verify omitted mount ownership defaults")
     args = parser.parse_args()
     sys.path.insert(0, str(args.support.resolve()))
     spec = importlib.util.spec_from_file_location("history", args.support / "historical-snapshots.py")
@@ -58,6 +59,15 @@ def main():
             assert "tls" in evidence["absent_network"], evidence
             assert source["resources"].get("thp") is None
             assert source["network"].get("dns") is None
+            if args.with_mount:
+                assert evidence["default_mount_ownership"] == [{"kind": "tmpfs", "guest": "/presence"}]
+                options = source["mounts"][0]["options"]
+                assert "override_uid" not in options and "override_gid" not in options
+
+        def check_mount(label, cli):
+            if args.with_mount:
+                cli.run(label, "exec", "presence", "--", "sh", "-ec",
+                        "grep -q ' /presence tmpfs ' /proc/mounts; echo writable >/presence/check; test -s /presence/check")
 
         def save_source(label, source):
             fd = os.open(args.output / version / (label + ".json"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -72,9 +82,11 @@ def main():
                 image = json.load(archive.extractfile("manifest.json"))[0]["RepoTags"][0]
             runner.run("create", "create", image, "--name", "presence", "--memory", "256M",
                        "--max-memory", "256M", "--cpus", "1", "--max-cpus",
-                       "1" if version == "v0.6.0" else "2", "--root-disk", "512M", "--max-duration", "5m")
+                       "1" if version == "v0.6.0" else "2", "--root-disk", "512M", "--max-duration", "5m",
+                       *(["--tmpfs", "/presence:16M"] if args.with_mount else []))
             pids.update(pid for (pid,) in rows("SELECT pid FROM run") if pid)
             check_presence(config())
+            check_mount("mount-created", runner)
             runner.run("seed", "exec", "presence", "--", "sh", "-ec", "echo retained >/root/presence-marker; sync")
             if version == "current":
                 first = journal()
@@ -103,6 +115,7 @@ def main():
                 assert journal()["confirmed"]["source"] is None
                 pids.update(pid for (pid,) in rows("SELECT pid FROM run") if pid)
                 old.run("exec-restarted", "exec", "presence", "--", "cat", "/root/presence-marker")
+                check_mount("mount-old-restarted", old)
                 old.run("stop2", "stop", "presence")
                 runner.run("start-after-old", "start", "presence")
                 # A current restart must not promote missing private evidence.
@@ -110,6 +123,7 @@ def main():
                 assert source is not None
                 assert source.get("field_presence", {}).get("thp") is None
                 assert "dns" not in source.get("field_presence", {}).get("absent_network", [])
+                assert not source.get("field_presence", {}).get("default_mount_ownership")
                 save_source("new-after-old-source", source)
                 row["runtime_tracks_old_request_and_old_restart_loses_evidence"] = True
             else:
@@ -122,6 +136,7 @@ def main():
                 row["old_runtime_operations_preserved"] = True
             pids.update(pid for (pid,) in rows("SELECT pid FROM run") if pid)
             runner.run("check", "exec", "presence", "--", "sh", "-ec", 'test "$(cat /root/presence-marker)" = retained')
+            check_mount("mount-restarted", runner)
             row["status"] = "passed"
         except Exception as error:
             row.update(status="failed", error=str(error), traceback=traceback.format_exc())

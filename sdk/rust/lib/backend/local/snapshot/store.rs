@@ -2103,6 +2103,8 @@ mod tests {
 
     #[tokio::test]
     async fn distinct_child_counts_and_parent_fallback_survive_reindex() {
+        // This checks indexed ancestry, not transient descriptor inheritance from sibling
+        // fork tests. The shared helper retries only an uncommitted busy-reader refusal.
         let home = tempfile::tempdir().unwrap();
         let local = crate::test_support::local_backend_builder(home.path())
             .build()
@@ -2124,13 +2126,15 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|row| row.child_count == 1));
         assert!(
-            remove_snapshot(&local, "first:base", false)
+            after_reader_release(|| remove_snapshot(&local, "first:base", false))
                 .await
                 .unwrap_err()
                 .to_string()
                 .contains("indexed child")
         );
-        remove_snapshot(&local, "first:child", false).await.unwrap();
+        after_reader_release(|| remove_snapshot(&local, "first:child", false))
+            .await
+            .unwrap();
         assert_eq!(
             get_handle(&local, "first").await.unwrap().id(),
             parent.snapshot_id.as_str()
@@ -2142,13 +2146,13 @@ mod tests {
         // A second installed copy of the same child still protects the parent;
         // removing one copy must not reset the distinct-child count to zero.
         assert!(
-            remove_snapshot(&local, "first:base", false)
+            after_reader_release(|| remove_snapshot(&local, "first:base", false))
                 .await
                 .unwrap_err()
                 .to_string()
                 .contains("indexed child")
         );
-        remove_snapshot(&local, "second:child", false)
+        after_reader_release(|| remove_snapshot(&local, "second:child", false))
             .await
             .unwrap();
         let rows = snapshot_entity::Entity::find()
@@ -2157,7 +2161,9 @@ mod tests {
             .await
             .unwrap();
         assert!(rows.iter().all(|row| row.child_count == 0));
-        remove_snapshot(&local, "first:base", false).await.unwrap();
+        after_reader_release(|| remove_snapshot(&local, "first:base", false))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

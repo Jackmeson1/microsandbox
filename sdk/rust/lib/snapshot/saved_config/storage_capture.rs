@@ -72,13 +72,19 @@ impl RuntimeCaptureSource<'_> {
             .get("mounts")
             .and_then(Value::as_array)
             .is_some_and(|mounts| {
-                mounts.iter().all(|raw| {
+                mounts.iter().enumerate().all(|(index, raw)| {
+                    let ownership_known = self.config.spec.mounts.get(index).is_some_and(|mount| {
+                        self.config
+                            .field_presence
+                            .as_ref()
+                            .is_some_and(|presence| presence.knows_default_mount_ownership(mount))
+                    });
                     if manifest.is_none()
                         && raw.get("type").and_then(Value::as_str) == Some("Owned")
                     {
-                        complete_owned_declaration(raw)
+                        complete_owned_declaration(raw, ownership_known)
                     } else {
-                        complete_mount(raw)
+                        complete_mount(raw, ownership_known)
                     }
                 })
             }) {
@@ -176,7 +182,7 @@ impl RuntimeCaptureSource<'_> {
 // Functions
 //--------------------------------------------------------------------------------------------------
 
-fn complete_mount(raw: &Value) -> bool {
+fn complete_mount(raw: &Value, ownership_known: bool) -> bool {
     let Some(kind) = raw.get("type").and_then(Value::as_str) else {
         return false;
     };
@@ -188,19 +194,7 @@ fn complete_mount(raw: &Value) -> bool {
     if kind == "Owned" {
         return true;
     }
-    if !raw.get("options").is_some_and(|options| {
-        fields(
-            options,
-            &[
-                "readonly",
-                "noexec",
-                "nosuid",
-                "nodev",
-                "override_uid",
-                "override_gid",
-            ],
-        )
-    }) {
+    if !complete_options(raw.get("options"), ownership_known) {
         return false;
     }
     match kind {
@@ -227,7 +221,7 @@ fn complete_mount(raw: &Value) -> bool {
     }
 }
 
-fn complete_owned_declaration(raw: &Value) -> bool {
+fn complete_owned_declaration(raw: &Value, ownership_known: bool) -> bool {
     fields(
         raw,
         &[
@@ -236,24 +230,20 @@ fn complete_owned_declaration(raw: &Value) -> bool {
             "stat_virtualization",
             "host_permissions",
         ],
-    ) && raw.get("options").is_some_and(|options| {
-        fields(
-            options,
-            &[
-                "readonly",
-                "noexec",
-                "nosuid",
-                "nodev",
-                "override_uid",
-                "override_gid",
-            ],
-        )
-    }) && raw.get("storage").is_some_and(|storage| {
-        match storage.get("kind").and_then(Value::as_str) {
-            Some("directory") => fields(storage, &["quota_mib"]),
-            Some("disk") => fields(storage, &["capacity_mib"]),
-            _ => false,
-        }
+    ) && complete_options(raw.get("options"), ownership_known)
+        && raw.get("storage").is_some_and(|storage| {
+            match storage.get("kind").and_then(Value::as_str) {
+                Some("directory") => fields(storage, &["quota_mib"]),
+                Some("disk") => fields(storage, &["capacity_mib"]),
+                _ => false,
+            }
+        })
+}
+
+fn complete_options(raw: Option<&Value>, ownership_known: bool) -> bool {
+    raw.is_some_and(|options| {
+        fields(options, &["readonly", "noexec", "nosuid", "nodev"])
+            && (ownership_known || fields(options, &["override_uid", "override_gid"]))
     })
 }
 

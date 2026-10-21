@@ -168,6 +168,11 @@ impl SandboxBuilder {
         }
         // Reconstruction patches are evidence, not new declarations of omitted defaults.
         let mut presence = self.config.field_presence.take().unwrap_or_default();
+        if patch.spec.mounts.is_some() {
+            // Mount lists replace rather than merge. A historical replacement must not
+            // inherit evidence from a different list merely because guest paths coincide.
+            presence.clear_mounts();
+        }
         if let Some(supplied) = patch.field_presence.take() {
             presence.overlay(supplied);
         }
@@ -400,6 +405,10 @@ impl SandboxBuilder {
         let mounts = self.config.spec.mounts.get_or_insert_with(Vec::new);
         match configure(MountBuilder::new(guest)).build_restore() {
             Ok(Ok(mount)) => {
+                self.config
+                    .field_presence
+                    .get_or_insert_with(Default::default)
+                    .declare_mount(&mount);
                 let guest = mount.guest();
                 resources.captured.remove(guest);
                 resources.mapped.insert(guest.into());
@@ -1441,6 +1450,10 @@ impl SandboxBuilder {
         }
         match f(MountBuilder::new(guest_path)).build() {
             Ok(mount) => {
+                self.config
+                    .field_presence
+                    .get_or_insert_with(Default::default)
+                    .declare_mount(&mount);
                 self.config.spec.mounts.get_or_insert_default().push(mount);
             }
             Err(e) => {
@@ -1483,6 +1496,10 @@ impl SandboxBuilder {
     /// Add one already-materialized volume mount.
     #[doc(hidden)]
     pub fn add_volume_mount(mut self, mount: VolumeMount) -> Self {
+        self.config
+            .field_presence
+            .get_or_insert_with(Default::default)
+            .declare_mount(&mount);
         self.config.spec.mounts.get_or_insert_default().push(mount);
         self
     }
