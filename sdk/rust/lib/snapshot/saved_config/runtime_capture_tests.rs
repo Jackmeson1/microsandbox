@@ -385,3 +385,66 @@ fn runtime_capture_live_records() {
         assert!(!encoded.contains("digest"));
     }
 }
+
+#[test]
+#[ignore = "requires MSB_RUNTIME_INIT_CAPTURE_FIXTURES from the live init collector"]
+fn runtime_capture_live_init_records() {
+    let directory = std::path::PathBuf::from(
+        std::env::var_os("MSB_RUNTIME_INIT_CAPTURE_FIXTURES").expect("live init fixture directory"),
+    );
+    for case in ["builtin", "explicit", "auto"] {
+        let fixture: Value = serde_json::from_slice(
+            &std::fs::read(directory.join(format!("{case}-source.json"))).unwrap(),
+        )
+        .unwrap();
+        let raw = &fixture["source"];
+        let init: InitObservation = serde_json::from_value(fixture["init"].clone()).unwrap();
+        let source = RuntimeCaptureSource::from_recorded(raw, Some(&init), None).unwrap();
+        let projected =
+            project_runtime_capture(source.input(), None, &BTreeMap::new(), false).unwrap();
+        // Unlike the older-agent fixtures, these captures must positively identify init.
+        // Auto intent survives resolution, but restore must use the captured executable.
+        let saved = projected.active.init.as_ref().unwrap().value().unwrap();
+        match (case, saved) {
+            ("builtin", SavedInit::Builtin {}) => {}
+            (
+                "explicit" | "auto",
+                SavedInit::Handoff {
+                    selection,
+                    resolved_path,
+                    args,
+                    env,
+                },
+            ) => {
+                assert_eq!(resolved_path, "/sbin/init");
+                assert_eq!(
+                    *selection,
+                    if case == "auto" {
+                        SavedInitSelection::Auto
+                    } else {
+                        SavedInitSelection::Path
+                    }
+                );
+                assert!(args.is_empty());
+                // Auto init inherits the image environment; explicit init keeps its
+                // existing supplemental-only environment contract.
+                let expected = if case == "auto" {
+                    BTreeMap::from([(
+                        "PATH".into(),
+                        SavedText::Literal {
+                            value: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                                .into(),
+                        },
+                    )])
+                } else {
+                    BTreeMap::new()
+                };
+                assert_eq!(*env, expected);
+            }
+            _ => panic!("capture did not preserve the selected init"),
+        }
+        let encoded = serde_json::to_string(&projected.active).unwrap();
+        assert!(!encoded.contains("init_provenance"));
+        assert!(!encoded.contains("runtime_boot_id"));
+    }
+}
