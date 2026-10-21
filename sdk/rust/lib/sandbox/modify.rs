@@ -10,6 +10,7 @@ use microsandbox_types::{
 };
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set, sea_query::Expr};
 
+use crate::backend::local::snapshot::configuration_capture::ExpectedConfigurationCapture;
 use crate::backend::{Backend, ControlSession};
 use crate::db::entity::{sandbox as sandbox_entity, sandbox_label as sandbox_label_entity};
 use crate::error::{Operation, UnsupportedReason};
@@ -133,8 +134,15 @@ struct LiveControl {
 
 /// A published runtime checkpoint and the independent outcome of source recovery.
 pub(crate) struct CheckpointCaptureOutcome {
+    pub(crate) configuration: Option<ExpectedConfigurationCapture>,
     pub(crate) checkpoint: microsandbox_protocol::control::CheckpointState,
     pub(crate) recovery_error: Option<String>,
+}
+
+/// A disk generation and its independently selected configuration owner.
+pub(crate) struct DiskCheckpointCaptureOutcome {
+    pub(crate) checkpoint: microsandbox_runtime::control::DiskCheckpointControlState,
+    pub(crate) configuration: Option<ExpectedConfigurationCapture>,
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1142,8 +1150,9 @@ pub(crate) async fn control_checkpoint_create(
             ),
         ));
     }
+    let configuration = ExpectedConfigurationCapture::prepare(local, name, &session).await?;
     let request = microsandbox_protocol::control::CheckpointCreate {
-        retain_configuration: None,
+        retain_configuration: configuration.as_ref().map(|_| true),
         guest_flush: capture_flush_policy(Some(capabilities), guest_flush, false)?,
         record_integrity,
         checkpoint_id,
@@ -1159,7 +1168,9 @@ pub(crate) async fn control_checkpoint_create(
         .request(&CreateCheckpoint(request))
         .await
         .map_err(crate::MicrosandboxError::ControlClient)?;
-    checkpoint_response(response)
+    let mut outcome = checkpoint_response(response)?;
+    outcome.configuration = configuration;
+    Ok(outcome)
 }
 
 fn checkpoint_response(
@@ -1169,6 +1180,7 @@ fn checkpoint_response(
         MicrosandboxError::Runtime("control response omitted checkpoint state".into())
     })?;
     Ok(CheckpointCaptureOutcome {
+        configuration: None,
         checkpoint,
         recovery_error: response.recovery_error,
     })
@@ -1180,7 +1192,7 @@ pub(crate) async fn control_disk_checkpoint_create(
     name: &str,
     checkpoint_id: String,
     guest_flush: microsandbox_types::GuestFlush,
-) -> MicrosandboxResult<microsandbox_runtime::control::DiskCheckpointControlState> {
+) -> MicrosandboxResult<DiskCheckpointCaptureOutcome> {
     let session = local.control_session(name).await?.ok_or_else(|| {
         MicrosandboxError::Runtime("runtime control endpoint is unavailable".into())
     })?;
@@ -1189,8 +1201,9 @@ pub(crate) async fn control_disk_checkpoint_create(
         return Err(MicrosandboxError::unsupported(Operation::SnapshotOps,
             UnsupportedReason::NotAvailable("this runtime does not support live disk-only snapshots; recreate the sandbox with the updated runtime".into())));
     }
+    let configuration = ExpectedConfigurationCapture::prepare(local, name, &session).await?;
     let request = microsandbox_protocol::control::DiskCheckpointCreate {
-        retain_configuration: None,
+        retain_configuration: configuration.as_ref().map(|_| true),
         checkpoint_id,
         guest_flush: capture_flush_policy(Some(capabilities), guest_flush, true)?,
     };
@@ -1198,12 +1211,15 @@ pub(crate) async fn control_disk_checkpoint_create(
         .request(&CreateDiskCheckpoint(request))
         .await
         .map_err(crate::MicrosandboxError::ControlClient)?;
-    Ok(microsandbox_runtime::control::DiskCheckpointControlState {
-        configuration: response.configuration,
-        checkpoint_id: response.checkpoint_id,
-        path: response.path,
-        disk: response.disk,
-        owned_volumes: response.owned_volumes,
+    Ok(DiskCheckpointCaptureOutcome {
+        configuration,
+        checkpoint: microsandbox_runtime::control::DiskCheckpointControlState {
+            configuration: response.configuration,
+            checkpoint_id: response.checkpoint_id,
+            path: response.path,
+            disk: response.disk,
+            owned_volumes: response.owned_volumes,
+        },
     })
 }
 
