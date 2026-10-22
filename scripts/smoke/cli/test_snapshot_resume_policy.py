@@ -55,6 +55,18 @@ class EvidenceTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     smoke.assert_policy(label, observations)
 
+    def test_new_protocol_controls_require_real_http_with_correct_handshake(self):
+        for label in ("http-connect", "socks4", "socks4-user"):
+            expected = "not-required" if label == "http-connect" else "accepted"
+            with self.subTest(protocol=label):
+                for observations in ([], [{"http": False, "authenticated": True}],
+                                     [{"http": True, "authenticated": False}],
+                                     [{"http": True, "authenticated": True, "authentication": "rejected"}]):
+                    with self.assertRaises(RuntimeError):
+                        smoke.assert_policy(label, observations)
+                smoke.assert_policy(label, [{"http": True, "authenticated": True,
+                                             "authentication": expected}])
+
     def test_wrong_credentials_require_observed_rejection(self):
         with self.assertRaises(RuntimeError):
             smoke.assert_policy("wrong-credential", [])
