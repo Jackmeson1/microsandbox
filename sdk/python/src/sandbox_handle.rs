@@ -708,6 +708,7 @@ impl PySandboxHandle {
         let options = crate::snapshot_group::capture_options(
             initial_checkpoint,
             dest_dir,
+            self.inner.backend_kind().as_str() == "local",
             labels,
             full,
             record_integrity,

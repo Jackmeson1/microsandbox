@@ -252,6 +252,7 @@ impl PySandbox {
         let options = crate::snapshot_group::capture_options(
             initial_checkpoint,
             dest_dir,
+            self.local_backend,
             labels,
             full,
             record_integrity,

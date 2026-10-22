@@ -294,12 +294,26 @@ impl JsSnapshotCreateResult {
 //--------------------------------------------------------------------------------------------------
 
 pub(crate) fn capture_options(options: JsSnapshotCaptureOptions) -> Result<SnapshotCaptureOptions> {
+    capture_options_for_backend(options, false)
+}
+
+/// Call before spawning the future. Group checkpoint destinations are fixed by the receiver;
+/// new histories additionally anchor local caller paths without resolving cloud paths here.
+pub(crate) fn capture_options_for_backend(
+    options: JsSnapshotCaptureOptions,
+    local: bool,
+) -> Result<SnapshotCaptureOptions> {
     let mut result = SnapshotCaptureOptions::default();
     if let Some(name) = options.name {
         result = result.name(name);
     }
     if let Some(dest) = options.dest_dir {
-        result = result.dest_dir(dest);
+        let destination = if local {
+            std::path::absolute(dest).map_err(|error| to_napi_error(error.into()))?
+        } else {
+            PathBuf::from(dest)
+        };
+        result = result.dest_dir(destination);
     }
     if options.full.unwrap_or(false) {
         result = result.full();
