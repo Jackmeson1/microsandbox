@@ -182,6 +182,11 @@ impl SandboxBuilder {
         }
         // Reconstruction patches are evidence, not new declarations of omitted defaults.
         let mut presence = self.config.field_presence.take().unwrap_or_default();
+        if patch.field_presence_unknown == Some(true) {
+            // A reconstructed source must bring its own nested-default evidence,
+            // never borrow matching defaults from the destination it replaces.
+            presence.clear_nested_network();
+        }
         if patch.spec.mounts.is_some() {
             // Mount lists replace rather than merge. A historical replacement must not
             // inherit evidence from a different list merely because guest paths coincide.

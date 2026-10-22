@@ -722,3 +722,10 @@ The unshipped projector rejects a full-state script-key omission when the active
 ## Registered script link relationships
 
 The optional private script observer now reports unavailable evidence for registered files with multiple hard links. Captured names, bytes and permissions alone cannot reproduce shared inode identity, so new saved-config preparation must not certify such backing. Existing disk/full capture operations retain their success/error contract and use the existing unknown-evidence representation; no protocol, receipt, catalog or archive fields change. This is a conservative evidence check, not a complete runtime-share closure validator or an enablement of portable capture/activation.
+
+
+### Nested network defaults in private presence evidence
+
+The same optional private hint now records a fixed whitelist of serializer-omitted network defaults: absent HTTP denial messages, no-authentication SOCKS fields, default secret-policy fields, and unlimited rate-limit directions/buckets. Entries certify only absence or an empty value and are checked against the current typed configuration and recorded parent sections before use. Guest secret-placeholder names identify policy entries; credentials, host secret references, endpoints, paths and hashes of private values are not included. Required fields and token-bucket burst values still require explicit recorded evidence.
+
+Missing, changed, malformed or future evidence stays unknown. Reconstructing historical configuration cannot borrow nested evidence from a destination configuration, and explicit proxy replacement establishes only the supplied proxy declaration. Older writers may discard the optional hint without changing ordinary start/modify/restart behavior. Existing run/generation/catalog validation remains required; the hint alone cannot certify active configuration. No catalog schema, runtime protocol, required response, archive extension or portable capture/activation path changes.

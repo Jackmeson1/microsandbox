@@ -15,7 +15,6 @@ use microsandbox_types::{
 use serde_json::Value;
 
 use super::RuntimeCaptureSource;
-use super::network_capture_presence::{complete, complete_field};
 use crate::{MicrosandboxError, MicrosandboxResult};
 
 //--------------------------------------------------------------------------------------------------
@@ -114,6 +113,7 @@ impl RuntimeCaptureSource<'_> {
             recorded_field("dns"),
             "dns",
             dns.as_ref(),
+            self.complete_network_field("dns"),
             !resolvers.is_empty(),
             |source| SavedDnsConfig::from_source(source, resolvers).map_err(manifest_error),
         )?;
@@ -121,6 +121,7 @@ impl RuntimeCaptureSource<'_> {
             recorded_field("tls"),
             "tls",
             tls.as_ref(),
+            self.complete_network_field("tls"),
             tls_bindings.is_some(),
             |source| {
                 let bindings = tls_bindings.unwrap_or_default();
@@ -140,6 +141,7 @@ impl RuntimeCaptureSource<'_> {
             recorded_field("secrets"),
             "secrets",
             secrets.as_ref(),
+            self.complete_network_field("secrets"),
             !secret_bindings.is_empty(),
             |source| {
                 SavedSecretsConfig::from_source(source, &secret_bindings).map_err(manifest_error)
@@ -149,6 +151,7 @@ impl RuntimeCaptureSource<'_> {
             recorded_field("outbound_proxy"),
             "outbound_proxy",
             outbound_proxy.as_ref(),
+            self.complete_network_field("outbound_proxy"),
             proxy_bindings.is_some(),
             |source| {
                 let bindings = proxy_bindings.ok_or_else(|| binding_error("outbound_proxy"))?;
@@ -156,7 +159,7 @@ impl RuntimeCaptureSource<'_> {
                     .map_err(manifest_error)
             },
         )?;
-        let ports = if complete_field(raw, "ports") {
+        let ports = if self.complete_network_field("ports") {
             if ports.len() != listeners.len() {
                 return Err(binding_error("ports"));
             }
@@ -193,6 +196,7 @@ impl RuntimeCaptureSource<'_> {
                 recorded_field("policy"),
                 "policy",
                 policy.as_ref(),
+                self.complete_network_field("policy"),
                 false,
                 |source| Ok(project_policy(source)),
             )?),
@@ -219,6 +223,7 @@ impl RuntimeCaptureSource<'_> {
                 recorded_field("rate_limiter"),
                 "rate_limiter",
                 rate_limiter.as_ref(),
+                self.complete_network_field("rate_limiter"),
                 false,
                 |source| Ok(project_rates(source)),
             )?),
@@ -227,7 +232,7 @@ impl RuntimeCaptureSource<'_> {
             guest_trust: Some(guest_trust),
             http: if controls.omit_http {
                 None
-            } else if complete_field(raw, "http") {
+            } else if self.complete_network_field("http") {
                 Some(configured(project_http(http)))
             } else {
                 Some(unknown())
@@ -247,6 +252,7 @@ fn project_optional<S, T>(
     raw: Option<&Value>,
     field: &str,
     source: Option<&S>,
+    complete: bool,
     supplied: bool,
     project: impl FnOnce(&S) -> MicrosandboxResult<T>,
 ) -> MicrosandboxResult<SavedValue<T>> {
@@ -257,7 +263,7 @@ fn project_optional<S, T>(
             }
             Ok(SavedValue::Default {})
         }
-        Some(value) if complete(value, field) => {
+        Some(_) if complete => {
             let source = source.ok_or_else(|| binding_error(field))?;
             project(source).map(configured)
         }

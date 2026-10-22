@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::mount_presence::DefaultMountOwnership;
+use super::network_presence::NetworkDefault;
 
 //--------------------------------------------------------------------------------------------------
 // Constants
@@ -59,6 +60,8 @@ pub(crate) struct FieldPresence {
     absent_network: BTreeSet<AbsentNetworkField>,
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     default_mount_ownership: BTreeSet<DefaultMountOwnership>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    nested_network: BTreeSet<NetworkDefault>,
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -106,6 +109,7 @@ impl FieldPresence {
         Self {
             thp: Some(spec.resources.thp),
             absent_network,
+            nested_network: NetworkDefault::declared(&spec.network),
             default_mount_ownership: spec
                 .mounts
                 .iter()
@@ -123,6 +127,7 @@ impl FieldPresence {
             self.thp = other.thp;
         }
         self.absent_network.extend(other.absent_network);
+        self.nested_network.extend(other.nested_network);
         self.default_mount_ownership
             .extend(other.default_mount_ownership);
     }
@@ -158,6 +163,19 @@ impl FieldPresence {
         self.thp == Some(spec.resources.thp)
     }
 
+    pub(crate) fn knows_network_default(&self, field: &NetworkDefault, spec: &SandboxSpec) -> bool {
+        self.nested_network.contains(field) && field.matches(&spec.network)
+    }
+
+    pub(crate) fn retain_recorded_network(&mut self, network: Option<&Value>) {
+        self.nested_network
+            .retain(|field| network.is_some_and(|raw| field.recorded_parent(raw)));
+    }
+
+    pub(crate) fn clear_nested_network(&mut self) {
+        self.nested_network.clear();
+    }
+
     pub(crate) fn knows_absent_network(&self, key: &str, spec: &SandboxSpec) -> bool {
         self.absent_network
             .iter()
@@ -170,6 +188,8 @@ impl FieldPresence {
         }
         self.absent_network
             .retain(|field| field.is_absent(&spec.network));
+        self.nested_network
+            .retain(|field| field.matches(&spec.network));
         let current: BTreeSet<_> = spec
             .mounts
             .iter()
@@ -187,6 +207,7 @@ impl FieldPresence {
         }
         if !network {
             self.absent_network.clear();
+            self.nested_network.clear();
         }
     }
 
@@ -207,6 +228,18 @@ impl FieldPresence {
         if matches!(patch.network.outbound_proxy, Some(None)) {
             self.absent_network
                 .insert(AbsentNetworkField::OutboundProxy);
+        }
+        if let Some(proxy) = &patch.network.outbound_proxy {
+            self.nested_network.retain(|field| !field.is_proxy());
+            let network = NetworkSpec {
+                outbound_proxy: proxy.clone(),
+                ..Default::default()
+            };
+            self.nested_network.extend(
+                NetworkDefault::declared(&network)
+                    .into_iter()
+                    .filter(NetworkDefault::is_proxy),
+            );
         }
     }
 }

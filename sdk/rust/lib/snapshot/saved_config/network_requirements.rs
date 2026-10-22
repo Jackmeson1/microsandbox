@@ -1,14 +1,11 @@
 //! Source-bound logical requirements. Never derive identifiers from private values or paths.
 
+use super::{NetworkCaptureBindings, ProxyCaptureBindings, RuntimeCaptureSource};
+use crate::{MicrosandboxError, MicrosandboxResult};
 use microsandbox_types::OutboundProxy;
 use microsandbox_types::snapshot::saved_config::{
     MAX_SAVED_CONFIG_ENTRIES, SavedBindingReference, SavedTlsCaptureBindings,
 };
-use serde_json::Value;
-
-use super::network_capture_presence::complete_field;
-use super::{NetworkCaptureBindings, ProxyCaptureBindings, RuntimeCaptureSource};
-use crate::{MicrosandboxError, MicrosandboxResult};
 
 //--------------------------------------------------------------------------------------------------
 // Types
@@ -53,18 +50,17 @@ impl RuntimeCaptureSource<'_> {
                 .map(|index| reference(&format!("{field}.{index}")))
                 .collect::<Vec<_>>())
         };
-        let raw = self.recorded.get("network").unwrap_or(&Value::Null);
         let network = &self.config.spec.network;
         let mut bindings = NetworkCaptureBindings {
             guest_trust,
             ..Default::default()
         };
-        if complete_field(raw, "dns")
+        if self.complete_network_field("dns")
             && let Some(dns) = &network.dns
         {
             bindings.resolvers = references("dns.resolvers", dns.nameservers.len())?;
         }
-        if complete_field(raw, "tls")
+        if self.complete_network_field("tls")
             && let Some(tls) = &network.tls
         {
             bindings.tls = Some(SavedTlsCaptureBindings {
@@ -81,10 +77,10 @@ impl RuntimeCaptureSource<'_> {
                 .then(|| reference("tls.intercept_ca")),
             });
         }
-        if complete_field(raw, "ports") {
+        if self.complete_network_field("ports") {
             bindings.listeners = references("listeners", network.ports.len())?;
         }
-        if complete_field(raw, "secrets")
+        if self.complete_network_field("secrets")
             && let Some(secrets) = &network.secrets
         {
             let requirements = references("secrets", secrets.secrets.len())?;
@@ -103,7 +99,7 @@ impl RuntimeCaptureSource<'_> {
                 }
             }
         }
-        if complete_field(raw, "outbound_proxy")
+        if self.complete_network_field("outbound_proxy")
             && let Some(proxy) = &network.outbound_proxy
         {
             let authenticated = match proxy {
