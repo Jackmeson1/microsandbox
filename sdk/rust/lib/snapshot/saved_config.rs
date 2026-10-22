@@ -44,6 +44,8 @@ mod network_inputs;
 mod network_policy;
 #[cfg(test)]
 mod network_policy_tests;
+#[cfg(feature = "local")]
+mod network_requirements;
 #[cfg(all(test, feature = "local"))]
 mod pending_capture_tests;
 #[cfg(feature = "local")]
@@ -126,6 +128,8 @@ pub use network_policy::{
     DestinationNetworkBaseline, NetworkPolicyApproval, NetworkPolicyClear, NetworkPolicySelection,
     select_network_policy_defaults,
 };
+#[cfg(feature = "local")]
+pub(crate) use network_requirements::NetworkCaptureSection;
 #[cfg(feature = "local")]
 pub use policy_capture::{ExecutionCaptureControls, ResourceCaptureObservation};
 pub use resource_assembly::{ResourceConfigurationPlan, prepare_resource_configuration};

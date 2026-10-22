@@ -7,7 +7,8 @@ use microsandbox_types::snapshot::saved_config::{
 use serde_json::{Value, json};
 
 use super::{
-    NetworkCaptureBindings, NetworkCaptureControls, ProxyCaptureBindings, RuntimeCaptureSource,
+    NetworkCaptureBindings, NetworkCaptureControls, NetworkCaptureSection, ProxyCaptureBindings,
+    RuntimeCaptureSource,
 };
 use crate::sandbox::SandboxBuilder;
 
@@ -94,6 +95,201 @@ fn gateway_bindings() -> NetworkCaptureBindings {
 //--------------------------------------------------------------------------------------------------
 // Tests
 //--------------------------------------------------------------------------------------------------
+
+#[test]
+fn generated_network_requirements_project_without_copying_source_authority() {
+    let raw = gateway_source();
+    let source = RuntimeCaptureSource::from_recorded(&raw, None, None).unwrap();
+    for (section, prefix) in [
+        (NetworkCaptureSection::Active, "active.network"),
+        (NetworkCaptureSection::Pending, "pending.network"),
+    ] {
+        let bindings = source
+            .network_requirements(section, vec![reference("observed-trust")])
+            .unwrap();
+        let saved = source
+            .project_network(bindings, &NetworkCaptureControls::default())
+            .unwrap();
+        let encoded = serde_json::to_string(&saved).unwrap();
+        assert!(!encoded.contains("PRIVATE_"));
+        assert!(!encoded.contains("59999"));
+        for field in [
+            "dns.resolvers.0",
+            "tls.upstream_cas.0",
+            "tls.scoped_upstream_cas.0",
+            "tls.intercept_ca",
+            "listeners.0",
+            "proxy.endpoint",
+            "proxy.credentials",
+        ] {
+            assert!(encoded.contains(&format!("{prefix}.{field}")), "{field}");
+        }
+    }
+}
+
+#[test]
+fn generated_requirements_do_not_promote_incomplete_sections() {
+    let mut raw = gateway_source();
+    for (section, field) in [
+        ("dns", "query_timeout_ms"),
+        ("tls", "intercept_ca"),
+        ("outbound_proxy", "user_id"),
+    ] {
+        raw["network"][section]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+    }
+    raw["network"]["ports"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("protocol");
+    let source = RuntimeCaptureSource::from_recorded(&raw, None, None).unwrap();
+    let bindings = source
+        .network_requirements(
+            NetworkCaptureSection::Active,
+            vec![reference("observed-trust")],
+        )
+        .unwrap();
+    assert!(bindings.resolvers.is_empty());
+    assert!(bindings.tls.is_none());
+    assert!(bindings.listeners.is_empty());
+    assert!(bindings.proxy.is_none());
+    let saved = source
+        .project_network(bindings, &NetworkCaptureControls::default())
+        .unwrap();
+    assert!(is_unknown(&saved.dns));
+    assert!(is_unknown(&saved.tls));
+    assert!(is_unknown(&saved.ports));
+    assert!(is_unknown(&saved.outbound_proxy));
+}
+
+#[test]
+fn generated_proxy_requirements_preserve_empty_authentication_and_automatic_ca() {
+    for (proxy, authenticated) in [
+        (
+            json!({"protocol":"http_connect", "address":"PRIVATE_PROXY"}),
+            false,
+        ),
+        (
+            json!({"protocol":"socks4", "address":"PRIVATE_PROXY", "user_id":null}),
+            false,
+        ),
+        (
+            json!({"protocol":"socks4", "address":"PRIVATE_PROXY", "user_id":""}),
+            true,
+        ),
+        (
+            json!({"protocol":"socks5", "address":"PRIVATE_PROXY", "credentials":null}),
+            false,
+        ),
+        (
+            json!({"protocol":"socks5", "address":"PRIVATE_PROXY", "credentials":{"username":"", "password":{"kind":"env","var":"PRIVATE_PASSWORD"}}}),
+            true,
+        ),
+    ] {
+        let mut raw = gateway_source();
+        raw["network"]["outbound_proxy"] = proxy;
+        raw["network"]["tls"]["intercept_ca"] = json!({"cert_path":null,"key_path":null});
+        let source = RuntimeCaptureSource::from_recorded(&raw, None, None).unwrap();
+        let bindings = source
+            .network_requirements(
+                NetworkCaptureSection::Active,
+                vec![reference("observed-trust")],
+            )
+            .unwrap();
+        assert_eq!(
+            bindings.proxy.as_ref().unwrap().credentials.is_some(),
+            authenticated
+        );
+        assert!(bindings.tls.as_ref().unwrap().intercept_ca.is_some());
+        source
+            .project_network(bindings, &NetworkCaptureControls::default())
+            .unwrap();
+    }
+}
+
+#[test]
+fn generated_requirements_cannot_invent_host_trust_observations() {
+    let raw = gateway_source();
+    let source = RuntimeCaptureSource::from_recorded(&raw, None, None).unwrap();
+    let bindings = source
+        .network_requirements(NetworkCaptureSection::Active, vec![])
+        .unwrap();
+    let error = source
+        .project_network(bindings, &NetworkCaptureControls::default())
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("guest_trust"));
+    assert!(!error.contains("PRIVATE_"));
+}
+
+#[test]
+fn generated_secret_ids_are_ordinal_and_duplicate_source_keys_refuse() {
+    let mut raw = source();
+    let secret = json!({
+        "env_var":"TOKEN", "value":"PRIVATE_SECRET", "placeholder":"token",
+        "allowed_hosts":[{"exact":"example.com"}], "passthrough_hosts":[],
+        "violation_action":null,"require_tls_identity":true,
+        "substitution":{"headers":true,"header_fields":[],"query":false,"body":false}
+    });
+    let mut sourced = secret.clone();
+    sourced["env_var"] = "SECOND_TOKEN".into();
+    sourced["placeholder"] = "second-placeholder".into();
+    sourced["value"] = "".into();
+    sourced["source"] = json!({"kind":"env","var":"PRIVATE_HOST_ENV"});
+    raw["network"]["secrets"] = json!({
+        "passthrough_hosts":null,"violation_action":"block","secrets":[secret.clone(), sourced]
+    });
+    let source = RuntimeCaptureSource::from_recorded(&raw, None, None).unwrap();
+    let bindings = source
+        .network_requirements(NetworkCaptureSection::Active, vec![])
+        .unwrap();
+    assert_eq!(bindings.secrets["TOKEN"].id, "active.network.secrets.0");
+    assert_eq!(
+        bindings.secrets["SECOND_TOKEN"].id,
+        "active.network.secrets.1"
+    );
+    let saved = source
+        .project_network(bindings, &NetworkCaptureControls::default())
+        .unwrap();
+    assert!(!serde_json::to_string(&saved).unwrap().contains("PRIVATE_"));
+    let entries = &saved.secrets.as_ref().unwrap().value().unwrap().entries;
+    assert_eq!(entries[0].env_var, "TOKEN");
+    assert_eq!(entries[1].env_var, "SECOND_TOKEN");
+
+    raw["network"]["secrets"]["secrets"]
+        .as_array_mut()
+        .unwrap()
+        .push(secret);
+    let source = RuntimeCaptureSource::from_recorded(&raw, None, None).unwrap();
+    let error = source
+        .network_requirements(NetworkCaptureSection::Active, vec![])
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("duplicate source secret key"));
+    assert!(!error.contains("PRIVATE_"));
+}
+
+#[test]
+fn generated_requirements_bound_ordinal_allocation() {
+    let mut raw = gateway_source();
+    raw["network"]["dns"]["nameservers"] = json!(vec![
+        "PRIVATE_RESOLVER";
+        microsandbox_types::snapshot::saved_config::MAX_SAVED_CONFIG_ENTRIES
+            + 1
+    ]);
+    let source = RuntimeCaptureSource::from_recorded(&raw, None, None).unwrap();
+    let error = source
+        .network_requirements(NetworkCaptureSection::Active, vec![])
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("SCFG_LIMIT"));
+    assert!(!error.contains("PRIVATE_"));
+}
 
 #[test]
 fn network_capture_preserves_explicit_zero_false_empty_and_default() {
