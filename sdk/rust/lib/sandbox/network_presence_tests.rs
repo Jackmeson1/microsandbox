@@ -162,6 +162,30 @@ fn missing_recorded_parents_retire_nested_evidence_before_reconstruction() {
 }
 
 #[test]
+fn missing_enclosing_secret_policy_stays_unknown_after_repeated_saves() {
+    for explicit_passthrough in [false, true] {
+        let mut record = raw(&declared());
+        if explicit_passthrough {
+            // An explicit empty list no longer needs its own omission hint. Per-entry
+            // hints must not certify the parent policy that serde supplies on decode.
+            record["network"]["secrets"]["passthrough_hosts"] = json!([]);
+        }
+        record["network"]["secrets"]
+            .as_object_mut()
+            .unwrap()
+            .remove("violation_action");
+        for rewrite in 0..3 {
+            assert!(
+                unknown(&project(&record).secrets),
+                "explicit passthrough: {explicit_passthrough}, rewrite: {rewrite}"
+            );
+            let decoded: SandboxConfig = serde_json::from_value(record).unwrap();
+            record = raw(&SandboxBuilder::from(decoded).finish(None, None).unwrap());
+        }
+    }
+}
+
+#[test]
 fn changed_values_retire_evidence_and_cannot_revive_it_after_omission() {
     for (parent, field, replacement, family) in [
         (

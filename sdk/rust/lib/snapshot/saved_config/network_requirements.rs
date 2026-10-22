@@ -1,11 +1,12 @@
 //! Source-bound logical requirements. Never derive identifiers from private values or paths.
 
-use super::{NetworkCaptureBindings, ProxyCaptureBindings, RuntimeCaptureSource};
-use crate::{MicrosandboxError, MicrosandboxResult};
 use microsandbox_types::OutboundProxy;
 use microsandbox_types::snapshot::saved_config::{
     MAX_SAVED_CONFIG_ENTRIES, SavedBindingReference, SavedTlsCaptureBindings,
 };
+
+use super::{NetworkCaptureBindings, ProxyCaptureBindings, RuntimeCaptureSource};
+use crate::{MicrosandboxError, MicrosandboxResult};
 
 //--------------------------------------------------------------------------------------------------
 // Types
