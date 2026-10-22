@@ -309,17 +309,26 @@ mod unix {
                                         LABELS_RESPONSE,
                                         &LabelsResponse::Supported {
                                             runtime_boot_id: "labels-boot".into(),
+                                            config_delta: mode >= 5,
                                         },
                                     )
                                     .unwrap(),
-                                    LabelsRequest::Update { .. } if mode > 0 => {
+                                    LabelsRequest::Update { .. }
+                                    | LabelsRequest::UpdateDelta { .. }
+                                        if mode > 0 =>
+                                    {
+                                        let decoded = request.payload::<LabelsRequest>().unwrap();
+                                        assert_eq!(
+                                            matches!(decoded, LabelsRequest::UpdateDelta { .. }),
+                                            mode >= 5
+                                        );
                                         label_updates.fetch_add(1, Ordering::SeqCst);
                                         // Losing the reply after dispatch must not replay through
                                         // the catalog path or open a fresh mutation connection.
-                                        if mode == 4 {
+                                        if mode == 4 || mode == 8 {
                                             break;
                                         }
-                                        if mode == 1 {
+                                        if mode == 1 || mode == 5 {
                                             Envelope::new(
                                                 2,
                                                 LABELS_RESPONSE,
@@ -334,7 +343,7 @@ mod unix {
                                                 2,
                                                 "control.error",
                                                 &ControlError {
-                                                    code: if mode == 3 {
+                                                    code: if mode == 3 || mode == 7 {
                                                         "unsupported_operation"
                                                     } else {
                                                         "configuration_outcome_unknown"
@@ -459,7 +468,7 @@ mod unix {
 
     #[tokio::test]
     async fn dispatched_label_failures_never_fall_back_to_catalog_writes() {
-        for mode in [2, 3, 4] {
+        for mode in [2, 3, 4, 6, 7, 8] {
             let fixture = fixture(false, false).await;
             fixture.label_mode.store(mode, Ordering::SeqCst);
             let before = sandbox::Entity::find_by_id(fixture.sandbox_id)

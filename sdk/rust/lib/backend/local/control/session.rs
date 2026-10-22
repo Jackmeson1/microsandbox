@@ -37,15 +37,16 @@ impl ControlSession {
     }
 
     /// Read-only capability selection; never treat a mutation failure as a fallback signal.
-    pub(crate) async fn label_update_owner(&self) -> Result<Option<String>, SharedError> {
+    pub(crate) async fn label_update_owner(&self) -> Result<Option<(String, bool)>, SharedError> {
         if self.connection.mode() == ControlMode::Json {
             return Ok(None);
         }
         match self.request(&ManageLabels(LabelsRequest::Hello)).await {
-            Ok(LabelsResponse::Supported { runtime_boot_id })
-                if !runtime_boot_id.is_empty() && runtime_boot_id.len() <= 128 =>
-            {
-                Ok(Some(runtime_boot_id))
+            Ok(LabelsResponse::Supported {
+                runtime_boot_id,
+                config_delta,
+            }) if !runtime_boot_id.is_empty() && runtime_boot_id.len() <= 128 => {
+                Ok(Some((runtime_boot_id, config_delta)))
             }
             Ok(_) => Err(Arc::new(ControlClientError::RuntimeChanged)),
             Err(error) => match error.as_ref() {
@@ -65,18 +66,41 @@ impl ControlSession {
 
     pub(crate) async fn update_labels(
         &self,
-        runtime_boot_id: String,
+        owner: (String, bool),
         expected_active: &str,
+        expected_desired: &str,
         desired_config_json: String,
         set: BTreeMap<String, String>,
         remove: Vec<String>,
     ) -> Result<(), SharedError> {
-        let request = LabelsRequest::Update {
-            runtime_boot_id: runtime_boot_id.clone(),
-            expected_active_sha256: hex::encode(Sha256::digest(expected_active.as_bytes())),
-            desired_config_json,
-            set,
-            remove,
+        let (runtime_boot_id, config_delta) = owner;
+        let expected_active_sha256 = hex::encode(Sha256::digest(expected_active.as_bytes()));
+        let request = if config_delta {
+            let desired_delta_json = microsandbox_protocol::labels_delta::between(
+                expected_desired,
+                &desired_config_json,
+            )
+            .map_err(|_| {
+                Arc::new(ControlClientError::Wire(
+                    microsandbox_protocol::wire::WireError::InvalidRecord,
+                ))
+            })?;
+            LabelsRequest::UpdateDelta {
+                runtime_boot_id: runtime_boot_id.clone(),
+                expected_active_sha256,
+                expected_desired_sha256: hex::encode(Sha256::digest(expected_desired.as_bytes())),
+                desired_delta_json,
+                set,
+                remove,
+            }
+        } else {
+            LabelsRequest::Update {
+                runtime_boot_id: runtime_boot_id.clone(),
+                expected_active_sha256,
+                desired_config_json,
+                set,
+                remove,
+            }
         };
         match self.request(&ManageLabels(request)).await? {
             LabelsResponse::Updated {

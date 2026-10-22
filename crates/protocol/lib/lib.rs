@@ -13,6 +13,8 @@ mod error;
 pub mod jobs;
 /// Capability-probed runtime-owned label updates.
 pub mod labels;
+/// Compact private configuration deltas for negotiated metadata updates.
+pub mod labels_delta;
 
 //--------------------------------------------------------------------------------------------------
 // Constants: Host↔Guest Shutdown Timings

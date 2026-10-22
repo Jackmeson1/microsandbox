@@ -41,6 +41,21 @@ pub enum LabelsRequest {
         /// Labels to remove; must not overlap with `set`.
         remove: Vec<String>,
     },
+    /// Compact update, sent only after discovery explicitly advertises support.
+    UpdateDelta {
+        /// Runtime identity selected before dispatch.
+        runtime_boot_id: String,
+        /// Digest of the selected active catalog JSON.
+        expected_active_sha256: String,
+        /// Digest of the selected desired catalog JSON; checked again at commit.
+        expected_desired_sha256: String,
+        /// Private structural delta, never included in diagnostics.
+        desired_delta_json: String,
+        /// Active labels to set.
+        set: BTreeMap<String, String>,
+        /// Active labels to remove.
+        remove: Vec<String>,
+    },
 }
 
 /// A successful operation. Unsupported and uncertain outcomes remain errors.
@@ -52,6 +67,9 @@ pub enum LabelsResponse {
     Supported {
         /// This identity fences the subsequent mutation.
         runtime_boot_id: String,
+        /// Optional capability; older responses imply the original full update only.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        config_delta: bool,
     },
     /// Active configuration and its durable confirmation were written.
     Updated {
@@ -97,6 +115,34 @@ pub fn decode_request(envelope: &Envelope) -> Result<LabelsRequest, WireError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovery_remains_compatible_in_both_directions() {
+        let old = r#"{"result":"supported","runtime_boot_id":"boot"}"#;
+        assert!(matches!(
+            serde_json::from_str::<LabelsResponse>(old).unwrap(),
+            LabelsResponse::Supported {
+                config_delta: false,
+                ..
+            }
+        ));
+        // This mirrors the original decoder: the extra capability must not make
+        // an older client reject a runtime that still accepts its full update.
+        #[derive(Deserialize)]
+        #[serde(tag = "result", rename_all = "snake_case")]
+        enum OriginalResponse {
+            Supported { runtime_boot_id: String },
+        }
+        let encoded = serde_json::to_string(&LabelsResponse::Supported {
+            runtime_boot_id: "boot".into(),
+            config_delta: true,
+        })
+        .unwrap();
+        let OriginalResponse::Supported { runtime_boot_id } =
+            serde_json::from_str(&encoded).unwrap();
+        assert_eq!(runtime_boot_id, "boot");
+    }
+
     #[test]
     fn private_label_requests_are_redacted_and_released_control_enums_stay_unchanged() {
         let request = LabelsRequest::Update {

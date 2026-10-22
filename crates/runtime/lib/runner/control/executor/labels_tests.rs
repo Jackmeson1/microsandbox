@@ -278,3 +278,85 @@ async fn label_index_failure_rolls_back_desired_and_active_together() {
     assert_eq!(desired, "{}");
     assert!(f.journal.record().pending.is_some());
 }
+
+#[tokio::test]
+async fn compact_label_update_preserves_large_scripts_and_commits_mixed_desired_changes() {
+    let mut f = Fixture::new().await;
+    let before = serde_json::json!({"runtime":{"scripts":{"large":"x".repeat(5 * 1024 * 1024)}},"labels":{"remove":"old"},"pending":false}).to_string();
+    f.db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Sqlite,
+        "UPDATE sandbox SET config = ?",
+        [before.clone().into()],
+    ))
+    .await
+    .unwrap();
+    let mut after: Value = serde_json::from_str(&before).unwrap();
+    after["labels"] = serde_json::json!({"added":"PRIVATE_LABEL"});
+    after["pending"] = Value::Null;
+    let delta = microsandbox_protocol::labels_delta::between(&before, &after.to_string()).unwrap();
+    assert!(delta.len() < 1024);
+    let expected_desired = hex::encode(Sha256::digest(before.as_bytes()));
+    let digest = f.digest();
+    update_labels_plan(
+        &mut f.journal,
+        &f.db,
+        &digest,
+        DesiredConfig::Delta {
+            expected: &expected_desired,
+            encoded: &delta,
+        },
+        &BTreeMap::from([("added".into(), "PRIVATE_LABEL".into())]),
+        &["remove".into()],
+        |journal, source| journal.confirm(source),
+    )
+    .await
+    .unwrap();
+    let actual: String =
+        f.db.query_one_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT config FROM sandbox",
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get("", "config")
+        .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&actual).unwrap(), after);
+    assert_eq!(
+        serde_json::from_str::<Value>(&f.active().await).unwrap()["labels"],
+        after["labels"]
+    );
+}
+
+#[tokio::test]
+async fn compact_label_update_refuses_changed_desired_state_before_journaling() {
+    let mut f = Fixture::new().await;
+    let generation = f.journal.record().generation;
+    let delta = microsandbox_protocol::labels_delta::between(
+        "{}",
+        r#"{"labels":{"added":"PRIVATE_LABEL"}}"#,
+    )
+    .unwrap();
+    f.db.execute_unprepared(r#"UPDATE sandbox SET config = '{"other":true}'"#)
+        .await
+        .unwrap();
+    let digest = f.digest();
+    let expected = hex::encode(Sha256::digest(b"{}"));
+    let error = update_labels_plan(
+        &mut f.journal,
+        &f.db,
+        &digest,
+        DesiredConfig::Delta {
+            expected: &expected,
+            encoded: &delta,
+        },
+        &BTreeMap::from([("added".into(), "PRIVATE_LABEL".into())]),
+        &[],
+        |journal, source| journal.confirm(source),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, "configuration_not_applied");
+    assert_eq!(f.journal.record().generation, generation);
+    assert_eq!(f.active().await, f.before);
+}
