@@ -9,7 +9,7 @@ use microsandbox_utils::format::format_bytes;
 
 use crate::{
     commands::restore::{self, RestoreArgs},
-    ui,
+    ui::{self, OutputFormat},
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -178,8 +178,8 @@ pub struct SnapshotListArgs {
     pub group: Option<String>,
 
     /// Output format (json).
-    #[arg(long, value_name = "FORMAT", value_parser = ["json"])]
-    pub format: Option<String>,
+    #[arg(long, value_name = "FORMAT", value_enum)]
+    pub format: Option<OutputFormat>,
 
     /// Show only group names or checkpoint IDs.
     #[arg(short, long)]
@@ -324,8 +324,8 @@ pub struct SnapshotHeadArgs {
     pub selector: String,
 
     /// Output format (json).
-    #[arg(long, value_name = "FORMAT", value_parser = ["json"])]
-    pub format: Option<String>,
+    #[arg(long, value_name = "FORMAT", value_enum)]
+    pub format: Option<OutputFormat>,
 }
 
 /// Explicit head mutation. Bare modify and conflicting selections are refused by the parser.
@@ -559,7 +559,7 @@ async fn list(args: SnapshotListArgs) -> anyhow::Result<()> {
                 "count": members.len(),
             }));
         }
-        if args.format.as_deref() == Some("json") {
+        if args.format == Some(OutputFormat::Json) {
             println!("{}", serde_json::to_string_pretty(&rows)?);
         } else if rows.is_empty() {
             eprintln!("No snapshot groups found.");
@@ -578,7 +578,7 @@ async fn list(args: SnapshotListArgs) -> anyhow::Result<()> {
     };
     let snapshots = SnapshotGroup::get(&group_name).await?.checkpoints().await?;
 
-    if args.format.as_deref() == Some("json") {
+    if args.format == Some(OutputFormat::Json) {
         let entries: Vec<serde_json::Value> = snapshots
             .iter()
             .map(|s| {
@@ -978,7 +978,7 @@ async fn load(args: SnapshotLoadArgs) -> anyhow::Result<()> {
 async fn head(args: SnapshotHeadArgs) -> anyhow::Result<()> {
     let group = SnapshotGroup::get(&args.selector).await?;
     let head = group.head().await?;
-    if args.format.as_deref() == Some("json") {
+    if args.format == Some(OutputFormat::Json) {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -1556,7 +1556,7 @@ mod tests {
             panic!("expected head command");
         };
         assert_eq!(args.selector, "work");
-        assert_eq!(args.format.as_deref(), Some("json"));
+        assert_eq!(args.format, Some(OutputFormat::Json));
     }
 
     #[test]

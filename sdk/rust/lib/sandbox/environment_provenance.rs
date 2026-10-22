@@ -517,7 +517,9 @@ mod tests {
         // hint on its first pass must not make the next pass treat the value as new input.
         for _ in 0..2 {
             let mut resolved = SandboxConfig::default();
-            resolved.apply_layers(None, SandboxConfigPatch::from_present_fields(source), None);
+            resolved
+                .apply_layers(None, SandboxConfigPatch::from_present_fields(source), None)
+                .unwrap();
             assert!(origin(&resolved, "KEY", false) == Some(EnvironmentOrigin::Unknown));
             source = serde_json::from_value(serde_json::to_value(resolved).unwrap()).unwrap();
         }
