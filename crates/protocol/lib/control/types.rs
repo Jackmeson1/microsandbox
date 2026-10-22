@@ -37,6 +37,9 @@ pub struct RuntimeCapabilities {
     /// Captures can retain configuration under runtime mutation authority.
     #[serde(default)]
     pub configuration_capture: bool,
+    /// Optional private receipt evidence for effective guest execution limits.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub configuration_exec_limits: bool,
     /// Optional private receipt evidence for mounted filesystem kind and quota.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub configuration_storage: bool,
@@ -96,6 +99,9 @@ pub struct CheckpointCreate {
     /// Retain host-private configuration evidence for this exact capture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retain_configuration: Option<bool>,
+    /// Request execution-limit evidence only after capability negotiation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retain_configuration_exec_limits: Option<bool>,
     /// Request storage evidence only after capability negotiation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retain_configuration_storage: Option<bool>,
@@ -156,6 +162,9 @@ pub struct DiskCheckpointCreate {
     /// Retain host-private configuration evidence for this exact capture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retain_configuration: Option<bool>,
+    /// Request execution-limit evidence only after capability negotiation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retain_configuration_exec_limits: Option<bool>,
     /// Request storage evidence only after capability negotiation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retain_configuration_storage: Option<bool>,

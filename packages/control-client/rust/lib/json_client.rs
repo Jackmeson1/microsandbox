@@ -155,6 +155,7 @@ impl JsonControlClient {
                 options,
                 request.requires_configuration_capture(),
                 request.requires_configuration_storage(),
+                request.requires_configuration_exec_limits(),
             )
             .await?;
         request.decode_compatibility_json(response)
@@ -176,7 +177,7 @@ impl JsonControlClient {
         request: Zeroizing<Vec<u8>>,
         options: RequestOptions,
     ) -> ControlClientResult<JsonReply> {
-        self.operation_bytes_checked(request, options, false, false)
+        self.operation_bytes_checked(request, options, false, false, false)
             .await
     }
 
@@ -186,8 +187,10 @@ impl JsonControlClient {
         options: RequestOptions,
         configuration_capture: bool,
         configuration_storage: bool,
+        configuration_exec_limits: bool,
     ) -> ControlClientResult<JsonReply> {
-        let configuration_capture = configuration_capture || configuration_storage;
+        let configuration_capture =
+            configuration_capture || configuration_storage || configuration_exec_limits;
         // JSON uses separate discovery and mutation sockets. Only independently verified runtime
         // ownership can prevent a replacement peer from silently ignoring a new request field.
         if configuration_capture && !self.dialer.verified() {
@@ -212,7 +215,9 @@ impl JsonControlClient {
                 Ok((mode, capabilities)) => {
                     if configuration_capture
                         && (!capabilities.configuration_capture
-                            || (configuration_storage && !capabilities.configuration_storage))
+                            || (configuration_storage && !capabilities.configuration_storage)
+                            || (configuration_exec_limits
+                                && !capabilities.configuration_exec_limits))
                     {
                         return Err(ClientError::new(ErrorKind::UnsupportedOperation).into());
                     }

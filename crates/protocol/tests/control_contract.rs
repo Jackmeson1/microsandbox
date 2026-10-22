@@ -585,6 +585,7 @@ fn generation_two_inventory_and_requests_are_additive() {
             "control.checkpoint.create",
             &CheckpointCreate {
                 retain_configuration: None,
+                retain_configuration_exec_limits: None,
                 retain_configuration_storage: None,
                 guest_flush: None,
                 record_integrity: true,
@@ -598,6 +599,7 @@ fn generation_two_inventory_and_requests_are_additive() {
             "control.disk.checkpoint.create",
             &DiskCheckpointCreate {
                 retain_configuration: None,
+                retain_configuration_exec_limits: None,
                 retain_configuration_storage: None,
                 guest_flush: None,
                 checkpoint_id: "disk-1".into(),
