@@ -76,7 +76,11 @@ class Runner:
 
 
 def cleanup(runner, prefix, sandbox, result=None, force=False):
-    """Attempt both lifecycle operations before propagating an interruption."""
+    """Attempt both lifecycle operations before propagating an interruption.
+
+    BaseException is deliberate: cancellation and termination must not skip rm.
+    Control-flow exceptions are deferred, never converted into successful cleanup.
+    """
     result = {} if result is None else result
     interrupted = None
     for operation in ("stop", "rm"):
@@ -99,6 +103,8 @@ def finish_saved_evidence(runner, targets, row, report, output, audit, force=Fal
     Callers install each result dictionary in their report before passing it here, so
     an interruption cannot discard partial stop/remove results. Audit remains separate
     from command success: a zero exit alone does not prove that a VM was removed.
+    Each BaseException handler defers signals/cancellation until all targets and the
+    audit have run and the report is saved; narrowing to Exception loses that guarantee.
     """
     interrupted = None
     try:

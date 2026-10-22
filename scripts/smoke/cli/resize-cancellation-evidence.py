@@ -128,6 +128,8 @@ def main():
     try:
         asyncio.run(asyncio.wait_for(exercise(), timeout=180))
     except BaseException as error:
+        # Preserve failure evidence on SIGTERM/KeyboardInterrupt/cancellation too.
+        # These control-flow exceptions are re-raised through the cleanup finally.
         report.update(status="failed", error=str(error), traceback=traceback.format_exc())
         if not isinstance(error, Exception):
             raise
@@ -143,7 +145,7 @@ def main():
                     os.kill(pid, 0)
                     report["surviving_pids"].append(pid)
                 except ProcessLookupError:
-                    pass
+                    pass  # A missing PID is the successful teardown observation.
             if report["remaining_sandboxes"] or report["remaining_live_runs"] or report["surviving_pids"]:
                 raise RuntimeError("cleanup left sandbox state or live processes")
 
