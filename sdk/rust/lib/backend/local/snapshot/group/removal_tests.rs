@@ -535,3 +535,86 @@ async fn whole_group_crash_cases(legacy_cli: Option<&Path>) {
         assert_eq!(directory.exists(), !removed);
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn whole_group_removal_preserves_history_at_low_descriptor_limit() {
+    let result = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "backend::local::snapshot::group::removal::tests::low_descriptor_limit_whole_group_worker",
+            "--ignored",
+            "--nocapture",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "subprocess-only reduced descriptor limit"]
+async fn low_descriptor_limit_whole_group_worker() {
+    let home = tempfile::tempdir().unwrap();
+    let local = test_support::local_backend_builder(home.path())
+        .build()
+        .await
+        .unwrap();
+    let directory = group::ensure(&local.snapshots_dir(), Some("long-history"))
+        .await
+        .unwrap();
+    for ordinal in 1..=611 {
+        add(&directory, ordinal, None).await;
+    }
+    store::reindex_dir(&local, &local.snapshots_dir())
+        .await
+        .unwrap();
+    let head = group::read_group(&directory).unwrap().head;
+    let pools = local.db().await.unwrap();
+    let rows = snapshot::Entity::find().all(pools.read()).await.unwrap();
+    assert_eq!(rows.len(), 611);
+    let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+    // The lower limit belongs only to this child process, never the test runner or host.
+    assert_eq!(
+        unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) },
+        0
+    );
+    let original = unsafe { limit.assume_init() };
+    let mut reduced = original;
+    reduced.rlim_cur = reduced.rlim_cur.min(96);
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &reduced) }, 0);
+    let result = group::remove_history(&local, &directory).await;
+    assert_eq!(
+        unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &original) },
+        0
+    );
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("all 611 checkpoints"), "{error}");
+    assert!(
+        error.contains("increase the process/system open-file limit"),
+        "{error}"
+    );
+    assert_eq!(group::read_group(&directory).unwrap().head, head);
+    assert_eq!(group::read_members(&directory, true).unwrap().len(), 611);
+    assert_eq!(
+        snapshot::Entity::find().all(pools.read()).await.unwrap(),
+        rows
+    );
+    assert!(
+        group::retirement::pending(&local.snapshots_dir())
+            .unwrap()
+            .is_empty()
+    );
+    // A subsequent reader can acquire a member pin: failed preflight leaked no ownership.
+    let _reader = StorageLease::descriptor(
+        &directory.join(id(611).as_str()).join(DESCRIPTOR_FILENAME),
+        false,
+    )
+    .unwrap()
+    .unwrap();
+}

@@ -89,6 +89,11 @@ impl Snapshot {
     }
 
     /// Remove this whole history, refusing surviving external dependents and active readers.
+    ///
+    /// On Unix, removal retains two file descriptors per checkpoint plus catalog and
+    /// operation overhead to protect concurrent readers, including older clients. If
+    /// the open-file limit prevents acquiring those locks, removal fails before publication.
+    /// Increase the process/system limit or close other open files before retrying.
     pub async fn remove(&self) -> MicrosandboxResult<super::SnapshotRemoveResult> {
         self.backend.snapshots().remove_group(&self.reference).await
     }

@@ -138,12 +138,14 @@ fn prepare(directory: &Path, writer: WriterLease) -> MicrosandboxResult<Prepared
     let mut members = Vec::with_capacity(selected.len());
     for member in selected.values() {
         members.push(
-            lease::deletion_under_group_lock(&member.path, &group)?.ok_or_else(|| {
-                super::integrity(format!(
-                    "checkpoint is in use by an active reader: {}",
-                    member.path.display()
-                ))
-            })?,
+            lease::deletion_under_group_lock(&member.path, &group)
+                .map_err(|error| member_lock_error(error, selected.len()))?
+                .ok_or_else(|| {
+                    super::integrity(format!(
+                        "checkpoint is in use by an active reader: {}",
+                        member.path.display()
+                    ))
+                })?,
         );
     }
     let name = directory
@@ -181,6 +183,23 @@ fn prepare(directory: &Path, writer: WriterLease) -> MicrosandboxResult<Prepared
         members,
         lock: Some(lock),
     })
+}
+
+/// Older readers hold member descriptor locks, not the newer group lease. Keep every
+/// member pin until publication; releasing pins in batches would permit unsafe deletion.
+fn member_lock_error(error: std::io::Error, members: usize) -> std::io::Error {
+    #[cfg(unix)]
+    if matches!(error.raw_os_error(), Some(libc::EMFILE | libc::ENFILE)) {
+        return std::io::Error::new(
+            error.kind(),
+            format!(
+                "cannot acquire reader-protection locks for all {members} checkpoints: open-file limit reached before group removal; no checkpoints were removed; increase the process/system open-file limit or close other open files and retry (Unix removal retains two file descriptors per checkpoint plus catalog and operation overhead): {error}"
+            ),
+        );
+    }
+    #[cfg(not(unix))]
+    let _ = members;
+    error
 }
 
 /// The journal is outside the removed directory, so listing can recover even an empty group.
