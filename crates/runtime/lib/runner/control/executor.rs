@@ -42,6 +42,7 @@ pub struct RuntimeControlExecutor {
     state: Mutex<ExecutorState>,
     retention_db: microsandbox_db::DbWriteConnection,
     runtime_script_root: Option<std::fs::File>,
+    mounted_filesystems: crate::retention::MountedStorageEvidence,
 }
 
 struct ExecutorState {
@@ -87,6 +88,7 @@ impl RuntimeControlExecutor {
             microsandbox_filesystem::OwnedDirectoryCheckpoint,
         >,
         runtime_script_root: Option<std::fs::File>,
+        mounted_filesystems: crate::runner::storage_observation::MountedFilesystemInventory,
         retention: crate::retention::RetentionJournal,
         retention_db: microsandbox_db::DbWriteConnection,
     ) -> Result<Self, String> {
@@ -112,6 +114,7 @@ impl RuntimeControlExecutor {
         )?;
         checkpoint.inherit_local_memory(inherited_memory);
         Ok(Self {
+            mounted_filesystems: mounted_filesystems.guest_evidence(guest_bootstrap),
             runtime_script_root,
             retention_db,
             signal_runtime: runtime.clone(),
@@ -453,15 +456,25 @@ impl RuntimeControlExecutor {
         let response = match request {
             ControlRequest::DiskCheckpointCreate {
                 retain_configuration,
+                retain_configuration_storage,
                 checkpoint_id,
                 guest_flush,
             } => {
+                if retain_configuration_storage == Some(true) && retain_configuration != Some(true)
+                {
+                    return control_error(
+                        "invalid_request",
+                        "storage evidence requires configuration capture",
+                    );
+                }
                 state.lifecycle = RuntimeLifecycle::Quiescing;
                 let configuration = retain_configuration.unwrap_or(false).then(|| {
                     crate::retention::ConfigurationCaptureContext::new(
                         &state.retention,
                         &self.retention_db,
                         self.runtime_script_root.as_ref(),
+                        (retain_configuration_storage == Some(true))
+                            .then_some(&self.mounted_filesystems),
                     )
                 });
                 match state.checkpoint.capture_disk(
@@ -637,17 +650,27 @@ impl RuntimeControlExecutor {
             }
             ControlRequest::CheckpointCreate {
                 retain_configuration,
+                retain_configuration_storage,
                 guest_flush,
                 checkpoint_id,
                 intent,
                 record_integrity,
             } => {
+                if retain_configuration_storage == Some(true) && retain_configuration != Some(true)
+                {
+                    return control_error(
+                        "invalid_request",
+                        "storage evidence requires configuration capture",
+                    );
+                }
                 state.lifecycle = RuntimeLifecycle::Quiescing;
                 let configuration = retain_configuration.unwrap_or(false).then(|| {
                     crate::retention::ConfigurationCaptureContext::new(
                         &state.retention,
                         &self.retention_db,
                         self.runtime_script_root.as_ref(),
+                        (retain_configuration_storage == Some(true))
+                            .then_some(&self.mounted_filesystems),
                     )
                 });
                 match state.checkpoint.capture(
@@ -796,6 +819,7 @@ impl RuntimeControlExecutor {
                 ok: true,
                 capabilities: Some(ControlCapabilities {
                     configuration_capture: true,
+                    configuration_storage: true,
                     cpu_resize: self.vm.cpu_resize_supported(),
                     memory_resize: self.vm.memory_resize_supported(),
                     secrets_update: self.secrets_update_supported(),

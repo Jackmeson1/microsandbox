@@ -16,6 +16,7 @@ use microsandbox_protocol::init_observation::InitObservation;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::MountedStorageEvidence;
 use super::script_backing::ScriptBackingEvidence;
 #[cfg(feature = "runner")]
 use super::script_backing::ScriptBackingObservation;
@@ -41,6 +42,7 @@ pub(crate) struct ConfigurationCaptureContext<'a> {
     journal: &'a RetentionJournal,
     db: &'a DbWriteConnection,
     runtime_script_root: Option<&'a fs::File>,
+    storage: Option<&'a MountedStorageEvidence>,
 }
 
 #[cfg(feature = "runner")]
@@ -49,6 +51,7 @@ pub(crate) struct ConfigurationCaptureObservation<'a> {
     selected: Option<LiveConfigurationSelection<'a>>,
     scripts: ScriptBackingObservation,
     init: Option<InitObservation>,
+    storage: Option<MountedStorageEvidence>,
 }
 
 /// Host-private evidence from the checkpoint's paused configuration boundary.
@@ -66,6 +69,8 @@ pub struct CapturedConfiguration {
     scripts: Option<ScriptBackingEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     init: Option<InitObservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    storage: Option<MountedStorageEvidence>,
 }
 
 /// Remove an unpublished receipt on error; only checkpoint publication transfers ownership.
@@ -86,11 +91,13 @@ impl<'a> ConfigurationCaptureContext<'a> {
         journal: &'a RetentionJournal,
         db: &'a DbWriteConnection,
         runtime_script_root: Option<&'a fs::File>,
+        storage: Option<&'a MountedStorageEvidence>,
     ) -> Self {
         Self {
             journal,
             db,
             runtime_script_root,
+            storage,
         }
     }
 
@@ -113,6 +120,7 @@ impl<'a> ConfigurationCaptureContext<'a> {
             .transpose()?
             .flatten();
         Ok(ConfigurationCaptureObservation {
+            storage: self.storage.cloned(),
             init,
             scripts,
             sandbox_directory,
@@ -133,7 +141,7 @@ impl ConfigurationCaptureObservation<'_> {
         {
             return Err(invalid("configuration changed during checkpoint capture"));
         }
-        PreparedConfigurationReceipt::prepare(
+        PreparedConfigurationReceipt::prepare_with_storage(
             self.sandbox_directory,
             checkpoint_id,
             capture_root,
@@ -145,11 +153,17 @@ impl ConfigurationCaptureObservation<'_> {
                 .and_then(LiveConfigurationSelection::pending_configuration),
             Some(self.scripts.finish()),
             self.init,
+            self.storage,
         )
     }
 }
 
 impl CapturedConfiguration {
+    /// Negotiated observations from actual mounted backends. Older receipts return None.
+    pub fn storage(&self) -> Option<&MountedStorageEvidence> {
+        self.storage.as_ref()
+    }
+
     /// Private next-start intent selected at the capture boundary, never active evidence.
     /// Older receipts omit it; do not replace that absence with current catalog settings.
     pub fn pending_configuration(&self) -> Option<&serde_json::Value> {
@@ -221,6 +235,9 @@ impl CapturedConfiguration {
         {
             return Err(invalid("configuration capture identity mismatch"));
         }
+        if let Some(storage) = &record.storage {
+            storage.validate()?;
+        }
         Ok(record)
     }
 }
@@ -228,6 +245,7 @@ impl CapturedConfiguration {
 #[cfg(any(feature = "runner", test))]
 impl PreparedConfigurationReceipt {
     /// Persist before the checkpoint root becomes visible. The caller owns capture authority.
+    #[cfg(test)]
     pub(crate) fn prepare(
         sandbox_directory: &Path,
         checkpoint_id: &str,
@@ -237,13 +255,40 @@ impl PreparedConfigurationReceipt {
         scripts: Option<ScriptBackingEvidence>,
         init: Option<InitObservation>,
     ) -> io::Result<Self> {
+        Self::prepare_with_storage(
+            sandbox_directory,
+            checkpoint_id,
+            capture_root,
+            source,
+            pending,
+            scripts,
+            init,
+            None,
+        )
+    }
+
+    // Identity, source and backing are selected together under capture authority.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_with_storage(
+        sandbox_directory: &Path,
+        checkpoint_id: &str,
+        capture_root: &str,
+        source: Option<&RetainedConfiguration>,
+        pending: Option<&serde_json::Value>,
+        scripts: Option<ScriptBackingEvidence>,
+        init: Option<InitObservation>,
+        storage: Option<MountedStorageEvidence>,
+    ) -> io::Result<Self> {
+        if let Some(storage) = &storage {
+            storage.validate()?;
+        }
         let path = receipt_path(sandbox_directory, checkpoint_id)?;
         let parent = sandbox_directory.join("last-active");
         private_directory(&parent)?;
         let directory = path.parent().expect("receipt parent").to_path_buf();
         private_directory(&directory)?;
         sync_directory(&parent)?;
-        let record = CapturedConfiguration {
+        let mut record = CapturedConfiguration {
             schema: 1,
             checkpoint_id: checkpoint_id.into(),
             capture_root: capture_root.into(),
@@ -251,9 +296,29 @@ impl PreparedConfigurationReceipt {
             pending: pending.cloned(),
             scripts,
             init,
+            storage,
         };
-        let bytes = serde_json::to_vec(&record)
+        let mut bytes = serde_json::to_vec(&record)
             .map_err(|_| invalid("could not encode configuration capture"))?;
+        // Optional observations must not make an otherwise fitting capture fail. Omission
+        // means unknown, never an empty inventory or permission to infer storage settings.
+        if bytes.len() as u64 > MAX_CAPTURE_BYTES && record.storage.take().is_some() {
+            bytes = serde_json::to_vec(&record)
+                .map_err(|_| invalid("could not encode configuration capture"))?;
+        }
+        if bytes.len() as u64 > MAX_CAPTURE_BYTES {
+            // Ordinary checkpoint capture requests this evidence automatically. A valid
+            // workload (for example a large registered script) must remain capturable even
+            // when its optional configuration cannot fit. Drop the complete observation,
+            // not individual settings that a consumer might mistake for known defaults.
+            record.source = None;
+            record.pending = None;
+            record.scripts = None;
+            record.init = None;
+            record.storage = None;
+            bytes = serde_json::to_vec(&record)
+                .map_err(|_| invalid("could not encode configuration capture"))?;
+        }
         if bytes.len() as u64 > MAX_CAPTURE_BYTES {
             return Err(invalid("configuration capture exceeds size limit"));
         }
@@ -345,7 +410,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::retention::{CapturedScriptBacking, CapturedScriptDirectory, RetentionOwner};
+    use crate::retention::{
+        CapturedScriptBacking, CapturedScriptDirectory, MountedFilesystem, MountedFilesystemKind,
+        RetentionOwner,
+    };
 
     fn source() -> RetainedConfiguration {
         RetainedConfiguration {
@@ -359,6 +427,167 @@ mod tests {
             },
             generation: 3,
             source: Some(serde_json::json!({"env": "PRIVATE_SOURCE_VALUE"})),
+        }
+    }
+
+    #[test]
+    fn optional_storage_preserves_exactly_fitting_configuration() {
+        let home = tempfile::tempdir().unwrap();
+        let mut source = source();
+        source.source = Some(serde_json::Value::String(String::new()));
+        let base = CapturedConfiguration {
+            schema: 1,
+            checkpoint_id: "boundary".into(),
+            capture_root: "root".into(),
+            source: Some(source.clone()),
+            pending: None,
+            scripts: None,
+            init: None,
+            storage: None,
+        };
+        let available = MAX_CAPTURE_BYTES as usize - serde_json::to_vec(&base).unwrap().len();
+        source.source = Some(serde_json::Value::String("x".repeat(available)));
+        let receipt = PreparedConfigurationReceipt::prepare_with_storage(
+            home.path(),
+            "boundary",
+            "root",
+            Some(&source),
+            None,
+            None,
+            None,
+            Some(MountedStorageEvidence::default()),
+        )
+        .unwrap()
+        .publish();
+        let path = receipt_path(home.path(), "boundary").unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(), MAX_CAPTURE_BYTES);
+        let captured =
+            CapturedConfiguration::read(home.path(), "boundary", "root", &receipt).unwrap();
+        assert!(captured.storage().is_none());
+        assert_eq!(captured.source().unwrap().source, source.source);
+    }
+
+    #[test]
+    fn oversized_configuration_becomes_bounded_digest_bound_unknown_evidence() {
+        let home = tempfile::tempdir().unwrap();
+        let mut source = source();
+        source.source = Some(serde_json::json!({"scripts":{"large":"x".repeat(9 * 1024 * 1024)}}));
+        let receipt = PreparedConfigurationReceipt::prepare_with_storage(
+            home.path(),
+            "oversized",
+            "root",
+            Some(&source),
+            source.source.as_ref(),
+            Some(ScriptBackingEvidence::Unknown {
+                reason: super::super::ScriptBackingUnknown::Unreadable,
+            }),
+            Some(InitObservation::Builtin),
+            Some(MountedStorageEvidence::default()),
+        )
+        .unwrap()
+        .publish();
+        let path = receipt_path(home.path(), "oversized").unwrap();
+        let bytes = fs::read(&path).unwrap();
+        assert!(bytes.len() < 1024);
+        let captured =
+            CapturedConfiguration::read(home.path(), "oversized", "root", &receipt).unwrap();
+        assert!(captured.source().is_none());
+        assert!(captured.pending_configuration().is_none());
+        assert!(captured.scripts().is_none());
+        assert!(captured.init().is_none());
+        assert!(captured.storage().is_none());
+        assert!(
+            CapturedConfiguration::read(home.path(), "oversized", "other_root", &receipt).is_err()
+        );
+        let mut forged: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        forged["source"] = serde_json::to_value(&source).unwrap();
+        fs::write(path, serde_json::to_vec(&forged).unwrap()).unwrap();
+        assert!(CapturedConfiguration::read(home.path(), "oversized", "root", &receipt).is_err());
+    }
+
+    #[test]
+    fn unknown_receipt_still_obeys_size_limit_before_publication() {
+        let home = tempfile::tempdir().unwrap();
+        assert!(
+            PreparedConfigurationReceipt::prepare(
+                home.path(),
+                "oversized_root",
+                &"x".repeat(MAX_CAPTURE_BYTES as usize),
+                None,
+                None,
+                None,
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            !receipt_path(home.path(), "oversized_root")
+                .unwrap()
+                .exists()
+        );
+    }
+
+    #[test]
+    fn negotiated_storage_is_digest_bound_and_unrequested_receipts_keep_the_old_shape() {
+        let home = tempfile::tempdir().unwrap();
+        let mut storage = MountedStorageEvidence::default();
+        storage.0.insert(
+            "/data".into(),
+            MountedFilesystem {
+                kind: MountedFilesystemKind::Directory,
+                quota_bytes: Some(0),
+            },
+        );
+        storage.0.insert(
+            "/file".into(),
+            MountedFilesystem {
+                kind: MountedFilesystemKind::File,
+                quota_bytes: None,
+            },
+        );
+        for requested in [false, true] {
+            let id = if requested { "extended" } else { "original" };
+            let receipt = PreparedConfigurationReceipt::prepare_with_storage(
+                home.path(),
+                id,
+                "root",
+                None,
+                None,
+                None,
+                None,
+                requested.then(|| storage.clone()),
+            )
+            .unwrap()
+            .publish();
+            let path = receipt_path(home.path(), id).unwrap();
+            let bytes = fs::read(&path).unwrap();
+            let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(json.get("storage").is_some(), requested);
+            let captured = CapturedConfiguration::read(home.path(), id, "root", &receipt).unwrap();
+            if requested {
+                let observed = captured.storage().unwrap();
+                assert_eq!(observed.get("/data").unwrap().quota_bytes, Some(0));
+                assert_eq!(observed.get("/file").unwrap().quota_bytes, None);
+                assert!(observed.get("/unknown").is_none());
+                json["storage"]["/data"]["quota_bytes"] = serde_json::Value::Null;
+                fs::write(path, serde_json::to_vec(&json).unwrap()).unwrap();
+                assert!(CapturedConfiguration::read(home.path(), id, "root", &receipt).is_err());
+            } else {
+                assert!(captured.storage().is_none());
+                // These are exactly the required fields emitted by the previous schema.
+                let keys: std::collections::BTreeSet<_> = json
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect();
+                assert_eq!(
+                    keys,
+                    ["schema", "checkpoint_id", "capture_root", "source"]
+                        .into_iter()
+                        .collect()
+                );
+            }
         }
     }
 

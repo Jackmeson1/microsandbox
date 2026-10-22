@@ -88,7 +88,8 @@ export class ControlConnection {
       const json = new JsonSession(this.session.dialer, this.session.options, "cbor");
       return request.decodeJson(await json.operation(request.jsonRequest(), options));
     }
-    const configurationCapture = "requiresConfigurationCapture" in request && request.requiresConfigurationCapture === true;
+    const configurationStorage = "requiresConfigurationStorage" in request && request.requiresConfigurationStorage === true;
+    const configurationCapture = configurationStorage || "requiresConfigurationCapture" in request && request.requiresConfigurationCapture === true;
     return this.framedOperation(options, async remaining => {
       if (!configurationCapture) return this.session.framed!.requestTyped(request, remaining);
       // Use the actual framed connection, not discovery from a potentially replaced socket.
@@ -106,7 +107,7 @@ export class ControlConnection {
           const failure = controlError(error);
           throw failure instanceof ClientError ? failure.withDelivery("not_sent") : new ClientError("invalid_data");
         }
-        if (!capabilities.configuration_capture) throw new ClientError("unsupported_operation");
+        if (!capabilities.configuration_capture || (configurationStorage && !capabilities.configuration_storage)) throw new ClientError("unsupported_operation");
         return await this.session.framed!.requestTyped(request, { ...remaining, signal: attempt.signal, requestTimeoutMs: attempt.remaining() });
       } finally { attempt.dispose(); }
     });

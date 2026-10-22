@@ -154,6 +154,7 @@ impl JsonControlClient {
                 request.compatibility_json_bytes()?,
                 options,
                 request.requires_configuration_capture(),
+                request.requires_configuration_storage(),
             )
             .await?;
         request.decode_compatibility_json(response)
@@ -175,7 +176,8 @@ impl JsonControlClient {
         request: Zeroizing<Vec<u8>>,
         options: RequestOptions,
     ) -> ControlClientResult<JsonReply> {
-        self.operation_bytes_checked(request, options, false).await
+        self.operation_bytes_checked(request, options, false, false)
+            .await
     }
 
     async fn operation_bytes_checked(
@@ -183,7 +185,9 @@ impl JsonControlClient {
         request: Zeroizing<Vec<u8>>,
         options: RequestOptions,
         configuration_capture: bool,
+        configuration_storage: bool,
     ) -> ControlClientResult<JsonReply> {
+        let configuration_capture = configuration_capture || configuration_storage;
         // JSON uses separate discovery and mutation sockets. Only independently verified runtime
         // ownership can prevent a replacement peer from silently ignoring a new request field.
         if configuration_capture && !self.dialer.verified() {
@@ -206,7 +210,10 @@ impl JsonControlClient {
                 .map_err(crate::connection::not_sent);
             let mode = match mode {
                 Ok((mode, capabilities)) => {
-                    if configuration_capture && !capabilities.configuration_capture {
+                    if configuration_capture
+                        && (!capabilities.configuration_capture
+                            || (configuration_storage && !capabilities.configuration_storage))
+                    {
                         return Err(ClientError::new(ErrorKind::UnsupportedOperation).into());
                     }
                     mode

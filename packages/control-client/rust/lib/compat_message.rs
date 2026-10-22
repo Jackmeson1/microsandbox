@@ -43,6 +43,11 @@ pub trait CompatibleControlRequest: Request<ControlProtocol, Error = ControlClie
         false
     }
 
+    /// Whether private mounted-storage evidence is required before dispatch.
+    fn requires_configuration_storage(&self) -> bool {
+        false
+    }
+
     /// First framed-control generation that defines this operation.
     fn min_generation(&self) -> u8;
     /// Encode the exact historical JSON request without a trailing newline.

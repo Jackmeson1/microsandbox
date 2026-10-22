@@ -464,6 +464,7 @@ type VmBuildOutput = (
     Option<crate::checkpoint::RestoredAgentState>,
     std::collections::BTreeMap<String, microsandbox_filesystem::OwnedDirectoryCheckpoint>,
     Option<std::fs::File>,
+    super::storage_observation::MountedFilesystemInventory,
 );
 
 /// Public runtime endpoints held back until a restored guest is activated.
@@ -1130,6 +1131,7 @@ fn run(
         mut restored_agent,
         owned_directory_checkpoints,
         runtime_script_root,
+        mounted_filesystems,
     ) = match build_result {
         Ok(vm) => vm,
         Err(e) => {
@@ -1210,6 +1212,7 @@ fn run(
                 .and_then(|agent| agent.inherited_memory.take()),
             owned_directory_checkpoints,
             runtime_script_root,
+            mounted_filesystems,
             retention,
             db.clone(),
         );
@@ -1933,6 +1936,7 @@ fn build_vm(
     let vm = &config.vm;
     let mut owned_directory_checkpoints = std::collections::BTreeMap::new();
     let runtime_script_root;
+    let mut mounted_filesystems = super::storage_observation::MountedFilesystemInventory::default();
     // Decode once before constructing devices: unavailable disks need the exact
     // captured capacity/features, never guessed geometry or a temporary backing.
     let prepared_restore = vm
@@ -2298,6 +2302,11 @@ fn build_vm(
                     host_path.display()
                 ))
             })?;
+        mounted_filesystems.record_available(
+            &tag,
+            super::storage_observation::MountedFilesystemKind::File,
+            parsed.quota_bytes,
+        );
         builder = builder.fs(move |fs| fs.tag(&tag).custom(Box::new(backend)));
     }
 
@@ -2470,6 +2479,11 @@ fn build_vm(
                 RuntimeError::Custom(format!("mount {tag}: {e}"))
             }
         })?;
+        mounted_filesystems.record_available(
+            &tag,
+            super::storage_observation::MountedFilesystemKind::Directory,
+            parsed.quota_bytes,
+        );
         builder = builder.fs(move |fs| fs.tag(&tag).custom(Box::new(backend)));
     }
 
@@ -2842,6 +2856,7 @@ fn build_vm(
         restored_agent,
         owned_directory_checkpoints,
         runtime_script_root,
+        mounted_filesystems,
     ))
 }
 

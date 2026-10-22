@@ -42,12 +42,14 @@ pub(crate) struct CapturedSandboxConfiguration {
     configuration: SandboxConfig,
     scripts: Option<ScriptBackingEvidence>,
     init: Option<InitObservation>,
+    storage: Option<microsandbox_runtime::retention::MountedStorageEvidence>,
 }
 
 /// No Debug or serialization: the eventual receipt can contain private local configuration.
 pub(crate) struct ExpectedConfigurationCapture {
     directory: PathBuf,
     owner: RetentionOwner,
+    storage_requested: bool,
 }
 
 /// Retains lifecycle ownership and exact evidence through a stopped disk cut.
@@ -83,6 +85,7 @@ impl CapturedSandboxConfiguration {
             configuration,
             scripts,
             init,
+            storage: None,
         };
         if let Some(origin) = &captured.configuration.command_provenance
             && (!origin.matches(&captured.configuration.spec.runtime.cmd)
@@ -115,6 +118,17 @@ impl CapturedSandboxConfiguration {
         captured.validate_init_observation()?;
         captured.validate_script_inventory()?;
         Ok(Some(captured))
+    }
+
+    /// Actual mounted kind/quota; missing evidence cannot certify a reusable binding.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "portable publication remains gated")
+    )]
+    pub(crate) fn mounted_storage(
+        &self,
+    ) -> Option<&microsandbox_runtime::retention::MountedStorageEvidence> {
+        self.storage.as_ref()
     }
 
     pub(crate) fn configuration(&self) -> &SandboxConfig {
@@ -321,6 +335,7 @@ impl ExpectedConfigurationCapture {
         Ok(Some(Self {
             directory: local.sandboxes_dir().join(name),
             owner,
+            storage_requested: session.capabilities().configuration_storage,
         }))
     }
 
@@ -337,6 +352,14 @@ impl ExpectedConfigurationCapture {
         let captured =
             CapturedConfiguration::read(&self.directory, checkpoint_id, capture_root, receipt)
                 .map_err(|_| invalid("invalid checkpoint configuration receipt"))?;
+        // A negotiated producer may omit optional evidence to preserve the receipt budget.
+        // Unsolicited evidence remains invalid; requested but absent evidence is unknown.
+        if !self.storage_requested && captured.storage().is_some() {
+            return Err(invalid(
+                "runtime storage evidence did not match capture negotiation",
+            ));
+        }
+        let storage = captured.storage().cloned();
         let init = captured.init().cloned();
         let pending = captured.pending_configuration().cloned();
         let (source, scripts) = captured.into_parts();
@@ -357,7 +380,11 @@ impl ExpectedConfigurationCapture {
                 "checkpoint configuration belongs to another source run",
             ));
         }
-        CapturedSandboxConfiguration::new(source, scripts, init, pending)
+        let mut configuration = CapturedSandboxConfiguration::new(source, scripts, init, pending)?;
+        if let Some(configuration) = &mut configuration {
+            configuration.storage = storage;
+        }
+        Ok(configuration)
     }
 }
 
@@ -535,6 +562,14 @@ mod tests {
             &self,
             value: &serde_json::Value,
         ) -> MicrosandboxResult<Option<CapturedSandboxConfiguration>> {
+            self.read_with_storage(value, false)
+        }
+
+        fn read_with_storage(
+            &self,
+            value: &serde_json::Value,
+            storage_requested: bool,
+        ) -> MicrosandboxResult<Option<CapturedSandboxConfiguration>> {
             let bytes = serde_json::to_vec(value).unwrap();
             std::fs::write(
                 self.home
@@ -549,6 +584,7 @@ mod tests {
             ExpectedConfigurationCapture {
                 directory: self.home.path().to_path_buf(),
                 owner,
+                storage_requested,
             }
             .read(
                 "capture_one",
@@ -558,6 +594,38 @@ mod tests {
                 }),
             )
         }
+    }
+
+    #[test]
+    fn storage_receipt_requires_matching_negotiation_and_preserves_unknowns() {
+        let fixture = Fixture::new();
+        assert!(
+            fixture
+                .read(&fixture.value)
+                .unwrap()
+                .unwrap()
+                .mounted_storage()
+                .is_none()
+        );
+        assert!(
+            fixture
+                .read_with_storage(&fixture.value, true)
+                .unwrap()
+                .unwrap()
+                .mounted_storage()
+                .is_none()
+        );
+        let mut extended = fixture.value.clone();
+        extended["storage"] = serde_json::json!({
+            "/data": {"kind":"directory", "quota_bytes":0},
+            "/file": {"kind":"file", "quota_bytes":null},
+        });
+        assert!(fixture.read(&extended).is_err());
+        let captured = fixture.read_with_storage(&extended, true).unwrap().unwrap();
+        let storage = captured.mounted_storage().unwrap();
+        assert_eq!(storage.get("/data").unwrap().quota_bytes, Some(0));
+        assert_eq!(storage.get("/file").unwrap().quota_bytes, None);
+        assert!(storage.get("/unknown").is_none());
     }
 
     #[test]
@@ -864,6 +932,7 @@ mod tests {
         let mut unknown = fixture.value.clone();
         unknown["source"] = serde_json::Value::Null;
         assert!(fixture.read(&unknown).unwrap().is_none());
+        assert!(fixture.read_with_storage(&unknown, true).unwrap().is_none());
         let mut unknown = fixture.value.clone();
         unknown["source"]["source"] = serde_json::Value::Null;
         assert!(fixture.read(&unknown).unwrap().is_none());
@@ -875,6 +944,7 @@ mod tests {
         let error = ExpectedConfigurationCapture {
             directory: fixture.home.path().to_path_buf(),
             owner: fixture.owner,
+            storage_requested: false,
         }
         .read("capture_one", "full:root", None)
         .err()
