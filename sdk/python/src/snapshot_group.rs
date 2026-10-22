@@ -259,7 +259,15 @@ impl PySnapshotGroup {
         guest_flush: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let group = self.inner.clone();
-        let options = capture_options(name, None, labels, full, record_integrity, guest_flush)?;
+        let options = capture_options(
+            name,
+            None,
+            false,
+            labels,
+            full,
+            record_integrity,
+            guest_flush,
+        )?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             Ok(PyCheckpointCaptureResult {
                 inner: group
@@ -353,6 +361,7 @@ impl PySnapshotCreateResult {
 pub(crate) fn capture_options(
     name: Option<String>,
     destination: Option<PathBuf>,
+    local: bool,
     labels: Option<HashMap<String, String>>,
     full: bool,
     record_integrity: bool,
@@ -364,6 +373,13 @@ pub(crate) fn capture_options(
         options = options.name(name);
     }
     if let Some(destination) = destination {
+        // Resolve only local paths on the Python caller's thread, before future_into_py.
+        // absolute() preserves symlink-sensitive parent components and does not require existence.
+        let destination = if local {
+            std::path::absolute(destination)?
+        } else {
+            destination
+        };
         options = options.dest_dir(destination);
     }
     if full {
