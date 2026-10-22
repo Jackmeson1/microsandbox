@@ -20,6 +20,8 @@ def main():
     parser.add_argument("--hooks-binary", type=Path)
     parser.add_argument("--legacy-label-binary", type=Path)
     parser.add_argument("--case", action="append", choices=("current", "v0.6.0", "v0.6.6", "v0.6.7", "v0.6.18", "v0.7.8", "before-modify", "after-modify-effect"))
+    parser.add_argument("--large-script", action="store_true",
+                        help="Retain a 5 MiB unchanged script while updating labels")
     args = parser.parse_args()
     sys.path.insert(0, str(args.support.resolve()))
     spec = importlib.util.spec_from_file_location("history", args.support / "lifecycle_evidence.py")
@@ -63,10 +65,16 @@ def main():
             runner.run("load", "image", "load", "--input", args.image)
             with tarfile.open(args.image) as archive:
                 image = json.load(archive.extractfile("manifest.json"))[0]["RepoTags"][0]
+            extra = []
+            if args.large_script:
+                configuration = home / "large-script.json"
+                configuration.write_text(json.dumps({"scripts": {"large": "#" + "x" * (5 * 1024 * 1024) + "\n"}}))
+                extra = ["--conf", configuration]
             runner.run("create", "create", image, "--name", "labels", "--memory", "256M", "--max-memory", "256M",
-                       "--cpus", "1", "--max-cpus", "1", "--root-disk", "512M", "--max-duration", "5m")
+                       "--cpus", "1", "--max-cpus", "1", "--root-disk", "512M", "--max-duration", "5m", *extra)
             pids.update(pid for (pid,) in rows("SELECT pid FROM run") if pid)
             runner.run("seed", "exec", "labels", "--", "sh", "-ec", "echo retained >/root/labels-marker; sync")
+            script_before = config()["runtime"]["scripts"].get("large") if args.large_script else None
             before = journal() if version in ("current", "hooks") else None
             code = runner.run("label-set", "modify", "labels", "--label", "team=one", "--format", "json", required=not failure)
             if failure:
@@ -81,6 +89,8 @@ def main():
                     assert rows("SELECT key,value FROM sandbox_labels") == [("team", "one")]
                     assert journal()["pending"] == "modify"
                 runner.run("still-running", "exec", "labels", "--", "cat", "/root/labels-marker")
+                if args.large_script:
+                    assert config()["runtime"]["scripts"]["large"] == script_before
                 row["failure_outcome"] = "not_applied" if failure == "before-modify" else "unknown_after_application"
             else:
                 assert config()["labels"]["team"] == config("active_config")["labels"]["team"] == "one"
@@ -110,6 +120,11 @@ def main():
                 else:
                     assert not (home / "sandboxes/labels/last-active/state.json").exists()
                     row["legacy_catalog_route_preserved"] = True
+                if args.large_script:
+                    assert config()["runtime"]["scripts"]["large"] == script_before
+                    runner.run("large-script-retained", "exec", "labels", "--", "sh", "-ec",
+                               "test $(wc -c < /.msb/scripts/large) -gt 4194304")
+                    row["large_script_preserved"] = True
                 runner.run("stop", "stop", "labels")
                 runner.run("restart", "start", "labels")
                 pids.update(pid for (pid,) in rows("SELECT pid FROM run") if pid)

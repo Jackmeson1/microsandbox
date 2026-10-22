@@ -551,6 +551,7 @@ impl SandboxModificationBuilder {
                         .update_labels(
                             owner,
                             &expected_json,
+                            handle.config_json(),
                             serde_json::to_string(&config)?,
                             self.patch.labels.iter().cloned().collect(),
                             self.patch.labels_remove.clone(),

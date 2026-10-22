@@ -15,6 +15,15 @@ use crate::control::RuntimeLifecycle;
 use crate::retention::{RetentionJournal, RetentionTransition, catalog_file_identity};
 
 //--------------------------------------------------------------------------------------------------
+// Types
+//--------------------------------------------------------------------------------------------------
+
+enum DesiredConfig<'a> {
+    Complete(&'a str),
+    Delta { expected: &'a str, encoded: &'a str },
+}
+
+//--------------------------------------------------------------------------------------------------
 // Methods
 //--------------------------------------------------------------------------------------------------
 
@@ -25,23 +34,51 @@ impl RuntimeControlExecutor {
     ) -> Result<LabelsResponse, ControlError> {
         let mut state = self.state.lock().unwrap();
         let runtime_boot_id = state.runtime_boot_id.clone();
-        let LabelsRequest::Update {
-            runtime_boot_id: expected_boot,
-            expected_active_sha256,
-            desired_config_json,
-            set,
-            remove,
-        } = request
-        else {
-            return match request {
-                LabelsRequest::Hello => Ok(LabelsResponse::Supported { runtime_boot_id }),
-                _ => Err(error(
+        let (expected_boot, expected_active_sha256, desired, set, remove) = match &request {
+            LabelsRequest::Hello => {
+                return Ok(LabelsResponse::Supported {
+                    runtime_boot_id,
+                    config_delta: true,
+                });
+            }
+            LabelsRequest::Update {
+                runtime_boot_id,
+                expected_active_sha256,
+                desired_config_json,
+                set,
+                remove,
+            } => (
+                runtime_boot_id,
+                expected_active_sha256,
+                DesiredConfig::Complete(desired_config_json),
+                set,
+                remove,
+            ),
+            LabelsRequest::UpdateDelta {
+                runtime_boot_id,
+                expected_active_sha256,
+                expected_desired_sha256,
+                desired_delta_json,
+                set,
+                remove,
+            } => (
+                runtime_boot_id,
+                expected_active_sha256,
+                DesiredConfig::Delta {
+                    expected: expected_desired_sha256,
+                    encoded: desired_delta_json,
+                },
+                set,
+                remove,
+            ),
+            _ => {
+                return Err(error(
                     "unsupported_operation",
                     "unsupported label operation",
-                )),
-            };
+                ));
+            }
         };
-        if expected_boot != runtime_boot_id {
+        if expected_boot != &runtime_boot_id {
             return Err(error(
                 "runtime_changed",
                 "label update belongs to another runtime",
@@ -61,13 +98,14 @@ impl RuntimeControlExecutor {
                 "runtime mutation revision is exhausted",
             )
         })?;
-        let result = self.signal_runtime.block_on(update_labels(
+        let result = self.signal_runtime.block_on(update_labels_plan(
             &mut state.retention,
             &self.retention_db,
-            &expected_active_sha256,
-            &desired_config_json,
-            &set,
-            &remove,
+            expected_active_sha256,
+            desired,
+            set,
+            remove,
+            |journal, source| journal.confirm(source),
         ));
         // Confirmation can fail after the catalog effect; fence subsequent mutations
         // with the advanced revision even when the caller receives an uncertain result.
@@ -90,6 +128,7 @@ impl RuntimeControlExecutor {
 // Functions
 //--------------------------------------------------------------------------------------------------
 
+#[cfg(test)]
 async fn update_labels(
     journal: &mut RetentionJournal,
     db: &DbWriteConnection,
@@ -110,11 +149,33 @@ async fn update_labels(
     .await
 }
 
+#[cfg(test)]
 async fn update_labels_with(
     journal: &mut RetentionJournal,
     db: &DbWriteConnection,
     expected: &str,
     desired_config_json: &str,
+    set: &BTreeMap<String, String>,
+    remove: &[String],
+    confirm: impl FnOnce(&mut RetentionJournal, Option<Value>) -> std::io::Result<()>,
+) -> Result<(), ControlError> {
+    update_labels_plan(
+        journal,
+        db,
+        expected,
+        DesiredConfig::Complete(desired_config_json),
+        set,
+        remove,
+        confirm,
+    )
+    .await
+}
+
+async fn update_labels_plan(
+    journal: &mut RetentionJournal,
+    db: &DbWriteConnection,
+    expected: &str,
+    desired_plan: DesiredConfig<'_>,
     set: &BTreeMap<String, String>,
     remove: &[String],
     confirm: impl FnOnce(&mut RetentionJournal, Option<Value>) -> std::io::Result<()>,
@@ -130,28 +191,6 @@ async fn update_labels_with(
         || !expected.bytes().all(|b| b.is_ascii_hexdigit())
     {
         return Err(error("invalid_request", "invalid label update"));
-    }
-    // Keep the existing SDK transaction boundary: the full validated desired plan,
-    // active label delta and index are committed together, even for mixed modifications.
-    let desired: Value = serde_json::from_str(desired_config_json)
-        .map_err(|_| error("invalid_request", "invalid desired label configuration"))?;
-    let object = desired
-        .as_object()
-        .ok_or_else(|| error("invalid_request", "invalid desired label configuration"))?;
-    let indexed_labels: BTreeMap<String, String> = match object.get("labels") {
-        Some(value) => serde_json::from_value(value.clone())
-            .map_err(|_| error("invalid_request", "invalid desired labels"))?,
-        None => BTreeMap::new(),
-    };
-    if set
-        .iter()
-        .any(|(key, value)| indexed_labels.get(key) != Some(value))
-        || remove.iter().any(|key| indexed_labels.contains_key(key))
-    {
-        return Err(error(
-            "invalid_request",
-            "desired labels do not match label update",
-        ));
     }
     let owner = journal.record().owner.clone();
     let file = db
@@ -184,7 +223,7 @@ async fn update_labels_with(
     let row = db
         .query_one_raw(Statement::from_sql_and_values(
             DbBackend::Sqlite,
-            format!("SELECT s.active_config FROM sandbox s WHERE {predicate}"),
+            format!("SELECT s.active_config, s.config FROM sandbox s WHERE {predicate}"),
             identity.clone(),
         ))
         .await
@@ -216,6 +255,50 @@ async fn update_labels_with(
         return Err(error(
             "configuration_not_applied",
             "active configuration changed before label update",
+        ));
+    }
+    // Resolve against the exact desired document selected by the SDK, not a typed
+    // reconstruction. The transaction repeats this guard so old writers cannot be lost.
+    let (desired_config_json, desired_before) = match desired_plan {
+        DesiredConfig::Complete(json) => (json.to_owned(), None),
+        DesiredConfig::Delta { expected, encoded } => {
+            let before: String = row.try_get("", "config").map_err(|_| {
+                error(
+                    "configuration_not_applied",
+                    "cannot read desired configuration",
+                )
+            })?;
+            if hex::encode(Sha256::digest(before.as_bytes())) != expected {
+                return Err(error(
+                    "configuration_not_applied",
+                    "desired configuration changed before label update",
+                ));
+            }
+            let json = microsandbox_protocol::labels_delta::apply(&before, encoded)
+                .map_err(|_| error("invalid_request", "invalid desired configuration delta"))?;
+            (json, Some(before))
+        }
+    };
+    // Keep the existing SDK transaction boundary: the full validated desired plan,
+    // active label delta and index are committed together, even for mixed modifications.
+    let desired: Value = serde_json::from_str(&desired_config_json)
+        .map_err(|_| error("invalid_request", "invalid desired label configuration"))?;
+    let object = desired
+        .as_object()
+        .ok_or_else(|| error("invalid_request", "invalid desired label configuration"))?;
+    let indexed_labels: BTreeMap<String, String> = match object.get("labels") {
+        Some(value) => serde_json::from_value(value.clone())
+            .map_err(|_| error("invalid_request", "invalid desired labels"))?,
+        None => BTreeMap::new(),
+    };
+    if set
+        .iter()
+        .any(|(key, value)| indexed_labels.get(key) != Some(value))
+        || remove.iter().any(|key| indexed_labels.contains_key(key))
+    {
+        return Err(error(
+            "invalid_request",
+            "desired labels do not match label update",
         ));
     }
     let mut after: Value = serde_json::from_str(&before).map_err(|_| {
@@ -264,13 +347,19 @@ async fn update_labels_with(
     let mut values = vec![after_json.into(), desired_config_json.to_owned().into()];
     values.extend(identity);
     values.push(before.into());
+    let desired_predicate = if let Some(before) = desired_before {
+        values.push(before.into());
+        " AND s.config = ?"
+    } else {
+        ""
+    };
     let changed: Result<bool, DbErr> = db.transaction(|txn| {
         let values = values.clone();
         let indexed_labels = indexed_labels.clone();
         let predicate = predicate.to_owned();
         async move {
             let changed = txn.execute_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
-                format!("UPDATE sandbox AS s SET active_config = ?, config = ?, updated_at = CURRENT_TIMESTAMP WHERE {predicate} AND s.active_config = ?"), values)).await?;
+                format!("UPDATE sandbox AS s SET active_config = ?, config = ?, updated_at = CURRENT_TIMESTAMP WHERE {predicate} AND s.active_config = ?{desired_predicate}"), values)).await?;
             if changed.rows_affected() != 1 {
                 return Ok((txn, false));
             }
