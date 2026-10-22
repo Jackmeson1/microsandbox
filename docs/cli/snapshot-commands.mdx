@@ -180,6 +180,8 @@ Atomic group-member removal uses the same filesystem capabilities and older-writ
 
 Whole-group removal refuses surviving external dependents and active readers. It publishes the disappearance of the entire group with one directory rename; catalog reconciliation and payload cleanup follow. A committed removal with a later cleanup problem reports that distinction explicitly and retains recovery evidence. Listing or another storage operation recovers interrupted cleanup while preserving a new group created at the old name. A durability error can instead leave publication unconfirmed; recover before retrying.
 
+On Unix, whole-group removal keeps two file descriptors per checkpoint open, plus catalog and operation overhead, to protect concurrent readers from older clients. If the process or system open-file limit is too low, removal refuses before publication and preserves the entire group. Close unrelated open files or raise the applicable limit before retrying; `ulimit -n` shows the current shell’s process limit. Removing individual checkpoints uses fewer simultaneous descriptors but has separate per-checkpoint outcomes.
+
 The canonical CLI no longer accepts `GROUP:MEMBER`, multiple removal arguments, or a standalone indexed artifact path here. Use `GROUP --checkpoint MEMBER` or `GROUP --all`. Legacy SDK reference-removal methods retain their indexed-missing-artifact behavior.
 
 <Accordion title="Reader protection, stale entries, and interrupted cleanup">
