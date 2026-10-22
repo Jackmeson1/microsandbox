@@ -3,10 +3,12 @@
 
 import asyncio
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -179,6 +181,48 @@ class LifecycleEvidenceTests(unittest.TestCase):
                 self.assertEqual(saved["remaining_sandboxes"], 0)
                 self.assertEqual(saved["remaining_live_runs"], 0)
                 self.assertEqual(saved["surviving_pids"], [])
+
+    def test_resource_harness_records_interruption_and_stops_the_matrix(self):
+        spec = importlib.util.spec_from_file_location(
+            "resource_capability_evidence", Path(__file__).with_name("resource-capability-evidence.py"))
+        harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(harness)
+        for index, error in enumerate(interruptions()):
+            with self.subTest(error=type(error).__name__):
+                home = self.root / f"home-{index}"
+                (home / "db").mkdir(parents=True)
+                with sqlite3.connect(home / "db/msb.db") as db:
+                    db.executescript("CREATE TABLE sandbox (id INTEGER); "
+                                     "CREATE TABLE run (pid INTEGER, terminated_at TEXT);")
+                output = self.root / f"output-{index}"
+                args = ["evidence", "--output", str(output), "--temp-root", str(self.root)]
+                for key in ("old-runtime", "new-runtime", "old-agent", "new-agent",
+                            "firmware", "probe", "image"):
+                    args.extend(["--" + key, __file__])
+                archive = Mock()
+                archive.__enter__ = Mock(return_value=archive)
+                archive.__exit__ = Mock(return_value=False)
+                archive.extractfile.return_value = io.BytesIO(b'[{"RepoTags":["fixture"]}]')
+                runner = Mock()
+                runner.run.side_effect = [error, 0, 0]
+                with patch.object(sys, "argv", args), \
+                        patch.object(evidence, "install_termination_handler"), \
+                        patch.object(evidence, "Runner", return_value=runner), \
+                        patch.object(harness.tarfile, "open", return_value=archive), \
+                        patch.object(harness.tempfile, "mkdtemp", return_value=str(home)):
+                    with self.assertRaises(type(error)) as raised:
+                        harness.main()
+                self.assertIs(raised.exception, error)
+                saved = json.loads((output / "report.json").read_text())
+                self.assertEqual(saved["status"], "failed")
+                self.assertEqual(len(saved["cases"]), 1)
+                case = saved["cases"][0]
+                self.assertEqual(case["status"], "failed")
+                self.assertIn(type(error).__name__, case["traceback"])
+                self.assertEqual(case["cleanup"], {"stop": 0, "rm": 0})
+                self.assertEqual(case["remaining_sandboxes"], 0)
+                self.assertEqual(case["remaining_live_runs"], 0)
+                self.assertEqual(case["surviving_pids"], [])
 
     @unittest.skipUnless(os.name == "posix", "Unix process supervision")
     def test_real_sigterm_reaps_owned_child_and_saves_evidence(self):

@@ -70,6 +70,7 @@ def main():
                     os.kill(pid, 0)
                     row["surviving_pids"].append(pid)
                 except ProcessLookupError:
+                    # The audited runtime has exited; absence is the desired result.
                     pass
             assert row["remaining_sandboxes"] == row["remaining_live_runs"] == 0
             assert not row["surviving_pids"]
@@ -108,6 +109,8 @@ def main():
             row["after"] = identity()
             row["status"] = "passed"
         except BaseException as error:
+            # Record interruption before finally saves the report, then propagate it.
+            # Catching only Exception would leave a cancelled case marked running.
             row.update(status="failed", error=str(error), traceback=traceback.format_exc())
             report["status"] = "failed"
             if not isinstance(error, Exception):
