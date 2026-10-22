@@ -359,9 +359,10 @@ impl Request<ControlProtocol> for GetPauseState {
 }
 
 macro_rules! compatible_v2 {
-    ($request:ty, $json:expr, $decode:expr $(, $configuration:expr)?) => {
+    ($request:ty, $json:expr, $decode:expr $(, $configuration:expr, $storage:expr)?) => {
         impl CompatibleControlRequest for $request {
-            $(fn requires_configuration_capture(&self) -> bool { ($configuration)(self) })?
+            $(fn requires_configuration_capture(&self) -> bool { ($configuration)(self) }
+              fn requires_configuration_storage(&self) -> bool { ($storage)(self) })?
             fn min_generation(&self) -> u8 {
                 2
             }
@@ -408,10 +409,14 @@ compatible_v2!(
         if let Some(retain) = request.0.retain_configuration {
             value["retain_configuration"] = retain.into();
         }
+        if let Some(storage) = request.0.retain_configuration_storage {
+            value["retain_configuration_storage"] = storage.into();
+        }
         value
     },
     decode_checkpoint_json,
-    |request: &CreateCheckpoint| request.0.retain_configuration == Some(true)
+    |request: &CreateCheckpoint| request.0.retain_configuration == Some(true),
+    |request: &CreateCheckpoint| request.0.retain_configuration_storage == Some(true)
 );
 compatible_v2!(
     CreateDiskCheckpoint,
@@ -424,10 +429,14 @@ compatible_v2!(
         if let Some(retain) = request.0.retain_configuration {
             value["retain_configuration"] = retain.into();
         }
+        if let Some(storage) = request.0.retain_configuration_storage {
+            value["retain_configuration_storage"] = storage.into();
+        }
         value
     },
     |reply| decode_json_field(reply, "disk_checkpoint"),
-    |request: &CreateDiskCheckpoint| request.0.retain_configuration == Some(true)
+    |request: &CreateDiskCheckpoint| request.0.retain_configuration == Some(true),
+    |request: &CreateDiskCheckpoint| request.0.retain_configuration_storage == Some(true)
 );
 compatible_v2!(
     CreateBranch,

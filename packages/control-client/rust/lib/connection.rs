@@ -263,7 +263,9 @@ impl ControlConnection {
                 if request.min_generation() > client.ready().welcome.generation {
                     return self.inner_json(request, options).await;
                 }
-                if request.requires_configuration_capture() {
+                if request.requires_configuration_capture()
+                    || request.requires_configuration_storage()
+                {
                     // Query this exact framed peer, not only the earlier JSON discovery socket.
                     // A replaced endpoint must not make an old peer silently ignore a new field.
                     let until = deadline(
@@ -285,7 +287,10 @@ impl ControlConnection {
                     check_deadline(until)?;
                     options.request_timeout =
                         Some(until.saturating_duration_since(tokio::time::Instant::now()));
-                    if !capabilities.configuration_capture {
+                    if !capabilities.configuration_capture
+                        || (request.requires_configuration_storage()
+                            && !capabilities.configuration_storage)
+                    {
                         return Err(ClientError::new(ErrorKind::UnsupportedOperation).into());
                     }
                 }

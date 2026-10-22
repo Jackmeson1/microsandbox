@@ -28,7 +28,8 @@ export class JsonSession {
   async operation(request: ExtendedLegacyControlRequest, options: RequestOptions = {}): Promise<JsonReply> {
     // Validate and serialize before discovery so unsupported/invalid native
     // requests cannot cause network I/O. Legacy batches have no framed-size cap.
-    const configurationCapture = (request.op === "checkpoint_create" || request.op === "disk_checkpoint_create") && request.retain_configuration === true;
+    const configurationStorage = (request.op === "checkpoint_create" || request.op === "disk_checkpoint_create") && request.retain_configuration_storage === true;
+    const configurationCapture = configurationStorage || (request.op === "checkpoint_create" || request.op === "disk_checkpoint_create") && request.retain_configuration === true;
     // Discovery and mutation use different sockets: pin their runtime identity independently.
     if (configurationCapture && !this.dialer.verifier) throw new ClientError("unsupported_operation");
     const line = encodeJsonRequest(request);
@@ -41,7 +42,7 @@ export class JsonSession {
         try {
           const discovered = await this.discover(setup);
           mode = discovered.mode;
-          if (configurationCapture && !discovered.capabilities.configuration_capture) throw new ClientError("unsupported_operation");
+          if (configurationCapture && (!discovered.capabilities.configuration_capture || (configurationStorage && !discovered.capabilities.configuration_storage))) throw new ClientError("unsupported_operation");
         }
         catch (error) {
           // Discovery is read-only. Its lost reply says nothing about admission

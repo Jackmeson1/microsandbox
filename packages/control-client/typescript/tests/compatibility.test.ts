@@ -476,3 +476,53 @@ it("legacy capture prepared values retain their existing mutability", async () =
     expect(request.requiresConfigurationCapture).toBe(false);
   }
 });
+
+it("storage capture negotiates separately and leaves old operations usable", async () => {
+  const { CreateDiskCheckpoint } = await import("../src/index.js");
+  for (const supported of [false, true]) {
+    let captures = 0, probes = 0;
+    const send = (transport: Transport, id: number, name: string, payload: unknown) => transport.feed(encodeFrame({
+      id, flags: 1, body: encodeEnvelope({ v: 2, t: name, p: encodeRecord(payload) }),
+    }));
+    const dialer = new Dialer(index => new Transport((data, transport) => {
+      if (index === 0) { transport.feed(bytes(cborCaps)); return; }
+      const id = new DataView(data.buffer, data.byteOffset).getUint32(4);
+      const envelope = decodeEnvelope(data.subarray(9));
+      if (envelope.t === "control.hello") {
+        transport.feed(packet(0, "control.welcome", { protocol: "msb.control", generation: 2, max_frame_size: 4096, max_in_flight: 4 }));
+      } else if (envelope.t === "control.capabilities") {
+        probes++;
+        send(transport, id, "control.capabilities.result", { ...caps, configuration_capture: true, configuration_storage: supported });
+      } else if (envelope.t === "control.disk.checkpoint.create") {
+        captures++;
+        send(transport, id, "control.disk.checkpoint.result", { checkpoint_id: "capture", path: "/capture", disk: {}, configuration: { sha256: "a".repeat(64) } });
+      } else if (envelope.t === "control.memory.state") {
+        send(transport, id, "control.memory.state", { boot_mib: 256, target_mib: 256, current_mib: 256, max_mib: 256 });
+      } else throw new Error("unexpected operation");
+    }));
+    const client = await ControlConnection.connectConnector(dialer);
+    const result = client.requestTyped(new CreateDiskCheckpoint({ checkpoint_id: "capture", retain_configuration: true, retain_configuration_storage: true }));
+    if (supported) expect((await result).configuration).toEqual({ sha256: "a".repeat(64) });
+    else await expect(result).rejects.toMatchObject({ code: "unsupported_operation", delivery: "not_sent" });
+    expect(probes).toBe(1); expect(captures).toBe(supported ? 1 : 0);
+    expect((await client.requestTyped(new GetMemoryState())).current_mib).toBe(256n);
+    await client.close();
+  }
+});
+
+
+it("storage capture refuses old JSON receipt peers without dispatch", async () => {
+  const { CreateDiskCheckpoint } = await import("../src/index.js");
+  const advertised = JSON.stringify({ ok: true, capabilities: { ...caps, configuration_capture: true, configuration_storage: true } });
+  for (const verified of [false, true]) {
+    const writes: string[] = [];
+    const dialer = jsonDialer([advertised, JSON.stringify({ ok: true, capabilities: { ...caps, configuration_capture: true } })], line => writes.push(line));
+    const verifier: VerifiedControlConnector = { connect: context => dialer.connect(context), async verifySession() {} };
+    const client = verified ? await ControlConnection.connectVerifiedConnector(verifier) : await ControlConnection.connectConnector(dialer);
+    await expect(client.requestTyped(new CreateDiskCheckpoint({ checkpoint_id: "capture", retain_configuration: true, retain_configuration_storage: true })))
+      .rejects.toMatchObject({ code: "unsupported_operation", delivery: "not_sent" });
+    expect(writes).toHaveLength(verified ? 2 : 1);
+    expect(writes.every(line => JSON.parse(line).op === "capabilities")).toBe(true);
+    await client.close();
+  }
+});

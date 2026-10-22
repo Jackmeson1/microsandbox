@@ -148,8 +148,9 @@ fn collect(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn many_changed_fields_use_one_fenced_replacement() {

@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+#[path = "retention/mounted_storage.rs"]
+mod mounted_storage;
+
 #[path = "retention/capture.rs"]
 mod capture;
 
@@ -1023,3 +1026,5 @@ pub use script_backing::{
     CapturedScriptBacking, CapturedScriptDirectory, ScriptBackingEvidence, ScriptBackingUnknown,
 };
 pub use selection::select_stopped_configuration;
+
+pub use mounted_storage::{MountedFilesystem, MountedFilesystemKind, MountedStorageEvidence};

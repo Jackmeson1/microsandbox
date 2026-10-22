@@ -40,6 +40,9 @@ pub enum ControlRequest {
         /// Retain host-private configuration evidence for this exact capture.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         retain_configuration: Option<bool>,
+        /// Request storage evidence only after capability negotiation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retain_configuration_storage: Option<bool>,
         /// Optional writeback policy. Absent preserves released clients' behavior.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         guest_flush: Option<microsandbox_types::GuestFlush>,
@@ -144,6 +147,9 @@ pub enum ControlRequest {
         /// Retain host-private configuration evidence for this exact capture.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         retain_configuration: Option<bool>,
+        /// Request storage evidence only after capability negotiation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retain_configuration_storage: Option<bool>,
         /// Optional writeback policy. Absent retains released capture semantics.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         guest_flush: Option<microsandbox_types::GuestFlush>,
@@ -318,6 +324,9 @@ pub struct ControlCapabilities {
     /// Captures can retain configuration under runtime mutation authority.
     #[serde(default)]
     pub configuration_capture: bool,
+    /// Optional private receipt evidence for mounted filesystem kind and quota.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub configuration_storage: bool,
     /// Explicit guest writeback policy and same-pause filesystem coverage checks.
     #[serde(default)]
     pub guest_flush_policy: bool,
@@ -538,6 +547,7 @@ mod tests {
             ok: true,
             capabilities: Some(ControlCapabilities {
                 configuration_capture: true,
+                configuration_storage: true,
                 guest_flush_policy: true,
                 optional_disk_integrity: true,
                 root_disk_grow: true,
