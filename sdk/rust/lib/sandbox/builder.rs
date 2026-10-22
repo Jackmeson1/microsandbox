@@ -980,6 +980,7 @@ impl SandboxBuilder {
         };
         let network = f(NetworkBuilder::from_inherited_config(network));
         let http_override = network.has_http_override();
+        let secret_policy_override = network.has_secret_policy_override();
         match network.build() {
             Ok(net) => {
                 if let Err(err) = self.set_local_network_config(net)
@@ -989,6 +990,12 @@ impl SandboxBuilder {
                 }
                 if http_override {
                     self.config.http_defaults_implicit = Some(false);
+                }
+                if secret_policy_override {
+                    self.config
+                        .field_presence
+                        .get_or_insert_with(Default::default)
+                        .declare_secret_policy();
                 }
             }
             Err(err) => {
@@ -1236,6 +1243,10 @@ impl SandboxBuilder {
         mut self,
         action: microsandbox_types::SecretViolationAction,
     ) -> Self {
+        self.config
+            .field_presence
+            .get_or_insert_with(Default::default)
+            .declare_secret_policy();
         match self.local_network_config() {
             Ok(mut network) => {
                 network.secrets.violation_action = action;

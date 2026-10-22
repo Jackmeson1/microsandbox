@@ -11,6 +11,15 @@ use crate::sandbox::network_presence::{NetworkDefault, RateBucket, RateDirection
 
 impl RuntimeCaptureSource<'_> {
     pub(super) fn complete_network_field(&self, field: &str) -> bool {
+        if field == "secrets"
+            && self
+                .config
+                .field_presence
+                .as_ref()
+                .is_some_and(|presence| presence.secret_policy_was_unrecorded())
+        {
+            return false;
+        }
         self.recorded
             .get("network")
             .and_then(|network| network.get(field))

@@ -22,6 +22,8 @@ def main():
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--with-mount", action="store_true", help="Also verify omitted mount ownership defaults")
     parser.add_argument("--with-network-defaults", action="store_true", help="Verify private evidence for omitted HTTP defaults")
+    parser.add_argument("--with-unrecorded-secret-policy", action="store_true",
+                        help="Reconstruct a historical policy lacking its enclosing action")
     args = parser.parse_args()
     sys.path.insert(0, str(args.support.resolve()))
     spec = importlib.util.spec_from_file_location("history", args.support / "lifecycle_evidence.py")
@@ -95,6 +97,26 @@ def main():
             check_presence(config())
             check_mount("mount-created", runner)
             runner.run("seed", "exec", "presence", "--", "sh", "-ec", "echo retained >/root/presence-marker; sync")
+            if args.with_unrecorded_secret_policy:
+                runner.run("historical-stop", "stop", "presence")
+                # Simulate an older saved record, only while this disposable VM is
+                # stopped. There is no secret material; the absent scalar is the case.
+                source = config()
+                source["network"]["secrets"] = {"secrets": [], "passthrough_hosts": []}
+                with sqlite3.connect(home / "db/msb.db") as db:
+                    db.execute("UPDATE sandbox SET config=? WHERE name='presence'",
+                               (json.dumps(source),))
+                runner.run("historical-start", "start", "presence")
+                # Start may intentionally retain the original desired JSON. A label
+                # edit exercises the actual SDK rewrite that used to erase absence.
+                runner.run("historical-rewrite", "modify", "presence", "--label", "rewrite=checked")
+                rewritten = config()
+                assert rewritten["network"]["secrets"]["violation_action"] == "block-and-log"
+                assert rewritten["field_presence"]["secret_policy_unrecorded"] is True
+                row["unrecorded_policy_survives_restart"] = True
+                save_source("historical-rewritten-config", rewritten)
+                if version == "current":
+                    assert journal()["confirmed"]["source"]["field_presence"]["secret_policy_unrecorded"] is True
             if version == "current":
                 first = journal()
                 check_presence(first["confirmed"]["source"])
