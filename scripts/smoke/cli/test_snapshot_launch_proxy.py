@@ -108,6 +108,73 @@ class ProxyFixtureTests(unittest.TestCase):
             writer.join(timeout=3)
         self.assertFalse(writer.is_alive())
 
+    def tunneled_http(self, stream):
+        stream.sendall(b"GET /probe HTTP/1.1\r\nHost: fixture\r\n\r\n")
+        response = b""
+        while chunk := stream.recv(4096):
+            response += chunk
+        self.assertTrue(response.endswith(smoke.BODY))
+
+    def test_http_connect_serves_only_the_expected_tunnel(self):
+        server = smoke.HttpFixture()
+        self.addCleanup(server.close)
+        stream = self.connect(server)
+        stream.sendall(f"CONNECT {smoke.TARGET}:{smoke.TARGET_PORT} HTTP/1.1\r\nHost: private-header\r\n\r\n".encode())
+        self.assertTrue(smoke.read_headers(stream).startswith(b"HTTP/1.1 200"))
+        self.tunneled_http(stream)
+        events = self.events(server)
+        self.assertTrue(events[0]["http"])
+        self.assertNotIn("private-header", json.dumps(events))
+
+    def test_http_connect_rejects_other_destinations(self):
+        server = smoke.HttpFixture()
+        self.addCleanup(server.close)
+        stream = self.connect(server)
+        stream.sendall(b"CONNECT unrelated.invalid:443 HTTP/1.1\r\n\r\n")
+        self.assertEqual(stream.recv(10), b"")
+        self.assertFalse(self.events(server)[0]["http"])
+
+    def test_socks4_accepts_explicit_or_empty_user_without_recording_it(self):
+        for user in (b"", b"private-user-value"):
+            with self.subTest(has_user=bool(user)):
+                server = smoke.Socks4Fixture(user or None)
+                self.addCleanup(server.close)
+                stream = self.connect(server)
+                stream.sendall(struct.pack("!BBH4s", 4, 1, smoke.TARGET_PORT,
+                                           socket.inet_aton(smoke.TARGET)) + user + b"\0")
+                self.assertEqual(smoke.receive(stream, 8)[1], 90)
+                self.tunneled_http(stream)
+                events = self.events(server)
+                self.assertTrue(events[0]["http"])
+                self.assertNotIn("private-user-value", json.dumps(events))
+
+    def test_socks4_wrong_user_cannot_receive_http_success(self):
+        server = smoke.Socks4Fixture(b"expected-user")
+        self.addCleanup(server.close)
+        stream = self.connect(server)
+        stream.sendall(struct.pack("!BBH4s", 4, 1, smoke.TARGET_PORT,
+                                   socket.inet_aton(smoke.TARGET)) + b"wrong-user\0")
+        self.assertEqual(smoke.receive(stream, 8)[1], 91)
+        events = self.events(server)
+        self.assertEqual(events[0]["authentication"], "rejected")
+        self.assertFalse(events[0]["http"])
+        self.assertNotIn("user", json.dumps(events))
+
+    def test_headers_and_socks4_user_are_bounded(self):
+        left, right = socket.socketpair()
+        self.addCleanup(left.close)
+        self.addCleanup(right.close)
+        left.sendall(b"x" * 8192)
+        with self.assertRaises(ValueError):
+            smoke.read_headers(right)
+        server = smoke.Socks4Fixture()
+        self.addCleanup(server.close)
+        stream = self.connect(server)
+        stream.sendall(struct.pack("!BBH4s", 4, 1, smoke.TARGET_PORT,
+                                   socket.inet_aton(smoke.TARGET)) + b"x" * 256)
+        self.assertEqual(stream.recv(10), b"")
+        self.assertFalse(self.events(server)[0]["http"])
+
 
 class DnsFixtureTests(unittest.TestCase):
     def query(self, name=smoke.DNS_NAME, kind=1):
