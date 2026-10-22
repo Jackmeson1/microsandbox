@@ -38,6 +38,20 @@ fn raw(config: &SandboxConfig) -> Value {
     serde_json::to_value(config.clone_for_persistence()).unwrap()
 }
 
+// Fully explicit entries need no omission hints, so this isolates the missing parent.
+fn explicit_entries_without_policy() -> Value {
+    let mut record = raw(&declared());
+    record["network"]["secrets"]["passthrough_hosts"] = json!([]);
+    record["network"]["secrets"]["secrets"][0]["violation_action"] = json!("block");
+    record["network"]["secrets"]["secrets"][0]["substitution"]["header_fields"] =
+        json!(["Authorization"]);
+    record["network"]["secrets"]
+        .as_object_mut()
+        .unwrap()
+        .remove("violation_action");
+    record
+}
+
 fn project(raw: &Value) -> SavedNetworkConfig {
     let source = RuntimeCaptureSource::from_recorded(raw, None, None).unwrap();
     let bindings = source
@@ -186,6 +200,126 @@ fn missing_enclosing_secret_policy_stays_unknown_after_repeated_saves() {
 }
 
 #[test]
+fn missing_secret_policy_with_explicit_entries_stays_unknown_after_rewrite() {
+    let record = explicit_entries_without_policy();
+    assert!(unknown(&project(&record).secrets));
+    // Fully explicit entries need no omission hints. The enclosing default must
+    // still not become recorded intent merely because configuration was rewritten.
+    for supplied_presence in [true, false] {
+        let mut rewritten = record.clone();
+        if !supplied_presence {
+            rewritten.as_object_mut().unwrap().remove("field_presence");
+        }
+        for _ in 0..3 {
+            let decoded: SandboxConfig = serde_json::from_value(rewritten).unwrap();
+            let before = serde_json::to_value(&decoded.spec).unwrap();
+            let rebuilt = SandboxBuilder::from(decoded).finish(None, None).unwrap();
+            assert_eq!(serde_json::to_value(&rebuilt.spec).unwrap(), before);
+            rewritten = raw(&rebuilt);
+            assert!(unknown(&project(&rewritten).secrets));
+        }
+    }
+}
+
+#[test]
+fn malformed_negative_policy_evidence_cannot_certify_synthesized_defaults() {
+    let decoded: SandboxConfig = serde_json::from_value(explicit_entries_without_policy()).unwrap();
+    let expected_spec = serde_json::to_value(&decoded.spec).unwrap();
+    let rewritten = raw(&decoded);
+    for marker in [
+        json!(true),
+        json!(null),
+        json!("future"),
+        json!({"unknown": true}),
+    ] {
+        let mut input = rewritten.clone();
+        input["field_presence"]["secret_policy_unrecorded"] = marker;
+        // An unrelated future field also makes the current evidence decoder refuse
+        // the document. Its negative information must still survive that refusal.
+        input["field_presence"]["future_field"] = json!(true);
+        let decoded: SandboxConfig = serde_json::from_value(input).unwrap();
+        assert_eq!(serde_json::to_value(&decoded.spec).unwrap(), expected_spec);
+        assert!(unknown(&project(&raw(&decoded)).secrets));
+    }
+}
+
+#[test]
+fn unrecorded_secret_policy_requires_an_explicit_policy_replacement() {
+    let record = explicit_entries_without_policy();
+    let historical: SandboxConfig = serde_json::from_value(record).unwrap();
+    let rebuilt = SandboxBuilder::from(historical.clone())
+        .label("team", "example")
+        .finish(None, None)
+        .unwrap();
+    assert!(unknown(&project(&raw(&rebuilt)).secrets));
+    let mut sparse = SandboxConfigPatch::new();
+    sparse.spec.network.secrets = Some(Default::default());
+    let rebuilt = SandboxBuilder::from(historical.clone())
+        .overlay(sparse)
+        .finish(None, None)
+        .unwrap();
+    assert!(unknown(&project(&raw(&rebuilt)).secrets));
+
+    // Explicit policy declaration is distinct from an identical historical overlay.
+    let inherited = SandboxBuilder::from(declared())
+        .overlay(SandboxConfigPatch::from(historical.clone()))
+        .finish(None, None)
+        .unwrap();
+    assert!(unknown(&project(&raw(&inherited)).secrets));
+    let mut replacement = SandboxConfigPatch::new();
+    replacement.spec.network.secrets =
+        Some(historical.spec.network.secrets.clone().unwrap().into());
+    let explicit = SandboxBuilder::from(historical)
+        .overlay(replacement)
+        .finish(None, None)
+        .unwrap();
+    assert!(project(&raw(&explicit)).secrets.unwrap().value().is_some());
+}
+
+#[cfg(feature = "net")]
+#[test]
+fn fluent_policy_selection_clears_uncertainty_but_other_network_edits_do_not() {
+    let record = explicit_entries_without_policy();
+    let historical: SandboxConfig = serde_json::from_value(record).unwrap();
+    let action = historical
+        .spec
+        .network
+        .secrets
+        .as_ref()
+        .unwrap()
+        .violation_action
+        .clone();
+    let unrelated = SandboxBuilder::from(historical.clone())
+        .network(|network| network.max_tcp_connections(123))
+        .finish(None, None)
+        .unwrap();
+    assert!(unknown(&project(&raw(&unrelated)).secrets));
+    for explicit in [
+        SandboxBuilder::from(historical.clone()).secret_violation_action(action.clone()),
+        SandboxBuilder::from(historical).network(|network| network.secret_violation_action(action)),
+    ] {
+        let config = explicit.finish(None, None).unwrap();
+        assert!(project(&raw(&config)).secrets.unwrap().value().is_some());
+    }
+}
+
+#[test]
+fn historical_policy_replacement_does_not_inherit_destination_uncertainty() {
+    let known: SandboxConfig = serde_json::from_value(raw(&declared())).unwrap();
+    let mut partial = raw(&known);
+    partial["network"]["secrets"]
+        .as_object_mut()
+        .unwrap()
+        .remove("violation_action");
+    let unknown_config: SandboxConfig = serde_json::from_value(partial).unwrap();
+    let replaced = SandboxBuilder::from(unknown_config)
+        .overlay(SandboxConfigPatch::from(known))
+        .finish(None, None)
+        .unwrap();
+    assert!(project(&raw(&replaced)).secrets.unwrap().value().is_some());
+}
+
+#[test]
 fn changed_values_retire_evidence_and_cannot_revive_it_after_omission() {
     for (parent, field, replacement, family) in [
         (
@@ -287,6 +421,8 @@ fn omitted_required_rate_bucket_fields_cannot_be_reconstructed_as_evidence() {
 #[ignore = "requires actual old/new runtime records from saved-presence-evidence.py"]
 fn live_network_default_evidence_projects_without_reinventing_old_intent() {
     let root = std::path::PathBuf::from(std::env::var_os("MSB_NESTED_PRESENCE_FIXTURES").unwrap());
+    let require_unrecorded_policy =
+        std::env::var_os("MSB_REQUIRE_UNRECORDED_SECRET_POLICY").is_some();
     for (name, known) in [
         ("current-source.json", true),
         ("runtime-modified-source.json", true),
@@ -302,8 +438,19 @@ fn live_network_default_evidence_projects_without_reinventing_old_intent() {
             "{name}"
         );
         assert_eq!(unknown(&saved.http), !known, "{name}");
+        if require_unrecorded_policy && known {
+            assert_eq!(
+                recorded.pointer("/field_presence/secret_policy_unrecorded"),
+                Some(&Value::Bool(true)),
+                "{name}"
+            );
+            assert!(unknown(&saved.secrets), "{name}");
+        }
         let config: SandboxConfig = serde_json::from_value(recorded).unwrap();
         let rebuilt = SandboxBuilder::from(config).finish(None, None).unwrap();
         assert_eq!(unknown(&project(&raw(&rebuilt)).http), !known, "{name}");
+        if require_unrecorded_policy && known {
+            assert!(unknown(&project(&raw(&rebuilt)).secrets), "{name}");
+        }
     }
 }

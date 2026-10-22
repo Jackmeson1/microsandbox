@@ -34,6 +34,7 @@ pub struct NetworkBuilder {
     config: NetworkConfig,
     errors: Vec<BuildError>,
     http_override: bool,
+    secret_policy_override: bool,
 }
 
 /// Fluent builder for HTTP denial responses.
@@ -177,6 +178,7 @@ impl NetworkBuilder {
             config: NetworkConfig::default(),
             errors: Vec::new(),
             http_override: false,
+            secret_policy_override: true,
         }
     }
 
@@ -186,6 +188,7 @@ impl NetworkBuilder {
             config,
             errors: Vec::new(),
             http_override: true,
+            secret_policy_override: true,
         }
     }
 
@@ -194,6 +197,7 @@ impl NetworkBuilder {
     pub fn from_inherited_config(config: NetworkConfig) -> Self {
         Self {
             http_override: false,
+            secret_policy_override: false,
             ..Self::from_config(config)
         }
     }
@@ -202,6 +206,12 @@ impl NetworkBuilder {
     #[doc(hidden)]
     pub fn has_http_override(&self) -> bool {
         self.http_override
+    }
+
+    /// Whether the enclosing secret policy was explicitly selected, even unchanged.
+    #[doc(hidden)]
+    pub fn has_secret_policy_override(&self) -> bool {
+        self.secret_policy_override
     }
 
     /// Enable or disable networking.
@@ -343,6 +353,7 @@ impl NetworkBuilder {
     /// Set the default action for blocked secret placeholders.
     pub fn secret_violation_action(mut self, action: SecretViolationAction) -> Self {
         self.config.secrets.violation_action = action;
+        self.secret_policy_override = true;
         self
     }
 

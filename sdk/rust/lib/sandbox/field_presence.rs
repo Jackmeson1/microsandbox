@@ -62,6 +62,10 @@ pub(crate) struct FieldPresence {
     default_mount_ownership: BTreeSet<DefaultMountOwnership>,
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     nested_network: BTreeSet<NetworkDefault>,
+    /// Negative evidence survives typed decoding, which otherwise supplies this policy.
+    /// It contains no value and can only make capture less certain.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    secret_policy_unrecorded: bool,
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -110,6 +114,7 @@ impl FieldPresence {
             thp: Some(spec.resources.thp),
             absent_network,
             nested_network: NetworkDefault::declared(&spec.network),
+            secret_policy_unrecorded: false,
             default_mount_ownership: spec
                 .mounts
                 .iter()
@@ -128,6 +133,7 @@ impl FieldPresence {
         }
         self.absent_network.extend(other.absent_network);
         self.nested_network.extend(other.nested_network);
+        self.secret_policy_unrecorded |= other.secret_policy_unrecorded;
         self.default_mount_ownership
             .extend(other.default_mount_ownership);
     }
@@ -168,12 +174,32 @@ impl FieldPresence {
     }
 
     pub(crate) fn retain_recorded_network(&mut self, network: Option<&Value>) {
+        // A fully explicit entry may need no omission hints at all. Remember the
+        // missing enclosing policy independently, before serde manufactures it.
+        self.secret_policy_unrecorded |= network
+            .and_then(|network| network.get("secrets"))
+            .is_some_and(|secrets| {
+                secrets.is_object() && secrets.get("violation_action").is_none()
+            });
         self.nested_network
             .retain(|field| network.is_some_and(|raw| field.recorded_parent(raw)));
     }
 
+    pub(crate) fn secret_policy_was_unrecorded(&self) -> bool {
+        self.secret_policy_unrecorded
+    }
+
+    pub(crate) fn mark_secret_policy_unrecorded(&mut self) {
+        self.secret_policy_unrecorded = true;
+    }
+
+    pub(crate) fn declare_secret_policy(&mut self) {
+        self.secret_policy_unrecorded = false;
+    }
+
     pub(crate) fn clear_nested_network(&mut self) {
         self.nested_network.clear();
+        self.secret_policy_unrecorded = false;
     }
 
     pub(crate) fn knows_absent_network(&self, key: &str, spec: &SandboxSpec) -> bool {
@@ -224,6 +250,16 @@ impl FieldPresence {
         }
         if let Some(thp) = patch.resources.thp {
             self.thp = Some(thp);
+        }
+        if patch
+            .network
+            .secrets
+            .as_ref()
+            .is_some_and(|secrets| secrets.violation_action.is_some())
+        {
+            // Only this explicit policy choice establishes new intent; a sparse
+            // entry edit does not. Reconstruction patches never call this method.
+            self.secret_policy_unrecorded = false;
         }
         if matches!(patch.network.outbound_proxy, Some(None)) {
             self.absent_network

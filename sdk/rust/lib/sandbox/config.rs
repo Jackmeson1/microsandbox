@@ -1304,6 +1304,11 @@ impl<'de> Deserialize<'de> for SandboxConfig {
         }
         // This optional private hint cannot make otherwise supported old configuration
         // unreadable. Unknown/future/malformed evidence is unavailable, never a default.
+        // A malformed or future hint must not erase its negative evidence and thereby
+        // certify a synthesized policy. Only the exact false value declines this guard.
+        let secret_policy_unrecorded = value
+            .pointer("/field_presence/secret_policy_unrecorded")
+            .is_some_and(|marker| marker != &serde_json::Value::Bool(false));
         let mut presence = value
             .as_object_mut()
             .and_then(|object| object.remove("field_presence"))
@@ -1314,7 +1319,17 @@ impl<'de> Deserialize<'de> for SandboxConfig {
             });
         if let Some(presence) = &mut presence {
             presence.retain_recorded_mounts(value.get("mounts"));
-            presence.retain_recorded_network(value.get("network"));
+        }
+        // Historical records without positive presence evidence can still need a
+        // negative guard: typed decoding must not turn an absent policy into intent.
+        let had_presence = presence.is_some();
+        let mut network_presence = presence.take().unwrap_or_default();
+        if secret_policy_unrecorded {
+            network_presence.mark_secret_policy_unrecorded();
+        }
+        network_presence.retain_recorded_network(value.get("network"));
+        if had_presence || network_presence.secret_policy_was_unrecorded() {
+            presence = Some(network_presence);
         }
         let resources_recorded = value
             .get("resources")
