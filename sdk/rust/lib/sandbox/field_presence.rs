@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::mount_presence::DefaultMountOwnership;
+use super::network_policy_presence::NetworkPolicyField;
 use super::network_presence::NetworkDefault;
 
 //--------------------------------------------------------------------------------------------------
@@ -66,6 +67,8 @@ pub(crate) struct FieldPresence {
     /// It contains no value and can only make capture less certain.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     secret_policy_unrecorded: bool,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    unrecorded_network_policy: BTreeSet<NetworkPolicyField>,
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -115,6 +118,7 @@ impl FieldPresence {
             absent_network,
             nested_network: NetworkDefault::declared(&spec.network),
             secret_policy_unrecorded: false,
+            unrecorded_network_policy: BTreeSet::new(),
             default_mount_ownership: spec
                 .mounts
                 .iter()
@@ -134,6 +138,8 @@ impl FieldPresence {
         self.absent_network.extend(other.absent_network);
         self.nested_network.extend(other.nested_network);
         self.secret_policy_unrecorded |= other.secret_policy_unrecorded;
+        self.unrecorded_network_policy
+            .extend(other.unrecorded_network_policy);
         self.default_mount_ownership
             .extend(other.default_mount_ownership);
     }
@@ -174,6 +180,14 @@ impl FieldPresence {
     }
 
     pub(crate) fn retain_recorded_network(&mut self, network: Option<&Value>) {
+        let missing = NetworkPolicyField::missing(network, |family| {
+            network.is_some_and(Value::is_object)
+                && self.absent_network.contains(&match family {
+                    "dns" => AbsentNetworkField::Dns,
+                    _ => AbsentNetworkField::Tls,
+                })
+        });
+        self.unrecorded_network_policy.extend(missing);
         // A fully explicit entry may need no omission hints at all. Remember the
         // missing enclosing policy independently, before serde manufactures it.
         self.secret_policy_unrecorded |= network
@@ -197,9 +211,27 @@ impl FieldPresence {
         self.secret_policy_unrecorded = false;
     }
 
+    pub(crate) fn retain_negative_network_policy(&mut self, marker: Option<&Value>) {
+        self.unrecorded_network_policy
+            .extend(NetworkPolicyField::retained(marker));
+    }
+
+    pub(crate) fn has_unrecorded_network_policy(&self, family: Option<&str>) -> bool {
+        self.unrecorded_network_policy
+            .iter()
+            .any(|field| family.is_none_or(|family| field.family() == family))
+    }
+
+    #[cfg(feature = "net")]
+    pub(crate) fn declare_network_policy_fields(&mut self, fields: &BTreeSet<&str>) {
+        self.unrecorded_network_policy
+            .retain(|field| !fields.contains(field.key()));
+    }
+
     pub(crate) fn clear_nested_network(&mut self) {
         self.nested_network.clear();
         self.secret_policy_unrecorded = false;
+        self.unrecorded_network_policy.clear();
     }
 
     pub(crate) fn knows_absent_network(&self, key: &str, spec: &SandboxSpec) -> bool {
@@ -240,6 +272,8 @@ impl FieldPresence {
     /// Only an actual nullable clear establishes absence. Ordinary patch omissions inherit
     /// values and must not be promoted to declarations during historical reconstruction.
     pub(crate) fn apply_explicit(&mut self, patch: &SandboxSpecPatch) {
+        self.unrecorded_network_policy
+            .retain(|field| !field.explicitly_selected(patch));
         if let Some(mounts) = &patch.mounts {
             // An explicit replacement declares only the supplied list. Reconstruction
             // patches are filtered by the caller before reaching this method.
@@ -464,8 +498,11 @@ mod tests {
             let mut record = raw(&build());
             record["field_presence"] = hint;
             let config: SandboxConfig = serde_json::from_value(record.clone()).unwrap();
-            assert!(config.field_presence.is_none());
             assert!(matches!(thp(&record), Some(SavedValue::Unknown { .. })));
+            assert!(matches!(
+                thp(&raw(&config)),
+                Some(SavedValue::Unknown { .. })
+            ));
         }
         let mut record = raw(&build());
         record.as_object_mut().unwrap().remove("resources");

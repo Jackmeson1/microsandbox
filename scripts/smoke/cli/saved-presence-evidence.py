@@ -24,6 +24,8 @@ def main():
     parser.add_argument("--with-network-defaults", action="store_true", help="Verify private evidence for omitted HTTP defaults")
     parser.add_argument("--with-unrecorded-secret-policy", action="store_true",
                         help="Reconstruct a historical policy lacking its enclosing action")
+    parser.add_argument("--with-unrecorded-network-policy", action="store_true",
+                        help="Keep omitted TLS/DNS settings unknown through real restart and label writes")
     args = parser.parse_args()
     sys.path.insert(0, str(args.support.resolve()))
     spec = importlib.util.spec_from_file_location("history", args.support / "lifecycle_evidence.py")
@@ -58,10 +60,12 @@ def main():
         def check_presence(source):
             evidence = source["field_presence"]
             assert evidence["thp"] == "madvise", evidence
-            assert "dns" in evidence["absent_network"], evidence
-            assert "tls" in evidence["absent_network"], evidence
+            if not args.with_unrecorded_network_policy or source["network"].get("dns") is None:
+                assert "dns" in evidence["absent_network"], evidence
+                assert "tls" in evidence["absent_network"], evidence
             assert source["resources"].get("thp") is None
-            assert source["network"].get("dns") is None
+            if not args.with_unrecorded_network_policy:
+                assert source["network"].get("dns") is None
             if args.with_network_defaults:
                 assert {entry["kind"] for entry in evidence["nested_network"]} == {
                     "http_deny_message", "http_network_deny_message", "http_secret_deny_message"
@@ -117,6 +121,33 @@ def main():
                 save_source("historical-rewritten-config", rewritten)
                 if version == "current":
                     assert journal()["confirmed"]["source"]["field_presence"]["secret_policy_unrecorded"] is True
+            if args.with_unrecorded_network_policy:
+                runner.run("historical-network-stop", "stop", "presence")
+                # Only this stopped disposable fixture is altered. Interception stays
+                # disabled; missing settings use their unchanged decoder defaults.
+                source = config()
+                source["network"]["tls"] = {
+                    "enabled": False, "intercepted_ports": [443], "bypass": [],
+                    "block_quic_on_intercept": True, "upstream_ca_cert": [],
+                    "scoped_upstream_ca_cert": [], "scoped_verify_upstream": [],
+                    "intercept_ca": {"cert_path": None, "key_path": None}}
+                source["network"]["dns"] = {"nameservers": []}
+                with sqlite3.connect(home / "db/msb.db") as db:
+                    db.execute("UPDATE sandbox SET config=? WHERE name='presence'",
+                               (json.dumps(source),))
+                runner.run("historical-network-start", "start", "presence")
+                runner.run("historical-network-rewrite", "modify", "presence", "--label", "network-rewrite=checked")
+                rewritten = config()
+                assert rewritten["network"]["tls"]["verify_upstream"] is True
+                assert rewritten["network"]["dns"]["rebind_protection"] is True
+                assert rewritten["network"]["dns"]["query_timeout_ms"] == 5000
+                missing = {"tls_verify_upstream", "dns_rebind_protection", "dns_query_timeout_ms"}
+                assert set(rewritten.get("field_presence", {}).get("unrecorded_network_policy", [])) == missing
+                row["unrecorded_network_policy_survives_restart"] = True
+                save_source("historical-network-rewritten-config", rewritten)
+                if version == "current":
+                    retained = journal()["confirmed"]["source"]
+                    assert set(retained["field_presence"]["unrecorded_network_policy"]) == missing
             if version == "current":
                 first = journal()
                 check_presence(first["confirmed"]["source"])

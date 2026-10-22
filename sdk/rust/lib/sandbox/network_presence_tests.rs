@@ -1,7 +1,7 @@
 //! Real serializer shapes must retain declared omissions without inventing old intent.
 
 use microsandbox_types::snapshot::saved_config::{SavedNetworkConfig, SavedValue};
-use microsandbox_types::{NetworkSpec, OutboundProxy};
+use microsandbox_types::{NetworkSpec, OutboundProxy, TlsConfigPatch};
 use serde_json::{Value, json};
 
 use super::{SandboxBuilder, SandboxConfig, SandboxConfigPatch};
@@ -376,9 +376,11 @@ fn unknown_nested_hint_is_ignored_without_breaking_config_decode() {
     let original = record["network"].clone();
     record["field_presence"]["nested_network"] = json!([{"kind":"future_default"}]);
     let decoded: SandboxConfig = serde_json::from_value(record.clone()).unwrap();
-    assert!(decoded.field_presence.is_none());
+    // Unknown positive hints are discarded, but missing policy fields still retain
+    // negative evidence so a later save cannot certify decoder-supplied defaults.
     assert_eq!(raw(&decoded)["network"], original);
     assert_unknown(&project(&record));
+    assert_unknown(&project(&raw(&decoded)));
 }
 
 #[test]
@@ -418,6 +420,162 @@ fn omitted_required_rate_bucket_fields_cannot_be_reconstructed_as_evidence() {
 }
 
 #[test]
+fn omitted_network_policy_fields_remain_unknown_across_rewrites() {
+    let mut invented = Vec::new();
+    for (family, field) in [
+        ("tls", "enabled"),
+        ("tls", "intercepted_ports"),
+        ("tls", "bypass"),
+        ("tls", "verify_upstream"),
+        ("tls", "block_quic_on_intercept"),
+        ("tls", "upstream_ca_cert"),
+        ("tls", "scoped_upstream_ca_cert"),
+        ("tls", "scoped_verify_upstream"),
+        ("tls", "intercept_ca"),
+        ("dns", "rebind_protection"),
+        ("dns", "nameservers"),
+        ("dns", "query_timeout_ms"),
+    ] {
+        let mut record = raw(&declared());
+        record["network"]["dns"] = json!({
+            "rebind_protection": true,
+            "query_timeout_ms": 5000,
+            "nameservers": []
+        });
+        assert!(project(&record).tls.unwrap().value().is_some());
+        assert!(project(&record).dns.unwrap().value().is_some());
+        record["network"][family]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        let is_unknown = |saved: &SavedNetworkConfig| match family {
+            "tls" => unknown(&saved.tls),
+            _ => unknown(&saved.dns),
+        };
+        assert!(is_unknown(&project(&record)), "{family}.{field}");
+        // A label-only edit must not certify a policy supplied by typed decoding.
+        for supplied_presence in [true, false] {
+            let mut rewritten = record.clone();
+            if !supplied_presence {
+                rewritten.as_object_mut().unwrap().remove("field_presence");
+            }
+            for _ in 0..3 {
+                let decoded: SandboxConfig = serde_json::from_value(rewritten).unwrap();
+                let spec = serde_json::to_value(&decoded.spec).unwrap();
+                let rebuilt = SandboxBuilder::from(decoded)
+                    .label("team", "example")
+                    .finish(None, None)
+                    .unwrap();
+                // The only operational edit is the deliberately changed label.
+                let mut changed_spec = serde_json::to_value(&rebuilt.spec).unwrap();
+                changed_spec["labels"] = spec["labels"].clone();
+                assert_eq!(changed_spec, spec);
+                rewritten = raw(&rebuilt);
+                if !is_unknown(&project(&rewritten)) {
+                    invented.push(format!("{family}.{field}"));
+                }
+            }
+        }
+    }
+    assert!(
+        invented.is_empty(),
+        "synthesized policy became known: {invented:?}"
+    );
+}
+
+#[test]
+fn policy_negative_evidence_survives_malformed_hints_and_unknown_fields() {
+    for marker in [
+        json!(null),
+        json!(["future"]),
+        json!({}),
+        json!(["tls_verify_upstream"]),
+    ] {
+        let mut record = raw(&declared());
+        record["field_presence"]["unrecorded_network_policy"] = marker;
+        record["field_presence"]["future"] = json!(true);
+        let expected = record["network"].clone();
+        let decoded: SandboxConfig = serde_json::from_value(record).unwrap();
+        assert_eq!(raw(&decoded)["network"], expected);
+        assert!(unknown(&project(&raw(&decoded)).tls));
+        let text = raw(&decoded)["field_presence"].to_string();
+        assert!(!text.contains("PRIVATE_") && !text.contains("127.0.0.1"));
+    }
+}
+
+#[test]
+fn explicit_policy_patch_repairs_only_the_fields_it_supplies() {
+    let mut record = raw(&declared());
+    for field in ["enabled", "verify_upstream"] {
+        record["network"]["tls"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+    }
+    let historical: SandboxConfig = serde_json::from_value(record).unwrap();
+    let mut patch = SandboxConfigPatch::new();
+    patch.spec.network.tls = Some(TlsConfigPatch {
+        enabled: Some(true),
+        ..Default::default()
+    });
+    let partial = SandboxBuilder::from(historical.clone())
+        .overlay(patch)
+        .finish(None, None)
+        .unwrap();
+    assert!(unknown(&project(&raw(&partial)).tls));
+    let mut patch = SandboxConfigPatch::new();
+    patch.spec.network.tls = Some(TlsConfigPatch {
+        verify_upstream: Some(true),
+        ..Default::default()
+    });
+    let explicit = SandboxBuilder::from(partial)
+        .overlay(patch)
+        .finish(None, None)
+        .unwrap();
+    assert!(project(&raw(&explicit)).tls.unwrap().value().is_some());
+    let known: SandboxConfig = serde_json::from_value(raw(&declared())).unwrap();
+    let replaced = SandboxBuilder::from(historical)
+        .overlay(SandboxConfigPatch::from(known))
+        .finish(None, None)
+        .unwrap();
+    assert!(project(&raw(&replaced)).tls.unwrap().value().is_some());
+}
+
+#[cfg(feature = "net")]
+#[test]
+fn fluent_policy_edits_do_not_certify_untouched_fields_or_unknown_list_prefixes() {
+    let mut record = raw(&declared());
+    for field in ["enabled", "verify_upstream", "bypass"] {
+        record["network"]["tls"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+    }
+    let historical: SandboxConfig = serde_json::from_value(record).unwrap();
+    let partial = SandboxBuilder::from(historical.clone())
+        .intercept_tls()
+        .network(|n| n.tls_overlay(|t| t.verify_upstream(true).bypass("example.invalid")))
+        .finish(None, None)
+        .unwrap();
+    assert!(unknown(&project(&raw(&partial)).tls));
+    let replaced = SandboxBuilder::from(partial)
+        .network(|n| n.tls(|t| t.verify_upstream(true)))
+        .finish(None, None)
+        .unwrap();
+    assert!(project(&raw(&replaced)).tls.unwrap().value().is_some());
+
+    let mut record = raw(&historical);
+    record["network"].as_object_mut().unwrap().remove("tls");
+    record.as_object_mut().unwrap().remove("field_presence");
+    let absent: SandboxConfig = serde_json::from_value(record).unwrap();
+    let unrelated = SandboxBuilder::from(absent)
+        .network(|n| n.max_tcp_connections(123))
+        .finish(None, None)
+        .unwrap();
+    assert!(unknown(&project(&raw(&unrelated)).tls));
+}
+
+#[test]
 #[ignore = "requires actual old/new runtime records from saved-presence-evidence.py"]
 fn live_network_default_evidence_projects_without_reinventing_old_intent() {
     let root = std::path::PathBuf::from(std::env::var_os("MSB_NESTED_PRESENCE_FIXTURES").unwrap());
@@ -451,6 +609,95 @@ fn live_network_default_evidence_projects_without_reinventing_old_intent() {
         assert_eq!(unknown(&project(&raw(&rebuilt)).http), !known, "{name}");
         if require_unrecorded_policy && known {
             assert!(unknown(&project(&raw(&rebuilt)).secrets), "{name}");
+        }
+    }
+}
+
+#[test]
+fn tls_aliases_preserve_evidence_but_missing_ca_children_do_not() {
+    for ca in ["intercept_ca", "ca"] {
+        let mut record = raw(&declared());
+        let tls = record["network"]["tls"].as_object_mut().unwrap();
+        let certs = tls.remove("scoped_upstream_ca_cert").unwrap();
+        tls.insert("scoped_upstream_ca_certs".into(), certs);
+        if ca == "ca" {
+            let value = tls.remove("intercept_ca").unwrap();
+            tls.insert(ca.into(), value);
+        }
+        assert!(project(&record).tls.unwrap().value().is_some());
+        for child in ["cert_path", "key_path"] {
+            let mut missing = record.clone();
+            missing["network"]["tls"][ca]
+                .as_object_mut()
+                .unwrap()
+                .remove(child);
+            for _ in 0..3 {
+                let decoded: SandboxConfig = serde_json::from_value(missing).unwrap();
+                missing = raw(&SandboxBuilder::from(decoded)
+                    .label("note", "checked")
+                    .finish(None, None)
+                    .unwrap());
+                assert!(unknown(&project(&missing).tls), "{ca}.{child}");
+            }
+        }
+    }
+}
+
+#[cfg(feature = "net")]
+#[test]
+fn fluent_scalar_and_list_replacements_establish_only_selected_policy() {
+    let mut record = raw(&declared());
+    record["network"]["dns"] = json!({});
+    let tls = record["network"]["tls"].as_object_mut().unwrap();
+    tls.remove("intercepted_ports");
+    tls.remove("block_quic_on_intercept");
+    let old: SandboxConfig = serde_json::from_value(record).unwrap();
+    let partial = SandboxBuilder::from(old)
+        .network(|n| {
+            n.tls_overlay(|t| t.intercepted_ports(vec![443]))
+                .dns_overlay(|d| d.rebind_protection(true).query_timeout_ms(5000))
+        })
+        .finish(None, None)
+        .unwrap();
+    let saved = project(&raw(&partial));
+    assert!(unknown(&saved.tls));
+    assert!(unknown(&saved.dns));
+    // Selecting a value equal to the decoder default still establishes intent.
+    let explicit = SandboxBuilder::from(partial)
+        .network(|n| {
+            n.tls_overlay(|t| t.block_quic(true))
+                .dns_overlay(|d| d.nameservers(Vec::<std::net::IpAddr>::new()))
+        })
+        .finish(None, None)
+        .unwrap();
+    let saved = project(&raw(&explicit));
+    assert!(saved.tls.unwrap().value().is_some());
+    assert!(saved.dns.unwrap().value().is_some());
+}
+
+#[test]
+#[ignore = "requires real runtime records from saved-presence-evidence.py"]
+fn live_missing_policy_remains_unknown_when_projected_and_rewritten() {
+    let root = std::path::PathBuf::from(std::env::var_os("MSB_POLICY_PRESENCE_FIXTURES").unwrap());
+    for version in ["current", "v0.6.0", "v0.6.6", "v0.6.7", "v0.6.18", "v0.7.8"] {
+        let mut files = vec!["historical-network-rewritten-config.json"];
+        if version == "current" {
+            files.extend(["current-source.json", "runtime-modified-source.json"]);
+        }
+        for file in files {
+            let mut record: Value =
+                serde_json::from_slice(&std::fs::read(root.join(version).join(file)).unwrap())
+                    .unwrap();
+            for _ in 0..3 {
+                let saved = project(&record);
+                assert!(unknown(&saved.tls), "{version}/{file}");
+                assert!(unknown(&saved.dns), "{version}/{file}");
+                let config: SandboxConfig = serde_json::from_value(record).unwrap();
+                record = raw(&SandboxBuilder::from(config)
+                    .label("projection", "checked")
+                    .finish(None, None)
+                    .unwrap());
+            }
         }
     }
 }

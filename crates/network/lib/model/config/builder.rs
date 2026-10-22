@@ -2,6 +2,7 @@
 //!
 //! Used by `SandboxBuilder::network(|n| n.port(8080, 80).policy(...))`.
 
+use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -25,6 +26,28 @@ use crate::secrets::config::{
 };
 
 //--------------------------------------------------------------------------------------------------
+// Constants
+//--------------------------------------------------------------------------------------------------
+
+const DNS_POLICY_FIELDS: [&str; 3] = [
+    "dns.rebind_protection",
+    "dns.nameservers",
+    "dns.query_timeout_ms",
+];
+const TLS_POLICY_FIELDS: [&str; 10] = [
+    "tls.enabled",
+    "tls.intercepted_ports",
+    "tls.bypass",
+    "tls.verify_upstream",
+    "tls.block_quic_on_intercept",
+    "tls.upstream_ca_cert",
+    "tls.scoped_upstream_ca_cert",
+    "tls.scoped_verify_upstream",
+    "tls.intercept_ca.cert_path",
+    "tls.intercept_ca.key_path",
+];
+
+//--------------------------------------------------------------------------------------------------
 // Types
 //--------------------------------------------------------------------------------------------------
 
@@ -35,6 +58,7 @@ pub struct NetworkBuilder {
     errors: Vec<BuildError>,
     http_override: bool,
     secret_policy_override: bool,
+    policy_fields: BTreeSet<&'static str>,
 }
 
 /// Fluent builder for HTTP denial responses.
@@ -47,11 +71,13 @@ pub struct HttpBuilder {
 /// Fluent builder for [`DnsConfig`].
 pub struct DnsBuilder {
     config: DnsConfig,
+    policy_fields: BTreeSet<&'static str>,
 }
 
 /// Fluent builder for [`TlsConfig`].
 pub struct TlsBuilder {
     config: TlsConfig,
+    policy_fields: BTreeSet<&'static str>,
 }
 
 /// Fluent builder for a single [`SecretEntry`].
@@ -179,6 +205,10 @@ impl NetworkBuilder {
             errors: Vec::new(),
             http_override: false,
             secret_policy_override: true,
+            policy_fields: DNS_POLICY_FIELDS
+                .into_iter()
+                .chain(TLS_POLICY_FIELDS)
+                .collect(),
         }
     }
 
@@ -189,6 +219,10 @@ impl NetworkBuilder {
             errors: Vec::new(),
             http_override: true,
             secret_policy_override: true,
+            policy_fields: DNS_POLICY_FIELDS
+                .into_iter()
+                .chain(TLS_POLICY_FIELDS)
+                .collect(),
         }
     }
 
@@ -196,9 +230,11 @@ impl NetworkBuilder {
     #[doc(hidden)]
     pub fn from_inherited_config(config: NetworkConfig) -> Self {
         Self {
+            config,
+            errors: Vec::new(),
             http_override: false,
             secret_policy_override: false,
-            ..Self::from_config(config)
+            policy_fields: BTreeSet::new(),
         }
     }
 
@@ -212,6 +248,13 @@ impl NetworkBuilder {
     #[doc(hidden)]
     pub fn has_secret_policy_override(&self) -> bool {
         self.secret_policy_override
+    }
+
+    /// Policy fields selected explicitly by replacement or scalar setters.
+    /// Inherited values and additions to inherited lists do not establish missing history.
+    #[doc(hidden)]
+    pub fn explicit_policy_fields(&self) -> &BTreeSet<&'static str> {
+        &self.policy_fields
     }
 
     /// Enable or disable networking.
@@ -279,27 +322,39 @@ impl NetworkBuilder {
     /// )
     /// ```
     pub fn dns(mut self, f: impl FnOnce(DnsBuilder) -> DnsBuilder) -> Self {
-        self.config.dns = f(DnsBuilder::new()).build();
+        let builder = f(DnsBuilder::new());
+        self.policy_fields
+            .extend(builder.policy_fields.iter().copied());
+        self.config.dns = builder.build();
         self
     }
 
     /// Configure DNS starting from the current values instead of defaults.
     #[doc(hidden)]
     pub fn dns_overlay(mut self, f: impl FnOnce(DnsBuilder) -> DnsBuilder) -> Self {
-        self.config.dns = f(DnsBuilder::from_config(self.config.dns)).build();
+        let builder = f(DnsBuilder::from_config(self.config.dns));
+        self.policy_fields
+            .extend(builder.policy_fields.iter().copied());
+        self.config.dns = builder.build();
         self
     }
 
     /// Configure TLS interception via a closure.
     pub fn tls(mut self, f: impl FnOnce(TlsBuilder) -> TlsBuilder) -> Self {
-        self.config.tls = f(TlsBuilder::new()).build();
+        let builder = f(TlsBuilder::new());
+        self.policy_fields
+            .extend(builder.policy_fields.iter().copied());
+        self.config.tls = builder.build();
         self
     }
 
     /// Configure TLS interception starting from the current values instead of defaults.
     #[doc(hidden)]
     pub fn tls_overlay(mut self, f: impl FnOnce(TlsBuilder) -> TlsBuilder) -> Self {
-        self.config.tls = f(TlsBuilder::from_config(self.config.tls)).build();
+        let builder = f(TlsBuilder::from_config(self.config.tls));
+        self.policy_fields
+            .extend(builder.policy_fields.iter().copied());
+        self.config.tls = builder.build();
         self
     }
 
@@ -522,16 +577,21 @@ impl DnsBuilder {
     pub fn new() -> Self {
         Self {
             config: DnsConfig::default(),
+            policy_fields: DNS_POLICY_FIELDS.into_iter().collect(),
         }
     }
 
     fn from_config(config: DnsConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            policy_fields: BTreeSet::new(),
+        }
     }
 
     /// Enable or disable DNS rebinding protection. Default: true.
     pub fn rebind_protection(mut self, enabled: bool) -> Self {
         self.config.rebind_protection = enabled;
+        self.policy_fields.insert("dns.rebind_protection");
         self
     }
 
@@ -547,12 +607,14 @@ impl DnsBuilder {
         I::Item: Into<Nameserver>,
     {
         self.config.nameservers = nameservers.into_iter().map(Into::into).collect();
+        self.policy_fields.insert("dns.nameservers");
         self
     }
 
     /// Set the per-DNS-query timeout in milliseconds. Default: 5000.
     pub fn query_timeout_ms(mut self, ms: u64) -> Self {
         self.config.query_timeout_ms = ms;
+        self.policy_fields.insert("dns.query_timeout_ms");
         self
     }
 
@@ -576,16 +638,21 @@ impl TlsBuilder {
                 enabled: true,
                 ..TlsConfig::default()
             },
+            policy_fields: TLS_POLICY_FIELDS.into_iter().collect(),
         }
     }
 
     fn from_config(config: TlsConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            policy_fields: BTreeSet::new(),
+        }
     }
 
     /// Enable or disable TLS interception while retaining the remaining TLS settings.
     pub fn enabled(mut self, enabled: bool) -> Self {
         self.config.enabled = enabled;
+        self.policy_fields.insert("tls.enabled");
         self
     }
 
@@ -598,6 +665,7 @@ impl TlsBuilder {
     /// Enable or disable upstream server certificate verification.
     pub fn verify_upstream(mut self, verify: bool) -> Self {
         self.config.verify_upstream = verify;
+        self.policy_fields.insert("tls.verify_upstream");
         self
     }
 
@@ -619,12 +687,14 @@ impl TlsBuilder {
     /// Set the ports to intercept.
     pub fn intercepted_ports(mut self, ports: Vec<u16>) -> Self {
         self.config.intercepted_ports = ports;
+        self.policy_fields.insert("tls.intercepted_ports");
         self
     }
 
     /// Enable or disable QUIC blocking on intercepted ports.
     pub fn block_quic(mut self, block: bool) -> Self {
         self.config.block_quic_on_intercept = block;
+        self.policy_fields.insert("tls.block_quic_on_intercept");
         self
     }
 
@@ -660,12 +730,14 @@ impl TlsBuilder {
     /// Set a custom interception CA certificate PEM file path.
     pub fn intercept_ca_cert(mut self, path: impl Into<PathBuf>) -> Self {
         self.config.intercept_ca.cert_path = Some(path.into());
+        self.policy_fields.insert("tls.intercept_ca.cert_path");
         self
     }
 
     /// Set a custom interception CA private key PEM file path.
     pub fn intercept_ca_key(mut self, path: impl Into<PathBuf>) -> Self {
         self.config.intercept_ca.key_path = Some(path.into());
+        self.policy_fields.insert("tls.intercept_ca.key_path");
         self
     }
 

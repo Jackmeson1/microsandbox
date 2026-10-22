@@ -981,6 +981,7 @@ impl SandboxBuilder {
         let network = f(NetworkBuilder::from_inherited_config(network));
         let http_override = network.has_http_override();
         let secret_policy_override = network.has_secret_policy_override();
+        let policy_fields = network.explicit_policy_fields().clone();
         match network.build() {
             Ok(net) => {
                 if let Err(err) = self.set_local_network_config(net)
@@ -990,6 +991,12 @@ impl SandboxBuilder {
                 }
                 if http_override {
                     self.config.http_defaults_implicit = Some(false);
+                }
+                if !policy_fields.is_empty() {
+                    self.config
+                        .field_presence
+                        .get_or_insert_with(Default::default)
+                        .declare_network_policy_fields(&policy_fields);
                 }
                 if secret_policy_override {
                     self.config

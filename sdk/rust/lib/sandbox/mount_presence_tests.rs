@@ -235,7 +235,9 @@ fn future_or_invalid_mount_hint_is_unknown_without_breaking_config_decode() {
         let mut record = raw(&config());
         record["field_presence"]["default_mount_ownership"] = hint;
         let decoded: SandboxConfig = serde_json::from_value(record.clone()).unwrap();
-        assert!(decoded.field_presence.is_none());
+        // Invalid positive mount hints cannot be revived by a rewrite; unrelated
+        // negative network evidence may still be retained.
         assert!(!known(&record));
+        assert!(!known(&raw(&decoded)));
     }
 }

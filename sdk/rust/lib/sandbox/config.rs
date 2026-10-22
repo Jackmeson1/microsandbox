@@ -1309,6 +1309,9 @@ impl<'de> Deserialize<'de> for SandboxConfig {
         let secret_policy_unrecorded = value
             .pointer("/field_presence/secret_policy_unrecorded")
             .is_some_and(|marker| marker != &serde_json::Value::Bool(false));
+        let unrecorded_network_policy = value
+            .pointer("/field_presence/unrecorded_network_policy")
+            .cloned();
         let mut presence = value
             .as_object_mut()
             .and_then(|object| object.remove("field_presence"))
@@ -1324,11 +1327,15 @@ impl<'de> Deserialize<'de> for SandboxConfig {
         // negative guard: typed decoding must not turn an absent policy into intent.
         let had_presence = presence.is_some();
         let mut network_presence = presence.take().unwrap_or_default();
+        network_presence.retain_negative_network_policy(unrecorded_network_policy.as_ref());
         if secret_policy_unrecorded {
             network_presence.mark_secret_policy_unrecorded();
         }
         network_presence.retain_recorded_network(value.get("network"));
-        if had_presence || network_presence.secret_policy_was_unrecorded() {
+        if had_presence
+            || network_presence.secret_policy_was_unrecorded()
+            || network_presence.has_unrecorded_network_policy(None)
+        {
             presence = Some(network_presence);
         }
         let resources_recorded = value
