@@ -81,6 +81,7 @@ use crate::error::{Operation, UnsupportedReason};
 use crate::runtime::handle::WindowsJob;
 use crate::runtime::handle::{ProcessHandle, StartupProcess};
 use crate::runtime::launch_contract::{self, LaunchContract};
+use crate::sandbox::SecurityProfile;
 use crate::timing;
 use crate::{
     MicrosandboxError, MicrosandboxResult,
@@ -326,6 +327,7 @@ pub async fn spawn_sandbox(
     // the selected executable may have changed since creation. Validate its
     // effective configuration here for both initial launch and later starts.
     launch_contract.validate_launch_intent(config)?;
+    launch_contract::validate_exec_limits(&resolved_runtime.msb_path, config).await?;
     #[cfg(feature = "net")]
     let resolved_network = {
         let mut network = config.local_network_config()?;
@@ -3220,6 +3222,7 @@ fn machine_cli_args(
 /// Build guest settings shared by launch preflight and the final payload.
 pub(crate) fn guest_bootstrap(config: &SandboxConfig) -> GuestBootstrap {
     GuestBootstrap {
+        exec_limits: Some(config.exec_limits()),
         hostname: Some(
             config
                 .spec
@@ -3250,8 +3253,8 @@ pub(crate) fn guest_bootstrap(config: &SandboxConfig) -> GuestBootstrap {
             })
             .collect(),
         security_profile: match config.spec.security_profile {
-            crate::sandbox::SecurityProfile::Default => BootstrapSecurityProfile::Default,
-            crate::sandbox::SecurityProfile::Restricted => BootstrapSecurityProfile::Restricted,
+            SecurityProfile::Default => BootstrapSecurityProfile::Default,
+            SecurityProfile::Restricted => BootstrapSecurityProfile::Restricted,
         },
         handoff_init: config.spec.init.as_ref().map(|init| BootstrapHandoffInit {
             cmd: init.cmd.clone(),

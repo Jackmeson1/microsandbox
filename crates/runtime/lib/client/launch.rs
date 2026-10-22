@@ -96,6 +96,9 @@ pub struct LaunchCapabilities {
     /// Runtime-owned durable last-active evidence and the optional source handoff.
     #[serde(default)]
     pub configuration_retention: bool,
+    /// Sandbox-owned execution policy is installed and enforced by the runtime.
+    #[serde(default)]
+    pub exec_limits: bool,
 }
 
 /// Hidden CLI handoff describing the metrics slot the host reserved for this sandbox.
