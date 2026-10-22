@@ -100,21 +100,22 @@ class SocksHandler(socketserver.BaseRequestHandler):
 class SocksFixture(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
+    protocol = "socks5"
 
-    def __init__(self, password=None):
+    def __init__(self, password=None, *, handler=SocksHandler):
         self.password = password
         self.events = []
         self.events_lock = threading.Lock()
         self.handlers = set()
         self.handlers_done = threading.Condition(self.events_lock)
         self.closed = False
-        super().__init__(("127.0.0.1", 0), SocksHandler)
+        super().__init__(("127.0.0.1", 0), handler)
         self.thread = threading.Thread(target=self.serve_forever, daemon=True)
         self.thread.start()
 
     @property
     def url(self):
-        return f"socks5://127.0.0.1:{self.server_address[1]}"
+        return f"{self.protocol}://127.0.0.1:{self.server_address[1]}"
 
     def process_request(self, request, client_address):
         with self.handlers_done:
@@ -166,6 +167,78 @@ class SocksFixture(socketserver.ThreadingTCPServer):
             if not self.handlers_done.wait_for(lambda: not self.handlers, timeout=10):
                 raise RuntimeError("proxy fixture handlers did not finish")
         self.closed = True
+
+
+def read_headers(stream):
+    """Bound the fixture's buffering; never retain guest/proxy header values."""
+    request = b""
+    while len(request) < 8192:
+        request += receive(stream, 1)
+        if request.endswith(b"\r\n\r\n"):
+            return request
+    raise ValueError("oversized fixture request")
+
+
+class OtherProxyHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        self.request.settimeout(5)
+        event = {"authenticated": False, "authentication": "not-attempted",
+                 "target": None, "http": False}
+        try:
+            if self.server.protocol == "http":
+                first = read_headers(self.request).split(b"\r\n", 1)[0]
+                if first != f"CONNECT {TARGET}:{TARGET_PORT} HTTP/1.1".encode():
+                    raise ValueError("unexpected CONNECT request")
+                event["target"] = [TARGET, TARGET_PORT]
+                event["authentication"] = "not-required"
+                self.request.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            else:
+                version, command, port, address = struct.unpack("!BBH4s", receive(self.request, 8))
+                if (version, command) != (4, 1):
+                    raise ValueError("unexpected SOCKS4 request")
+                user = b""
+                for _ in range(256):
+                    byte = receive(self.request, 1)
+                    if byte == b"\0":
+                        break
+                    user += byte
+                else:
+                    raise ValueError("unterminated SOCKS4 user ID")
+                event["target"] = [socket.inet_ntoa(address), port]
+                if event["target"] != [TARGET, TARGET_PORT]:
+                    raise ValueError("unexpected SOCKS4 target")
+                accepted = user == (self.server.user_id or b"")
+                event["authentication"] = "accepted" if accepted else "rejected"
+                self.request.sendall(bytes([0, 90 if accepted else 91]) + struct.pack("!H4s", port, address))
+                if not accepted:
+                    return
+            event["authenticated"] = True
+            if not read_headers(self.request).startswith(b"GET /probe HTTP/"):
+                raise ValueError("unexpected tunneled HTTP request")
+            event["http"] = True
+            # No outbound connection is made, even for malformed or rejected targets.
+            self.request.sendall(b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: "
+                                 + str(len(BODY)).encode() + b"\r\n\r\n" + BODY)
+        except (OSError, EOFError, ValueError, struct.error) as error:
+            event["error"] = type(error).__name__
+        finally:
+            with self.server.events_lock:
+                self.server.events.append(event)
+
+
+class HttpFixture(SocksFixture):
+    protocol = "http"
+
+    def __init__(self):
+        super().__init__(handler=OtherProxyHandler)
+
+
+class Socks4Fixture(SocksFixture):
+    protocol = "socks4"
+
+    def __init__(self, user_id=None):
+        self.user_id = user_id
+        super().__init__(handler=OtherProxyHandler)
 
 
 def dns_response(packet):
@@ -335,8 +408,14 @@ def qualify(args):
         # Request private guest IPv4 even when qualification blocks host route
         # discovery. The ephemeral published port is bound only to loopback.
         network_fixture = ["--port", "127.0.0.1:0:18080"]
-        for label, authenticated in (("plain", False), ("authenticated", True)):
-            proxy = SocksFixture(b"fixture-password" if authenticated else None)
+        for label in ("plain", "authenticated", "http-connect", "socks4", "socks4-user"):
+            authenticated = label == "authenticated"
+            if label == "http-connect":
+                proxy = HttpFixture()
+            elif label.startswith("socks4"):
+                proxy = Socks4Fixture(b"fixture-user" if label == "socks4-user" else None)
+            else:
+                proxy = SocksFixture(b"fixture-password" if authenticated else None)
             proxies.append(proxy)
             names.add(label)
             flags = ["--from-snapshot", "baseline", "--name", label, "--pull", "never",
@@ -351,6 +430,8 @@ def qualify(args):
             if authenticated:
                 runner.env[PASSWORD_ENV] = "fixture-password"
                 flags += ["--socks5-username", "fixture", "--socks5-password-env", PASSWORD_ENV]
+            if label == "socks4-user":
+                flags += ["--socks4-user-id", "fixture-user"]
             script = (
                 'set -eu; test "$(id -u):$(id -g)" = 1000:1000; test "$PWD" = /home/codex; '
                 'test "$LAUNCH" = explicit; test "$(hostname)" = destination; '

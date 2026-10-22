@@ -22,6 +22,7 @@ spec.loader.exec_module(proxy)
 
 
 TrackedSocksFixture = proxy.SocksFixture
+ALLOW_CASES = ("allow", "http-connect", "socks4", "socks4-user")
 
 
 def events(server):
@@ -75,9 +76,10 @@ def guest_progress(runner, label, name, require_success=False):
 
 def assert_policy(label, observed):
     """Require positive control traffic as well as meaningful negative observations."""
-    if label == "allow":
+    if label in ALLOW_CASES:
+        expected_auth = "not-required" if label == "http-connect" else "accepted"
         if not any(row["http"] and row["authenticated"]
-                   and row.get("authentication") == "accepted" for row in observed):
+                   and row.get("authentication") == expected_auth for row in observed):
             raise RuntimeError("allowed resumed workload never reached destination proxy")
     else:
         if any(row["http"] for row in observed):
@@ -150,8 +152,13 @@ def qualify(args):
             raise RuntimeError("full capture has no immutable files to check")
         report["sealed_before"] = sealed
         report["source_requests"] = len(source_events)
-        for label in ("allow", "deny", "wrong-credential", "missing-credential"):
-            server = proxy.SocksFixture(b"destination-only-value")
+        for label in (*ALLOW_CASES, "deny", "wrong-credential", "missing-credential"):
+            if label == "http-connect":
+                server = proxy.HttpFixture()
+            elif label.startswith("socks4"):
+                server = proxy.Socks4Fixture(b"fixture-user" if label == "socks4-user" else None)
+            else:
+                server = proxy.SocksFixture(b"destination-only-value")
             servers.append(server)
             names.add(label)
             flags = ["--from-snapshot", "full", "--name", label, "--pull", "never",
@@ -160,12 +167,15 @@ def qualify(args):
             flags += (["--net-default", "deny"] if label == "deny"
                       else ["--net-rule", "allow@198.51.100.0/24"])
             runner.env.pop(proxy.PASSWORD_ENV, None)
-            if label != "missing-credential":
-                runner.env[proxy.PASSWORD_ENV] = (
-                    "incorrect-fixture-value" if label == "wrong-credential"
-                    else "destination-only-value")
-            flags += ["--socks5-username", "fixture",
-                      "--socks5-password-env", proxy.PASSWORD_ENV]
+            if server.protocol == "socks5":
+                if label != "missing-credential":
+                    runner.env[proxy.PASSWORD_ENV] = (
+                        "incorrect-fixture-value" if label == "wrong-credential"
+                        else "destination-only-value")
+                flags += ["--socks5-username", "fixture",
+                          "--socks5-password-env", proxy.PASSWORD_ENV]
+            if label == "socks4-user":
+                flags += ["--socks4-user-id", "fixture-user"]
             row = {"case": label, "status": "running"}
             report["cases"].append(row)
             code, _ = runner.run(label + "-create", "create", *flags, expected=None)
@@ -179,8 +189,8 @@ def qualify(args):
                 if code != 0:
                     raise RuntimeError(f"{label} failed to resume; inspect create stderr")
                 row["guest_iterations"] = guest_progress(
-                    runner, label + "-progress", label, require_success=label == "allow")
-                if label == "allow":
+                    runner, label + "-progress", label, require_success=label in ALLOW_CASES)
+                if label in ALLOW_CASES:
                     wait_until(lambda: any(event["http"] for event in events(server)),
                                "resumed workload never used the replacement proxy")
             inspect, _ = runner.run(label + "-inspect", "inspect", label,
