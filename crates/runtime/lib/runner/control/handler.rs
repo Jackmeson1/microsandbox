@@ -19,6 +19,16 @@ pub struct ControlContext {
 pub(crate) trait Handler: Send + Sync + 'static {
     fn handle(&self, request: ControlOperation, generation: u8) -> Response;
 
+    fn handle_labels(
+        &self,
+        _request: microsandbox_protocol::labels::LabelsRequest,
+    ) -> Result<microsandbox_protocol::labels::LabelsResponse, ControlError> {
+        Err(ControlError::rejected(
+            "unsupported_operation",
+            "runtime-owned label updates are unavailable",
+        ))
+    }
+
     fn handle_exec_signal(
         &self,
         _request: microsandbox_protocol::exec_control::ExecControlRequest,
@@ -74,6 +84,7 @@ pub(crate) struct Response {
 }
 
 pub(crate) enum Reply {
+    Labels(microsandbox_protocol::labels::LabelsResponse),
     ExecSignal(microsandbox_protocol::exec_control::ExecControlResponse),
     Job(microsandbox_protocol::jobs::JobResponse),
     Capabilities(Capabilities),
@@ -110,6 +121,11 @@ impl Response {
 impl Reply {
     pub(crate) fn envelope(&self, generation: u8) -> Result<Envelope, WireError> {
         match self {
+            Self::Labels(value) => Envelope::new(
+                generation,
+                microsandbox_protocol::labels::LABELS_RESPONSE,
+                value,
+            ),
             Self::ExecSignal(value) => Envelope::new(
                 generation,
                 microsandbox_protocol::exec_control::EXEC_CONTROL_RESPONSE,
@@ -149,6 +165,13 @@ impl Reply {
 //--------------------------------------------------------------------------------------------------
 
 impl Handler for ControlContext {
+    fn handle_labels(
+        &self,
+        request: microsandbox_protocol::labels::LabelsRequest,
+    ) -> Result<microsandbox_protocol::labels::LabelsResponse, ControlError> {
+        self.executor.labels_request(request)
+    }
+
     fn handle_exec_signal(
         &self,
         request: microsandbox_protocol::exec_control::ExecControlRequest,

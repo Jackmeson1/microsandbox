@@ -14,6 +14,9 @@ use crate::control::*;
 use crate::vm::VmConfig;
 use microsandbox_protocol::bootstrap::GuestBootstrap;
 
+#[path = "executor/labels.rs"]
+mod labels;
+
 //--------------------------------------------------------------------------------------------------
 // Constants
 //--------------------------------------------------------------------------------------------------

@@ -397,6 +397,19 @@ impl SandboxModificationBuilder {
             serde_json::to_string(&prospective)?;
         }
         let restart_required = plan_requires_restart(&plan) && running_status(status);
+        // Select the metadata path before any live effect. Unsupported older runtimes
+        // keep their catalog path; dispatched updates are never replayed there.
+        let label_owner = if !restart_required && has_live_label_change(&plan) {
+            match &session {
+                Some(session) => session
+                    .label_update_owner()
+                    .await
+                    .map_err(MicrosandboxError::ControlClient)?,
+                None => None,
+            }
+        } else {
+            None
+        };
         if restart_required {
             handle.stop().await?;
         }
@@ -526,20 +539,39 @@ impl SandboxModificationBuilder {
         if !plan.changes.is_empty() {
             apply_patch_to_config(&mut config, &self.patch);
             apply_secret_patch_to_config(&mut config, &self.patch)?;
+            let labels_persisted_by_runtime = label_owner.is_some();
             let active_labels = if !restart_required && has_live_label_change(&plan) {
                 let (Some(active), Some(expected_json)) = (active.as_mut(), active_json.clone())
                 else {
                     return Err(MicrosandboxError::ControlStateChanged);
                 };
                 apply_label_patch_to_config(active, &self.patch);
-                Some(ActiveLabelsUpdate {
-                    expected_json,
-                    active_config_json: serde_json::to_string(active)?,
-                })
+                if let Some(owner) = label_owner {
+                    control_session(&session)?
+                        .update_labels(
+                            owner,
+                            &expected_json,
+                            serde_json::to_string(&config)?,
+                            self.patch.labels.iter().cloned().collect(),
+                            self.patch.labels_remove.clone(),
+                        )
+                        .await
+                        .map_err(MicrosandboxError::ControlClient)?;
+                    None
+                } else {
+                    Some(ActiveLabelsUpdate {
+                        expected_json,
+                        active_config_json: serde_json::to_string(active)?,
+                    })
+                }
             } else {
                 None
             };
-            persist_config(&self.backend, &handle, &config, active_labels).await?;
+            // The capable runtime commits desired config, active labels and their index
+            // in one transaction. A second SDK write could overwrite a concurrent edit.
+            if !labels_persisted_by_runtime {
+                persist_config(&self.backend, &handle, &config, active_labels).await?;
+            }
         }
         if restart_required {
             start_after_modify(&handle).await?;
@@ -835,7 +867,9 @@ async fn live_control(
     patch: &SandboxModificationPatch,
     policy: ModificationPolicy,
 ) -> MicrosandboxResult<(LiveControl, Option<ControlSession>)> {
-    let needs_control = patch.root_disk_size_mib.is_some()
+    let needs_control = !patch.labels.is_empty()
+        || !patch.labels_remove.is_empty()
+        || patch.root_disk_size_mib.is_some()
         || patch.cpus.is_some()
         || patch.memory_mib.is_some()
         || !patch.secrets.is_empty()
