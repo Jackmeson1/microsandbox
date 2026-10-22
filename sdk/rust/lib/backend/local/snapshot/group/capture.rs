@@ -275,8 +275,17 @@ mod tests {
             let target = CaptureTarget::admit(&directory, source.clone())
                 .await
                 .unwrap();
-            // The retained identity must not own the advisory lock or writer admission.
-            assert!(WriterLease::try_acquire(&directory).unwrap().is_some());
+            // The retained identity must not own writer admission. A parallel test's
+            // fork can briefly inherit the released flock until its child execs, so
+            // bound reacquisition instead of requiring scheduler-dependent immediacy.
+            let writer = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                WriterLease::acquire(&directory),
+            )
+            .await
+            .expect("capture identity retained writer admission")
+            .unwrap();
+            drop(writer);
             fs::remove_dir_all(&directory).unwrap();
             match replacement {
                 "same" => {
