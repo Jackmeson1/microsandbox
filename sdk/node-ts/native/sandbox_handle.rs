@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use microsandbox::sandbox::{DestroyOptions, RestartOptions, SandboxHandle, SandboxStatus};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -19,7 +21,7 @@ use crate::types::*;
 /// Does NOT hold a live connection — use `connect()` or `start()` to get a live `Sandbox`.
 #[napi(js_name = "SandboxHandle")]
 pub struct JsSandboxHandle {
-    inner: SandboxHandle,
+    inner: Arc<SandboxHandle>,
 }
 
 /// Options for `restart`.
@@ -43,7 +45,9 @@ pub struct SandboxDestroyOptions {
 
 impl JsSandboxHandle {
     pub fn from_rust(handle: SandboxHandle) -> Self {
-        Self { inner: handle }
+        Self {
+            inner: Arc::new(handle),
+        }
     }
 }
 
@@ -479,20 +483,27 @@ impl JsSandboxHandle {
         ts_args_type = "name: string, options?: SnapshotCaptureOptions",
         ts_return_type = "Promise<SnapshotCreateResult>"
     )]
-    pub async fn snapshot(
+    pub fn snapshot<'env>(
         &self,
+        env: &'env Env,
         name: String,
         options: Option<crate::snapshot_group::JsSnapshotCaptureOptions>,
-    ) -> Result<crate::snapshot_group::JsSnapshotCreateResult> {
-        let options = crate::snapshot_group::capture_options(options.unwrap_or_default())?;
-        let result = self
-            .inner
-            .snapshot_with(&name, |_| options)
-            .await
-            .map_err(to_napi_error)?;
-        Ok(crate::snapshot_group::JsSnapshotCreateResult::from_rust(
-            result,
-        ))
+    ) -> Result<PromiseRaw<'env, crate::snapshot_group::JsSnapshotCreateResult>> {
+        let options = crate::snapshot_group::capture_options_for_backend(
+            options.unwrap_or_default(),
+            self.inner.backend_kind().as_str() == "local",
+        );
+        let inner = self.inner.clone();
+        env.spawn_future(async move {
+            let options = options?;
+            let result = inner
+                .snapshot_with(&name, |_| options)
+                .await
+                .map_err(to_napi_error)?;
+            Ok(crate::snapshot_group::JsSnapshotCreateResult::from_rust(
+                result,
+            ))
+        })
     }
 }
 
