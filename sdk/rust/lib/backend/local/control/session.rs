@@ -1,9 +1,14 @@
 //! A prepared SDK operation keeps one runtime session through its whole apply.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use microsandbox_protocol::labels::{LabelsRequest, LabelsResponse};
+use sha2::{Digest, Sha256};
+
 use microsandbox_control_client::{
-    CompatibleControlRequest, ControlClientError, ControlConnection, ErrorKind,
+    CompatibleControlRequest, ControlClientError, ControlConnection, ControlMode, ErrorKind,
+    ManageLabels,
 };
 
 use super::registry::{Entry, SharedError};
@@ -29,6 +34,57 @@ impl ControlSession {
 
     pub fn capabilities(&self) -> microsandbox_control_client::RuntimeCapabilities {
         *self.connection.runtime_capabilities()
+    }
+
+    /// Read-only capability selection; never treat a mutation failure as a fallback signal.
+    pub(crate) async fn label_update_owner(&self) -> Result<Option<String>, SharedError> {
+        if self.connection.mode() == ControlMode::Json {
+            return Ok(None);
+        }
+        match self.request(&ManageLabels(LabelsRequest::Hello)).await {
+            Ok(LabelsResponse::Supported { runtime_boot_id })
+                if !runtime_boot_id.is_empty() && runtime_boot_id.len() <= 128 =>
+            {
+                Ok(Some(runtime_boot_id))
+            }
+            Ok(_) => Err(Arc::new(ControlClientError::RuntimeChanged)),
+            Err(error) => match error.as_ref() {
+                ControlClientError::UnsupportedMode => Ok(None),
+                ControlClientError::Client(error)
+                    if error.kind == ErrorKind::UnsupportedOperation =>
+                {
+                    Ok(None)
+                }
+                ControlClientError::Peer { error, .. } if error.code == "unsupported_operation" => {
+                    Ok(None)
+                }
+                _ => Err(error),
+            },
+        }
+    }
+
+    pub(crate) async fn update_labels(
+        &self,
+        runtime_boot_id: String,
+        expected_active: &str,
+        desired_config_json: String,
+        set: BTreeMap<String, String>,
+        remove: Vec<String>,
+    ) -> Result<(), SharedError> {
+        let request = LabelsRequest::Update {
+            runtime_boot_id: runtime_boot_id.clone(),
+            expected_active_sha256: hex::encode(Sha256::digest(expected_active.as_bytes())),
+            desired_config_json,
+            set,
+            remove,
+        };
+        match self.request(&ManageLabels(request)).await? {
+            LabelsResponse::Updated {
+                runtime_boot_id: actual,
+                generation,
+            } if actual == runtime_boot_id && generation > 0 => Ok(()),
+            _ => Err(Arc::new(ControlClientError::RuntimeChanged)),
+        }
     }
 
     /// Bound job polling and input across all handles sharing this runtime connection.

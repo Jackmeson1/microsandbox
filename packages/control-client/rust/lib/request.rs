@@ -81,6 +81,10 @@ pub struct CompactDisks(pub DiskCompact);
 #[derive(Debug, Clone)]
 pub struct ManageJob(pub microsandbox_protocol::jobs::JobRequest);
 
+/// Read support or update labels through the runtime-owned metadata extension.
+#[derive(Debug, Clone)]
+pub struct ManageLabels(pub microsandbox_protocol::labels::LabelsRequest);
+
 //--------------------------------------------------------------------------------------------------
 // Methods
 //--------------------------------------------------------------------------------------------------
@@ -128,6 +132,29 @@ impl Request<ControlProtocol> for ManageJob {
 }
 
 impl CompatibleControlRequest for ManageJob {
+    fn min_generation(&self) -> u8 {
+        2
+    }
+    fn compatibility_json_bytes(&self) -> ControlClientResult<Zeroizing<Vec<u8>>> {
+        Err(ControlClientError::UnsupportedMode)
+    }
+    fn decode_compatibility_json(&self, _reply: JsonReply) -> ControlClientResult<Self::Response> {
+        Err(ControlClientError::UnsupportedMode)
+    }
+}
+
+impl Request<ControlProtocol> for ManageLabels {
+    type Response = microsandbox_protocol::labels::LabelsResponse;
+    type Error = ControlClientError;
+    fn message(&self) -> ControlClientResult<EncodedMessage> {
+        prepared(microsandbox_protocol::labels::LABELS_REQUEST, &self.0)
+    }
+    fn decode(&self, response: Message) -> ControlClientResult<Self::Response> {
+        checked(response, 2, microsandbox_protocol::labels::LABELS_RESPONSE)
+    }
+}
+
+impl CompatibleControlRequest for ManageLabels {
     fn min_generation(&self) -> u8 {
         2
     }

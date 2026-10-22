@@ -11,6 +11,8 @@ mod error;
 
 /// Runtime-owned execution jobs on the host-control extension.
 pub mod jobs;
+/// Capability-probed runtime-owned label updates.
+pub mod labels;
 
 //--------------------------------------------------------------------------------------------------
 // Constants: Host↔Guest Shutdown Timings
