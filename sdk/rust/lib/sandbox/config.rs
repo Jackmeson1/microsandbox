@@ -1314,6 +1314,7 @@ impl<'de> Deserialize<'de> for SandboxConfig {
             });
         if let Some(presence) = &mut presence {
             presence.retain_recorded_mounts(value.get("mounts"));
+            presence.retain_recorded_network(value.get("network"));
         }
         let resources_recorded = value
             .get("resources")

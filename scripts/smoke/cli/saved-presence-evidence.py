@@ -21,6 +21,7 @@ def main():
     for name in ("binary", "releases", "agent", "firmware", "image", "support", "output", "temp-root"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--with-mount", action="store_true", help="Also verify omitted mount ownership defaults")
+    parser.add_argument("--with-network-defaults", action="store_true", help="Verify private evidence for omitted HTTP defaults")
     args = parser.parse_args()
     sys.path.insert(0, str(args.support.resolve()))
     spec = importlib.util.spec_from_file_location("history", args.support / "lifecycle_evidence.py")
@@ -59,6 +60,12 @@ def main():
             assert "tls" in evidence["absent_network"], evidence
             assert source["resources"].get("thp") is None
             assert source["network"].get("dns") is None
+            if args.with_network_defaults:
+                assert {entry["kind"] for entry in evidence["nested_network"]} == {
+                    "http_deny_message", "http_network_deny_message", "http_secret_deny_message"
+                }, evidence
+                for field in ("deny_message", "network_deny_message", "secret_deny_message"):
+                    assert field not in source["network"]["http"]
             if args.with_mount:
                 assert evidence["default_mount_ownership"] == [{"kind": "tmpfs", "guest": "/presence"}]
                 options = source["mounts"][0]["options"]
@@ -124,6 +131,8 @@ def main():
                 assert source.get("field_presence", {}).get("thp") is None
                 assert "dns" not in source.get("field_presence", {}).get("absent_network", [])
                 assert not source.get("field_presence", {}).get("default_mount_ownership")
+                if args.with_network_defaults:
+                    assert not source.get("field_presence", {}).get("nested_network")
                 save_source("new-after-old-source", source)
                 row["runtime_tracks_old_request_and_old_restart_loses_evidence"] = True
             else:
