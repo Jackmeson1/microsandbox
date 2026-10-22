@@ -2,9 +2,10 @@
 
 use std::time::Duration;
 
+use microsandbox_protocol::control::ErrorEffect;
+
 use super::*;
 use crate::retention::RetentionOwner;
-use microsandbox_protocol::control::ErrorEffect;
 
 //--------------------------------------------------------------------------------------------------
 // Types

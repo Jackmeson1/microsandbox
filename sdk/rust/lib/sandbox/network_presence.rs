@@ -186,7 +186,11 @@ impl NetworkDefault {
             }),
             Self::SecretViolationAction { guest_env } | Self::SecretHeaderFields { guest_env } => {
                 let Some(secrets) = network
-                    .pointer("/secrets/secrets")
+                    .get("secrets")
+                    // Entry-level omission hints cannot certify a missing enclosing
+                    // policy. Retire them before serde supplies that policy's default.
+                    .filter(|policy| policy.get("violation_action").is_some())
+                    .and_then(|policy| policy.get("secrets"))
                     .and_then(Value::as_array)
                 else {
                     return false;
