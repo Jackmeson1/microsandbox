@@ -39,6 +39,7 @@ mod modify;
 mod mount_presence;
 #[cfg(all(test, feature = "local"))]
 mod mount_presence_tests;
+mod network_policy_presence;
 pub(crate) mod network_presence;
 #[cfg(all(test, feature = "local"))]
 mod network_presence_tests;
