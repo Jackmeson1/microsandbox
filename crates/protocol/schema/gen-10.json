@@ -79,14 +79,6 @@
       "wire": "core.workload.transport.credit"
     },
     {
-      "introduced_in": 10,
-      "wire": "core.resources.observe"
-    },
-    {
-      "introduced_in": 10,
-      "wire": "core.resources.observed"
-    },
-    {
       "introduced_in": 9,
       "wire": "core.root_disk.prepare"
     },
@@ -157,6 +149,14 @@
     {
       "introduced_in": 1,
       "wire": "core.exec.signal"
+    },
+    {
+      "introduced_in": 10,
+      "wire": "core.exec.output.ack"
+    },
+    {
+      "introduced_in": 10,
+      "wire": "core.exec.stdin.ack"
     },
     {
       "introduced_in": 2,

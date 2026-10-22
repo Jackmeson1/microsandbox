@@ -61,7 +61,15 @@ fn unavailable(query_id: [u8; 16]) -> ObservedResources {
 
 #[tokio::test]
 async fn older_peer_gets_no_observation_request_and_remains_usable() {
-    for (generation, relay) in [(9, None), (9, Some(1)), (10, None), (10, Some(2))] {
+    for (generation, relay) in [
+        (9, None),
+        (9, Some(1)),
+        (10, None),
+        (10, Some(1)),
+        (10, Some(2)),
+        (11, None),
+        (11, Some(2)),
+    ] {
         let (client, mut guest) = peer(generation, relay).await;
         let error = observe_resources(&client, [1; 16], Duration::from_secs(1))
             .await
@@ -127,7 +135,7 @@ async fn query_echo_terminal_generation_and_scalar_invariants_are_checked() {
                 reply.flags = 0;
             }
             if case == 3 {
-                reply.v = 9;
+                reply.v = 10;
             }
             if case == 4 {
                 reply.t = MessageType::Pong;

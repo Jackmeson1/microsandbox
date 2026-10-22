@@ -6,7 +6,7 @@ use ciborium::Value;
 use microsandbox_protocol::{
     codec::{self, MAX_FRAME_SIZE},
     control::*,
-    message::{self, Message, MessageType},
+    message::{Message, MessageType, PROTOCOL_VERSION},
     wire::{self, Envelope, WireError},
 };
 use serde_json::{Value as JsonValue, json};
@@ -293,9 +293,9 @@ fn generation_one_bytes_match_cross_language_fixtures() {
 
 #[test]
 fn neutral_envelope_preserves_existing_agent_encoding() {
-    // Agent resource observations deliberately introduce generation 10. The neutral envelope
+    // Agent resource observations deliberately introduce generation 11. The neutral envelope
     // must still preserve every previous generation's framing and payload byte-for-byte.
-    for generation in 1..=message::PROTOCOL_VERSION {
+    for generation in 1..=PROTOCOL_VERSION {
         let mut original = Message::with_payload(
             MessageType::ExecStdin,
             42,

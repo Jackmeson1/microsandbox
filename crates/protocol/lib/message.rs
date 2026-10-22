@@ -9,7 +9,7 @@ use crate::error::ProtocolResult;
 //--------------------------------------------------------------------------------------------------
 
 /// Current protocol version.
-pub const PROTOCOL_VERSION: u8 = 10;
+pub const PROTOCOL_VERSION: u8 = 11;
 
 /// Frame flag: this is the last message for the given correlation ID.
 ///
@@ -243,6 +243,14 @@ pub enum MessageType {
     #[strum(serialize = "core.exec.signal")]
     ExecSignal,
 
+    /// Return consumed stdout/stderr window credit for a flow-controlled execution.
+    #[strum(serialize = "core.exec.output.ack")]
+    ExecOutputAck,
+
+    /// Return stdin capacity after the child consumes piped input.
+    #[strum(serialize = "core.exec.stdin.ack")]
+    ExecStdinAck,
+
     /// Host requests a filesystem operation.
     #[strum(serialize = "core.fs.request")]
     FsRequest,
@@ -330,6 +338,14 @@ impl Message {
 }
 
 impl MessageType {
+    /// Whether this execution message belongs to the bounded progress-control class.
+    pub fn is_exec_control(self) -> bool {
+        matches!(
+            self,
+            Self::ExecOutputAck | Self::ExecStdinAck | Self::ExecSignal | Self::ExecResize
+        )
+    }
+
     /// Whether host-to-guest delivery can retain payload credit behind a workload consumer.
     ///
     /// The bundled workload barrier uses logical classes, not physical console ports. Payload
@@ -401,6 +417,7 @@ impl MessageType {
             | Self::ExecFailed
             | Self::ExecResize
             | Self::ExecSignal => 1,
+            Self::ExecOutputAck | Self::ExecStdinAck => 10,
             Self::FsRequest | Self::FsResponse | Self::FsData => 2,
             Self::CoreError => 5,
             Self::Ping | Self::Pong | Self::Touch | Self::Touched => 6,
@@ -411,7 +428,7 @@ impl MessageType {
             | Self::WorkloadThawed
             | Self::WorkloadTransportCredit => 9,
             Self::RootDiskPrepare | Self::RootDiskGrow | Self::RootDiskState => 9,
-            Self::ObserveResources | Self::ObservedResources => 10,
+            Self::ObserveResources | Self::ObservedResources => 11,
             Self::BulkAccepted | Self::BulkCredit | Self::BulkFinish | Self::BulkCancel => 8,
             Self::TcpConnect
             | Self::TcpConnected

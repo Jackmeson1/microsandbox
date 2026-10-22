@@ -51,14 +51,17 @@ fn host_advertisement_preserves_ready_and_is_not_inferred_from_guest_fields() {
 }
 
 #[test]
-fn observations_are_generation_ten_without_changing_existing_operations() {
-    for generation in 1..=9 {
+fn observations_are_generation_eleven_without_changing_existing_operations() {
+    for generation in 1..=10 {
         assert!(!MessageType::ObserveResources.is_available_at(generation));
         assert!(!MessageType::ObservedResources.is_available_at(generation));
         assert!(MessageType::ExecRequest.is_available_at(generation));
     }
-    assert!(MessageType::ObserveResources.is_available_at(10));
-    assert!(MessageType::ObservedResources.is_available_at(10));
+    assert!(MessageType::ObserveResources.is_available_at(11));
+    assert!(MessageType::ObservedResources.is_available_at(11));
+    // Generation 10 already owns execution acknowledgements, independently of observation.
+    assert!(MessageType::ExecStdinAck.is_available_at(10));
+    assert!(MessageType::ExecOutputAck.is_available_at(10));
     assert_eq!(MessageType::ObserveResources.flags(), 0);
     assert_eq!(MessageType::ObservedResources.flags(), FLAG_TERMINAL);
 }
