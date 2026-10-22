@@ -13,15 +13,15 @@ use microsandbox_runtime::retention::{
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
 
 use microsandbox_types::snapshot::saved_config::{
-    MAX_SAVED_CONFIG_ENTRIES, MAX_SAVED_SCRIPT_BYTES, MAX_SAVED_SCRIPTS_BYTES, SavedOrigin,
-    SavedSandboxConfig, SavedValue,
+    MAX_SAVED_CONFIG_ENTRIES, MAX_SAVED_SCRIPT_BYTES, MAX_SAVED_SCRIPTS_BYTES,
+    SavedBindingReference, SavedOrigin, SavedSandboxConfig, SavedValue,
 };
 
 use crate::backend::{ControlSession, LocalBackend};
 use crate::sandbox::SandboxConfig;
 use crate::snapshot::saved_config::{
-    CaptureDocumentRequest, NetworkCaptureBindings, PendingCaptureSource, RuntimeCaptureSource,
-    StorageCaptureBindings,
+    CaptureDocumentRequest, NetworkCaptureBindings, NetworkCaptureSection, PendingCaptureSource,
+    RuntimeCaptureSource, StorageCaptureBindings,
 };
 use crate::{MicrosandboxError, MicrosandboxResult};
 
@@ -121,6 +121,25 @@ impl CapturedSandboxConfiguration {
         &self.configuration
     }
 
+    /// Derive active requirements exclusively from the selected receipt or stopped cut.
+    /// The caller must establish host-trust backing independently under the same guard.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "portable publication remains gated")
+    )]
+    pub(crate) fn network_requirements(
+        &self,
+        guest_trust: Vec<SavedBindingReference>,
+    ) -> MicrosandboxResult<NetworkCaptureBindings> {
+        let raw = self
+            .source
+            .source
+            .as_ref()
+            .ok_or_else(|| invalid("capture has no recorded source"))?;
+        RuntimeCaptureSource::from_recorded(raw, self.init.as_ref(), self.scripts.as_ref())?
+            .network_requirements(NetworkCaptureSection::Active, guest_trust)
+    }
+
     /// Build pending projection input exclusively from the selected receipt or stopped cut.
     #[cfg_attr(
         not(test),
@@ -128,12 +147,17 @@ impl CapturedSandboxConfiguration {
     )]
     pub(crate) fn pending_source(
         &self,
-        network: NetworkCaptureBindings,
+        guest_trust: Vec<SavedBindingReference>,
         storage: StorageCaptureBindings,
     ) -> MicrosandboxResult<Option<PendingCaptureSource<'_>>> {
         self.pending
             .as_ref()
-            .map(|pending| PendingCaptureSource::from_recorded(pending, network, storage))
+            .map(|pending| {
+                let source = RuntimeCaptureSource::from_recorded(pending, None, None)?;
+                let network =
+                    source.network_requirements(NetworkCaptureSection::Pending, guest_trust)?;
+                PendingCaptureSource::from_recorded(pending, network, storage)
+            })
             .transpose()
     }
 
@@ -542,8 +566,14 @@ mod tests {
         // A real captured sandbox has a valid name; the minimal receipt fixture's
         // empty default cannot establish a valid generated guest hostname.
         fixture.value["source"]["source"]["name"] = serde_json::json!("captured-source");
+        fixture.value["source"]["source"]["network"]["dns"] = serde_json::json!({
+            "nameservers": ["PRIVATE_ACTIVE_RESOLVER"], "rebind_protection": true,
+            "query_timeout_ms": 5000
+        });
         fixture.value["pending"] = fixture.value["source"]["source"].clone();
         fixture.value["pending"]["runtime"]["user"] = "pending-user".into();
+        fixture.value["pending"]["network"]["dns"]["nameservers"] =
+            serde_json::json!(["PRIVATE_PENDING_RESOLVER", "PRIVATE_PENDING_SECOND"]);
         // These files deliberately disagree. Neither is authoritative for an immutable capture.
         std::fs::write(
             fixture.home.path().join("last-active/state.json"),
@@ -576,7 +606,7 @@ mod tests {
         let request = |pending| CaptureDocumentRequest {
             manifest: &descriptor,
             resources: Default::default(),
-            network: Default::default(),
+            network: selected.network_requirements(Default::default()).unwrap(),
             storage: Default::default(),
             runtime_controls: &runtime_controls,
             execution_controls: &execution_controls,
@@ -625,6 +655,34 @@ mod tests {
             Some("captured-user")
         );
         let encoded = serde_json::to_value(&document).unwrap();
+        // Requirements are derived separately from the immutable active/pending cuts.
+        // Neither private endpoints nor a later mutable catalog record enter the artifact.
+        let active_dns = document
+            .active
+            .network
+            .dns
+            .as_ref()
+            .unwrap()
+            .value()
+            .unwrap();
+        assert_eq!(active_dns.resolvers.len(), 1);
+        assert_eq!(active_dns.resolvers[0].id, "active.network.dns.resolvers.0");
+        let pending_dns = document
+            .pending
+            .as_ref()
+            .unwrap()
+            .network
+            .dns
+            .as_ref()
+            .unwrap()
+            .value()
+            .unwrap();
+        assert_eq!(pending_dns.resolvers.len(), 2);
+        assert_eq!(
+            pending_dns.resolvers[1].id,
+            "pending.network.dns.resolvers.1"
+        );
+        assert!(!encoded.to_string().contains("PRIVATE_"));
         assert_eq!(
             document
                 .pending
