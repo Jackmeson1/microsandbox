@@ -48,6 +48,11 @@ pub trait CompatibleControlRequest: Request<ControlProtocol, Error = ControlClie
         false
     }
 
+    /// Whether private effective execution-limit evidence is required before dispatch.
+    fn requires_configuration_exec_limits(&self) -> bool {
+        false
+    }
+
     /// First framed-control generation that defines this operation.
     fn min_generation(&self) -> u8;
     /// Encode the exact historical JSON request without a trailing newline.

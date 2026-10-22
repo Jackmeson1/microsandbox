@@ -43,6 +43,7 @@ pub(crate) struct CapturedSandboxConfiguration {
     scripts: Option<ScriptBackingEvidence>,
     init: Option<InitObservation>,
     storage: Option<microsandbox_runtime::retention::MountedStorageEvidence>,
+    exec_limits: Option<microsandbox_types::ExecLimits>,
 }
 
 /// No Debug or serialization: the eventual receipt can contain private local configuration.
@@ -50,6 +51,7 @@ pub(crate) struct ExpectedConfigurationCapture {
     directory: PathBuf,
     owner: RetentionOwner,
     storage_requested: bool,
+    exec_limits_requested: bool,
 }
 
 /// Retains lifecycle ownership and exact evidence through a stopped disk cut.
@@ -86,6 +88,7 @@ impl CapturedSandboxConfiguration {
             scripts,
             init,
             storage: None,
+            exec_limits: None,
         };
         if let Some(origin) = &captured.configuration.command_provenance
             && (!origin.matches(&captured.configuration.spec.runtime.cmd)
@@ -129,6 +132,15 @@ impl CapturedSandboxConfiguration {
         &self,
     ) -> Option<&microsandbox_runtime::retention::MountedStorageEvidence> {
         self.storage.as_ref()
+    }
+
+    /// Exact policy advertised by the captured guest, never a reconstructed SDK default.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "portable publication remains gated")
+    )]
+    pub(crate) fn execution_limits(&self) -> Option<microsandbox_types::ExecLimits> {
+        self.exec_limits
     }
 
     pub(crate) fn configuration(&self) -> &SandboxConfig {
@@ -336,6 +348,7 @@ impl ExpectedConfigurationCapture {
             directory: local.sandboxes_dir().join(name),
             owner,
             storage_requested: session.capabilities().configuration_storage,
+            exec_limits_requested: session.capabilities().configuration_exec_limits,
         }))
     }
 
@@ -359,6 +372,12 @@ impl ExpectedConfigurationCapture {
                 "runtime storage evidence did not match capture negotiation",
             ));
         }
+        if !self.exec_limits_requested && captured.exec_limits().is_some() {
+            return Err(invalid(
+                "runtime execution-limit evidence did not match capture negotiation",
+            ));
+        }
+        let exec_limits = captured.exec_limits();
         let storage = captured.storage().cloned();
         let init = captured.init().cloned();
         let pending = captured.pending_configuration().cloned();
@@ -383,6 +402,7 @@ impl ExpectedConfigurationCapture {
         let mut configuration = CapturedSandboxConfiguration::new(source, scripts, init, pending)?;
         if let Some(configuration) = &mut configuration {
             configuration.storage = storage;
+            configuration.exec_limits = exec_limits;
         }
         Ok(configuration)
     }
@@ -570,6 +590,15 @@ mod tests {
             value: &serde_json::Value,
             storage_requested: bool,
         ) -> MicrosandboxResult<Option<CapturedSandboxConfiguration>> {
+            self.read_with_evidence(value, storage_requested, false)
+        }
+
+        fn read_with_evidence(
+            &self,
+            value: &serde_json::Value,
+            storage_requested: bool,
+            exec_limits_requested: bool,
+        ) -> MicrosandboxResult<Option<CapturedSandboxConfiguration>> {
             let bytes = serde_json::to_vec(value).unwrap();
             std::fs::write(
                 self.home
@@ -585,6 +614,7 @@ mod tests {
                 directory: self.home.path().to_path_buf(),
                 owner,
                 storage_requested,
+                exec_limits_requested,
             }
             .read(
                 "capture_one",
@@ -594,6 +624,34 @@ mod tests {
                 }),
             )
         }
+    }
+
+    #[test]
+    fn execution_limit_receipt_rejects_unsolicited_evidence_and_keeps_absence_unknown() {
+        let fixture = Fixture::new();
+        let limits = microsandbox_types::ExecLimits {
+            max_executions: 9,
+            ..Default::default()
+        };
+        let mut extended = fixture.value.clone();
+        extended["exec_limits"] = serde_json::to_value(limits).unwrap();
+        assert!(fixture.read(&extended).is_err());
+        assert_eq!(
+            fixture
+                .read_with_evidence(&extended, false, true)
+                .unwrap()
+                .unwrap()
+                .execution_limits(),
+            Some(limits)
+        );
+        assert!(
+            fixture
+                .read_with_evidence(&fixture.value, false, true)
+                .unwrap()
+                .unwrap()
+                .execution_limits()
+                .is_none()
+        );
     }
 
     #[test]
@@ -945,6 +1003,7 @@ mod tests {
             directory: fixture.home.path().to_path_buf(),
             owner: fixture.owner,
             storage_requested: false,
+            exec_limits_requested: false,
         }
         .read("capture_one", "full:root", None)
         .err()

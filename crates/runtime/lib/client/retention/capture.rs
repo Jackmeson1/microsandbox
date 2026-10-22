@@ -13,6 +13,7 @@ use std::io::Write;
 use microsandbox_db::DbWriteConnection;
 use microsandbox_protocol::control::ConfigurationCaptureReceipt;
 use microsandbox_protocol::init_observation::InitObservation;
+use microsandbox_types::ExecLimits;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -43,6 +44,7 @@ pub(crate) struct ConfigurationCaptureContext<'a> {
     db: &'a DbWriteConnection,
     runtime_script_root: Option<&'a fs::File>,
     storage: Option<&'a MountedStorageEvidence>,
+    exec_limits: Option<ExecLimits>,
 }
 
 #[cfg(feature = "runner")]
@@ -52,6 +54,7 @@ pub(crate) struct ConfigurationCaptureObservation<'a> {
     scripts: ScriptBackingObservation,
     init: Option<InitObservation>,
     storage: Option<MountedStorageEvidence>,
+    exec_limits: Option<ExecLimits>,
 }
 
 /// Host-private evidence from the checkpoint's paused configuration boundary.
@@ -71,6 +74,14 @@ pub struct CapturedConfiguration {
     init: Option<InitObservation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     storage: Option<MountedStorageEvidence>,
+    // ExecLimits has serde defaults for launch compatibility. Evidence must instead be
+    // complete: a partial object cannot certify omitted values as observed defaults.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_exec_limits"
+    )]
+    exec_limits: Option<ExecLimits>,
 }
 
 /// Remove an unpublished receipt on error; only checkpoint publication transfers ownership.
@@ -92,12 +103,14 @@ impl<'a> ConfigurationCaptureContext<'a> {
         db: &'a DbWriteConnection,
         runtime_script_root: Option<&'a fs::File>,
         storage: Option<&'a MountedStorageEvidence>,
+        exec_limits: Option<ExecLimits>,
     ) -> Self {
         Self {
             journal,
             db,
             runtime_script_root,
             storage,
+            exec_limits,
         }
     }
 
@@ -121,6 +134,7 @@ impl<'a> ConfigurationCaptureContext<'a> {
             .flatten();
         Ok(ConfigurationCaptureObservation {
             storage: self.storage.cloned(),
+            exec_limits: self.exec_limits,
             init,
             scripts,
             sandbox_directory,
@@ -141,7 +155,7 @@ impl ConfigurationCaptureObservation<'_> {
         {
             return Err(invalid("configuration changed during checkpoint capture"));
         }
-        PreparedConfigurationReceipt::prepare_with_storage(
+        PreparedConfigurationReceipt::prepare_with_evidence(
             self.sandbox_directory,
             checkpoint_id,
             capture_root,
@@ -154,11 +168,17 @@ impl ConfigurationCaptureObservation<'_> {
             Some(self.scripts.finish()),
             self.init,
             self.storage,
+            self.exec_limits,
         )
     }
 }
 
 impl CapturedConfiguration {
+    /// Effective guest limits observed for this capture; absent evidence remains unknown.
+    pub fn exec_limits(&self) -> Option<ExecLimits> {
+        self.exec_limits
+    }
+
     /// Negotiated observations from actual mounted backends. Older receipts return None.
     pub fn storage(&self) -> Option<&MountedStorageEvidence> {
         self.storage.as_ref()
@@ -269,6 +289,7 @@ impl PreparedConfigurationReceipt {
 
     // Identity, source and backing are selected together under capture authority.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(crate) fn prepare_with_storage(
         sandbox_directory: &Path,
         checkpoint_id: &str,
@@ -279,8 +300,37 @@ impl PreparedConfigurationReceipt {
         init: Option<InitObservation>,
         storage: Option<MountedStorageEvidence>,
     ) -> io::Result<Self> {
+        Self::prepare_with_evidence(
+            sandbox_directory,
+            checkpoint_id,
+            capture_root,
+            source,
+            pending,
+            scripts,
+            init,
+            storage,
+            None,
+        )
+    }
+
+    // All evidence is selected under one runtime capture authority; no desired defaults enter here.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_with_evidence(
+        sandbox_directory: &Path,
+        checkpoint_id: &str,
+        capture_root: &str,
+        source: Option<&RetainedConfiguration>,
+        pending: Option<&serde_json::Value>,
+        scripts: Option<ScriptBackingEvidence>,
+        init: Option<InitObservation>,
+        storage: Option<MountedStorageEvidence>,
+        exec_limits: Option<ExecLimits>,
+    ) -> io::Result<Self> {
         if let Some(storage) = &storage {
             storage.validate()?;
+        }
+        if let Some(limits) = exec_limits {
+            limits.validate().map_err(invalid)?;
         }
         let path = receipt_path(sandbox_directory, checkpoint_id)?;
         let parent = sandbox_directory.join("last-active");
@@ -297,11 +347,16 @@ impl PreparedConfigurationReceipt {
             scripts,
             init,
             storage,
+            exec_limits,
         };
         let mut bytes = serde_json::to_vec(&record)
             .map_err(|_| invalid("could not encode configuration capture"))?;
         // Optional observations must not make an otherwise fitting capture fail. Omission
         // means unknown, never an empty inventory or permission to infer storage settings.
+        if bytes.len() as u64 > MAX_CAPTURE_BYTES && record.exec_limits.take().is_some() {
+            bytes = serde_json::to_vec(&record)
+                .map_err(|_| invalid("could not encode configuration capture"))?;
+        }
         if bytes.len() as u64 > MAX_CAPTURE_BYTES && record.storage.take().is_some() {
             bytes = serde_json::to_vec(&record)
                 .map_err(|_| invalid("could not encode configuration capture"))?;
@@ -316,6 +371,7 @@ impl PreparedConfigurationReceipt {
             record.scripts = None;
             record.init = None;
             record.storage = None;
+            record.exec_limits = None;
             bytes = serde_json::to_vec(&record)
                 .map_err(|_| invalid("could not encode configuration capture"))?;
         }
@@ -367,6 +423,33 @@ impl Drop for PreparedConfigurationReceipt {
 //--------------------------------------------------------------------------------------------------
 // Functions
 //--------------------------------------------------------------------------------------------------
+
+// Validate the evidence shape before using the legacy defaultable execution-policy type.
+fn deserialize_exec_limits<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ExecLimits>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let fields = [
+        "max_executions",
+        "input_limit",
+        "output_limit",
+        "stdin_chunk_size",
+        "output_chunk_size",
+    ];
+    if !value.as_object().is_some_and(|object| {
+        object.len() == fields.len() && fields.iter().all(|field| object.contains_key(*field))
+    }) {
+        return Err(serde::de::Error::custom(
+            "incomplete execution-limit evidence",
+        ));
+    }
+    let limits: ExecLimits = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+    limits.validate().map_err(serde::de::Error::custom)?;
+    Ok(Some(limits))
+}
 
 /// Stable private receipt binding for a disk-only root, distinct from full checkpoint roots.
 pub fn disk_configuration_root(
@@ -444,10 +527,11 @@ mod tests {
             scripts: None,
             init: None,
             storage: None,
+            exec_limits: None,
         };
         let available = MAX_CAPTURE_BYTES as usize - serde_json::to_vec(&base).unwrap().len();
         source.source = Some(serde_json::Value::String("x".repeat(available)));
-        let receipt = PreparedConfigurationReceipt::prepare_with_storage(
+        let receipt = PreparedConfigurationReceipt::prepare_with_evidence(
             home.path(),
             "boundary",
             "root",
@@ -456,6 +540,7 @@ mod tests {
             None,
             None,
             Some(MountedStorageEvidence::default()),
+            Some(ExecLimits::default()),
         )
         .unwrap()
         .publish();
@@ -464,6 +549,7 @@ mod tests {
         let captured =
             CapturedConfiguration::read(home.path(), "boundary", "root", &receipt).unwrap();
         assert!(captured.storage().is_none());
+        assert!(captured.exec_limits().is_none());
         assert_eq!(captured.source().unwrap().source, source.source);
     }
 
@@ -472,7 +558,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let mut source = source();
         source.source = Some(serde_json::json!({"scripts":{"large":"x".repeat(9 * 1024 * 1024)}}));
-        let receipt = PreparedConfigurationReceipt::prepare_with_storage(
+        let receipt = PreparedConfigurationReceipt::prepare_with_evidence(
             home.path(),
             "oversized",
             "root",
@@ -483,6 +569,7 @@ mod tests {
             }),
             Some(InitObservation::Builtin),
             Some(MountedStorageEvidence::default()),
+            Some(ExecLimits::default()),
         )
         .unwrap()
         .publish();
@@ -496,6 +583,7 @@ mod tests {
         assert!(captured.scripts().is_none());
         assert!(captured.init().is_none());
         assert!(captured.storage().is_none());
+        assert!(captured.exec_limits().is_none());
         assert!(
             CapturedConfiguration::read(home.path(), "oversized", "other_root", &receipt).is_err()
         );
@@ -525,6 +613,67 @@ mod tests {
                 .unwrap()
                 .exists()
         );
+    }
+
+    #[test]
+    fn execution_limit_evidence_is_optional_complete_validated_and_digest_bound() {
+        let home = tempfile::tempdir().unwrap();
+        let limits = ExecLimits {
+            max_executions: 7,
+            ..ExecLimits::default()
+        };
+        for requested in [false, true] {
+            let id = if requested {
+                "exec-extended"
+            } else {
+                "exec-old"
+            };
+            let receipt = PreparedConfigurationReceipt::prepare_with_evidence(
+                home.path(),
+                id,
+                "root",
+                None,
+                None,
+                None,
+                None,
+                None,
+                requested.then_some(limits),
+            )
+            .unwrap()
+            .publish();
+            let path = receipt_path(home.path(), id).unwrap();
+            let mut json: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(json.get("exec_limits").is_some(), requested);
+            let read = CapturedConfiguration::read(home.path(), id, "root", &receipt).unwrap();
+            assert_eq!(read.exec_limits(), requested.then_some(limits));
+            if requested {
+                json["exec_limits"]["max_executions"] = 8.into();
+                fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+                assert!(CapturedConfiguration::read(home.path(), id, "root", &receipt).is_err());
+            } else {
+                // A strict pre-extension decoder sees no new field at all.
+                assert_eq!(json.as_object().unwrap().len(), 4);
+            }
+        }
+        let base =
+            serde_json::json!({"schema":1,"checkpoint_id":"x","capture_root":"root","source":null});
+        assert!(
+            serde_json::from_value::<CapturedConfiguration>(base.clone())
+                .unwrap()
+                .exec_limits()
+                .is_none()
+        );
+        for evidence in [
+            serde_json::json!({}),
+            serde_json::json!({"max_executions":7}),
+            serde_json::json!({"max_executions":0,"input_limit":65536,"output_limit":1048576,"stdin_chunk_size":16384,"output_chunk_size":16384}),
+            serde_json::json!({"max_executions":7,"input_limit":65536,"output_limit":1048576,"stdin_chunk_size":16384,"output_chunk_size":16384,"unknown":1}),
+        ] {
+            let mut json = base.clone();
+            json["exec_limits"] = evidence;
+            assert!(serde_json::from_value::<CapturedConfiguration>(json).is_err());
+        }
     }
 
     #[test]

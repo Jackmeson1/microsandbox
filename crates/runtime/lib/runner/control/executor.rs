@@ -456,15 +456,18 @@ impl RuntimeControlExecutor {
         let response = match request {
             ControlRequest::DiskCheckpointCreate {
                 retain_configuration,
+                retain_configuration_exec_limits,
                 retain_configuration_storage,
                 checkpoint_id,
                 guest_flush,
             } => {
-                if retain_configuration_storage == Some(true) && retain_configuration != Some(true)
+                if (retain_configuration_storage == Some(true)
+                    || retain_configuration_exec_limits == Some(true))
+                    && retain_configuration != Some(true)
                 {
                     return control_error(
                         "invalid_request",
-                        "storage evidence requires configuration capture",
+                        "optional evidence requires configuration capture",
                     );
                 }
                 state.lifecycle = RuntimeLifecycle::Quiescing;
@@ -475,6 +478,16 @@ impl RuntimeControlExecutor {
                         self.runtime_script_root.as_ref(),
                         (retain_configuration_storage == Some(true))
                             .then_some(&self.mounted_filesystems),
+                        // Ready belongs to this executor's guest and the policy is immutable.
+                        // Older guests omit it; never manufacture current defaults as evidence.
+                        (retain_configuration_exec_limits == Some(true))
+                            .then(|| {
+                                self.signal_workload
+                                    .ready()
+                                    .ok()
+                                    .and_then(|(_, ready)| ready.ready.exec_limits)
+                            })
+                            .flatten(),
                     )
                 });
                 match state.checkpoint.capture_disk(
@@ -650,17 +663,20 @@ impl RuntimeControlExecutor {
             }
             ControlRequest::CheckpointCreate {
                 retain_configuration,
+                retain_configuration_exec_limits,
                 retain_configuration_storage,
                 guest_flush,
                 checkpoint_id,
                 intent,
                 record_integrity,
             } => {
-                if retain_configuration_storage == Some(true) && retain_configuration != Some(true)
+                if (retain_configuration_storage == Some(true)
+                    || retain_configuration_exec_limits == Some(true))
+                    && retain_configuration != Some(true)
                 {
                     return control_error(
                         "invalid_request",
-                        "storage evidence requires configuration capture",
+                        "optional evidence requires configuration capture",
                     );
                 }
                 state.lifecycle = RuntimeLifecycle::Quiescing;
@@ -671,6 +687,16 @@ impl RuntimeControlExecutor {
                         self.runtime_script_root.as_ref(),
                         (retain_configuration_storage == Some(true))
                             .then_some(&self.mounted_filesystems),
+                        // Ready belongs to this executor's guest and the policy is immutable.
+                        // Older guests omit it; never manufacture current defaults as evidence.
+                        (retain_configuration_exec_limits == Some(true))
+                            .then(|| {
+                                self.signal_workload
+                                    .ready()
+                                    .ok()
+                                    .and_then(|(_, ready)| ready.ready.exec_limits)
+                            })
+                            .flatten(),
                     )
                 });
                 match state.checkpoint.capture(
@@ -819,6 +845,7 @@ impl RuntimeControlExecutor {
                 ok: true,
                 capabilities: Some(ControlCapabilities {
                     configuration_capture: true,
+                    configuration_exec_limits: true,
                     configuration_storage: true,
                     cpu_resize: self.vm.cpu_resize_supported(),
                     memory_resize: self.vm.memory_resize_supported(),

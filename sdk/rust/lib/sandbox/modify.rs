@@ -1188,6 +1188,9 @@ pub(crate) async fn control_checkpoint_create(
     let configuration = ExpectedConfigurationCapture::prepare(local, name, &session).await?;
     let request = microsandbox_protocol::control::CheckpointCreate {
         retain_configuration: configuration.as_ref().map(|_| true),
+        retain_configuration_exec_limits: (configuration.is_some()
+            && capabilities.configuration_exec_limits)
+            .then_some(true),
         retain_configuration_storage: (configuration.is_some()
             && capabilities.configuration_storage)
             .then_some(true),
@@ -1242,6 +1245,9 @@ pub(crate) async fn control_disk_checkpoint_create(
     let configuration = ExpectedConfigurationCapture::prepare(local, name, &session).await?;
     let request = microsandbox_protocol::control::DiskCheckpointCreate {
         retain_configuration: configuration.as_ref().map(|_| true),
+        retain_configuration_exec_limits: (configuration.is_some()
+            && capabilities.configuration_exec_limits)
+            .then_some(true),
         retain_configuration_storage: (configuration.is_some()
             && capabilities.configuration_storage)
             .then_some(true),

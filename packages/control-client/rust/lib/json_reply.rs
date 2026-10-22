@@ -129,6 +129,7 @@ pub(crate) fn capabilities(value: &JsonValue) -> Option<RuntimeCapabilities> {
     };
     Some(RuntimeCapabilities {
         configuration_capture: optional("configuration_capture")?,
+        configuration_exec_limits: optional("configuration_exec_limits")?,
         configuration_storage: optional("configuration_storage")?,
         root_disk_grow: optional("root_disk_grow")?,
         guest_flush_policy: optional("guest_flush_policy")?,
