@@ -592,3 +592,7 @@ The optional `msb_snapshot_object_owned` native entry point returns an allocated
 ## Go snapshot producer capabilities
 
 The optional `msb_supports_snapshot_artifact_receivers` symbol advertises `create_artifact` and `list_dir` operations that return retained checkpoint receivers. General snapshot-object dispatch predates those operations and is not sufficient evidence of support. New Go clients select the retained producer only when the marker and receiver entry points exist; older libraries continue through the existing capture/list ABI. This routing is selected before dispatch and never retries capture after a native error or uncertain outcome. Results from legacy producers retain their existing operations; new exact-receiver spawn/removal methods report unsupported when no receiver was returned. Existing symbols, older Go callers, snapshot bytes and runtime protocols remain unchanged.
+
+## Explicit snapshot group directories
+
+`Snapshot.open(path)` and explicit CLI group paths reopen existing histories through the current group reader and locks. They introduce no catalog, artifact, or runtime protocol changes. Named lookup remains separate and never falls back from a missing path. Node and Go detect native support for the new operation before dispatch and report unsupported with older bindings; existing name-based operations retain their routing. Go uses the optional `msb_supports_snapshot_group_paths` symbol. Local paths are anchored before deferred work without collapsing Unix symlink/parent traversal. Cloud group names are unchanged.

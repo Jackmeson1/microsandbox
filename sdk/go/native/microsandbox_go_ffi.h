@@ -1116,6 +1116,11 @@ char *msb_runtime_setup(uint64_t cancel_id,
 void msb_supports_snapshot_artifact_receivers(void);
 
 /**
+ * Advertise explicit group-directory lookup separately from older group receivers.
+ */
+void msb_supports_snapshot_group_paths(void);
+
+/**
  * Execute only the explicitly tagged operation against a retained receiver.
  */
 char *msb_snapshot_object(uint64_t cancel_id,

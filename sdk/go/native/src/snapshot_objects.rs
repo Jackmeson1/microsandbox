@@ -34,6 +34,9 @@ enum Request {
     Get {
         name: String,
     },
+    OpenGroup {
+        directory: std::path::PathBuf,
+    },
     List,
     LookupSource {
         name: String,
@@ -325,6 +328,9 @@ async fn dispatch(id: u64, request: Request, pending: &PendingObjects) -> Result
             .map(|checkpoint| pending.insert(Object::Checkpoint(Box::new(checkpoint))))
             .collect::<Result<Vec<_>, _>>()
             .map(Value::Array),
+        Request::OpenGroup { directory } => {
+            pending.insert(Object::Group(Snapshot::open(directory).await?))
+        }
         Request::Get { name } => pending.insert(Object::Group(Snapshot::get(name).await?)),
         Request::List => Snapshot::list()
             .await?
@@ -439,6 +445,10 @@ async fn dispatch(id: u64, request: Request, pending: &PendingObjects) -> Result
 /// imply these operations exist, and clients must select capture before mutation.
 #[unsafe(no_mangle)]
 pub extern "C" fn msb_supports_snapshot_artifact_receivers() {}
+
+/// Advertise explicit group-directory lookup separately from older group receivers.
+#[unsafe(no_mangle)]
+pub extern "C" fn msb_supports_snapshot_group_paths() {}
 
 /// Execute only the explicitly tagged operation against a retained receiver.
 #[unsafe(no_mangle)]

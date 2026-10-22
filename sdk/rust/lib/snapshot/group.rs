@@ -1,7 +1,7 @@
 //! Group-oriented history and capture APIs. Immutable artifacts are `Checkpoint` values.
 
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::backend::Backend;
@@ -102,6 +102,31 @@ impl Snapshot {
     /// once per algorithm. Corruption returns an error containing the complete group report.
     pub async fn verify(&self) -> MicrosandboxResult<super::SnapshotGroupVerifyReport> {
         self.backend.snapshots().verify_group(&self.reference).await
+    }
+
+    /// Open a local history directory, including one outside the default store.
+    ///
+    /// Relative paths are anchored when this method is called, before its future is
+    /// polled. Symlinks and parent components keep their filesystem meaning. This
+    /// never falls back to a same-named group in the default store.
+    pub fn open(
+        path: impl AsRef<Path>,
+    ) -> impl std::future::Future<Output = MicrosandboxResult<Self>> + Send {
+        // Resolve before suspension: bindings may queue this future on another thread.
+        let directory = if path.as_ref().as_os_str().is_empty() {
+            Err(MicrosandboxError::InvalidConfig(
+                "snapshot group path cannot be empty".into(),
+            ))
+        } else {
+            std::path::absolute(path).map_err(MicrosandboxError::from)
+        };
+        let backend = crate::backend::default_backend();
+        async move {
+            backend
+                .snapshots()
+                .open_group(backend.clone(), &directory?)
+                .await
+        }
     }
 
     /// Reopen a named history through the active backend, including a headless history.

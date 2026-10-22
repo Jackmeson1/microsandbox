@@ -1090,6 +1090,10 @@ char *call_msb_image_prune(uint64_t cancel_id, uint8_t *buf, size_t buf_len) {
 	return ptr_msb_image_prune ? ptr_msb_image_prune(cancel_id, buf, buf_len) : NULL;
 }
 bool has_msb_snapshot_objects(void) { return ptr_msb_snapshot_object && ptr_msb_snapshot_object_close; }
+bool has_msb_snapshot_group_paths(void) {
+    return has_msb_snapshot_objects() && lib_handle &&
+        dlsym(lib_handle, "msb_supports_snapshot_group_paths") != NULL;
+}
 bool has_msb_snapshot_artifact_receivers(void) {
     // General receivers predate create_artifact/list_dir. Select the producer ABI
     // before dispatch: probing by capture failure could repeat a published mutation.
@@ -6127,6 +6131,17 @@ func RequirePortModification() error {
 
 // SnapshotObjectCall refuses old native libraries before dispatch. Receiver handles
 // carry their original backend; a caller must not reconstruct them from names.
+// SnapshotGroupOpen selects native support before sending the new read operation.
+func SnapshotGroupOpen(ctx context.Context, directory string) ([]byte, error) {
+	if err := ensureLoaded(); err != nil {
+		return nil, err
+	}
+	if !bool(C.has_msb_snapshot_group_paths()) {
+		return nil, &Error{Kind: KindUnsupportedOperation, Message: "native SDK does not support opening snapshot group paths; update the native SDK"}
+	}
+	return SnapshotObjectCall(ctx, 0, map[string]any{"op": "open_group", "directory": directory})
+}
+
 func SnapshotObjectCall(ctx context.Context, handle uint64, request any) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

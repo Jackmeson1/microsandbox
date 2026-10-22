@@ -284,6 +284,35 @@ impl SnapshotBackend for LocalBackend {
         })
     }
 
+    fn open_group<'a>(
+        &'a self,
+        backend: Arc<dyn Backend>,
+        directory: &'a Path,
+    ) -> BoxFuture<'a, MicrosandboxResult<crate::Snapshot>> {
+        Box::pin(async move {
+            group::validate_directory(directory).await?;
+            // Canonicalization is only for the display name; retain the admitted path
+            // so symlink/parent semantics are not rewritten before later operations.
+            let resolved = directory.canonicalize()?;
+            let name = resolved
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| {
+                    MicrosandboxError::InvalidConfig(
+                        "snapshot group directory has no UTF-8 name".into(),
+                    )
+                })?;
+            let path = directory.to_str().ok_or_else(|| {
+                MicrosandboxError::InvalidConfig("snapshot group path must be UTF-8".into())
+            })?;
+            Ok(crate::Snapshot {
+                backend,
+                name: name.into(),
+                reference: SnapshotReference::Path(path.into()),
+            })
+        })
+    }
+
     fn list_groups<'a>(
         &'a self,
         backend: Arc<dyn Backend>,

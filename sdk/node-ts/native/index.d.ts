@@ -1903,6 +1903,8 @@ export declare class SnapshotGroup {
    * The destination builder is consumed before suspension and must not be reused.
    */
   spawnSandboxWithProgressBuilder(builder: RestoreBuilder): Promise<PullProgressCreate>
+  /** Open a local directory, anchoring it before scheduling native work. */
+  static open(path: string): Promise<SnapshotGroup>
   static get(name: string): Promise<SnapshotGroup>
   static list(): Promise<Array<SnapshotGroup>>
   get name(): string

@@ -127,6 +127,16 @@ impl PySnapshotGroup {
     }
 
     #[staticmethod]
+    fn open<'py>(py: Python<'py>, path: PathBuf) -> PyResult<Bound<'py, PyAny>> {
+        let pending = RustGroup::open(path);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            Ok(Self {
+                inner: pending.await.map_err(to_py_err)?,
+            })
+        })
+    }
+
+    #[staticmethod]
     fn get<'py>(py: Python<'py>, name: String) -> PyResult<Bound<'py, PyAny>> {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             Ok(Self {

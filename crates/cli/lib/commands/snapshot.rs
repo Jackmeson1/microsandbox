@@ -423,11 +423,36 @@ async fn checkpoint(args: SnapshotCheckpointArgs) -> anyhow::Result<()> {
         guest_flush: args.guest_flush,
     };
     let backend = microsandbox::backend::default_backend();
-    match backend
-        .snapshots()
-        .checkpoint(backend.clone(), config)
-        .await
+    let outcome = if backend.as_local().is_some()
+        && config.group.as_deref().is_some_and(explicit_group_path)
     {
+        let group = select_group(config.group.as_deref().unwrap()).await?;
+        group
+            .checkpoint_with(|mut options| {
+                options = options.name(config.name).guest_flush(config.guest_flush);
+                if let Some(destination) = config.dest_dir {
+                    options = options.dest_dir(destination);
+                }
+                if config.full {
+                    options = options.full();
+                }
+                if config.record_integrity {
+                    options = options.record_integrity();
+                }
+                for (key, value) in config.labels {
+                    options = options.label(key, value);
+                }
+                options
+            })
+            .await
+            .map(|result| result.checkpoint)
+    } else {
+        backend
+            .snapshots()
+            .checkpoint(backend.clone(), config)
+            .await
+    };
+    match outcome {
         Ok(checkpoint) => {
             spinner.finish_success("Checkpointed");
             if !args.quiet {
@@ -576,7 +601,7 @@ async fn list(args: SnapshotListArgs) -> anyhow::Result<()> {
         }
         return Ok(());
     };
-    let snapshots = SnapshotGroup::get(&group_name).await?.checkpoints().await?;
+    let snapshots = select_group(&group_name).await?.checkpoints().await?;
 
     if args.format == Some(OutputFormat::Json) {
         let entries: Vec<serde_json::Value> = snapshots
@@ -656,7 +681,7 @@ async fn list(args: SnapshotListArgs) -> anyhow::Result<()> {
 }
 
 async fn inspect(args: SnapshotInspectArgs) -> anyhow::Result<()> {
-    let group = SnapshotGroup::get(&args.snapshot).await?;
+    let group = select_group(&args.snapshot).await?;
     let Some(member) = args.checkpoint else {
         let info = group.inspect().await?;
         ui::detail_kv("Group", &info.name);
@@ -764,7 +789,7 @@ async fn inspect(args: SnapshotInspectArgs) -> anyhow::Result<()> {
 
 async fn verify(args: SnapshotVerifyArgs) -> anyhow::Result<()> {
     if args.all {
-        let group = SnapshotGroup::get(&args.snapshot).await?;
+        let group = select_group(&args.snapshot).await?;
         return match group.verify().await {
             Ok(report) => display_group_verification(&report),
             Err(microsandbox::MicrosandboxError::SnapshotVerification(report)) => {
@@ -860,7 +885,7 @@ async fn remove(args: SnapshotRemoveArgs) -> anyhow::Result<()> {
         ui::Spinner::start("Removing", &args.group)
     };
     let result = async {
-        let group = SnapshotGroup::get(&args.group).await?;
+        let group = select_group(&args.group).await?;
         if args.all {
             let report = group.remove().await?;
             Ok((Some(report.head_update), report.warnings))
@@ -917,9 +942,35 @@ async fn reindex(args: SnapshotReindexArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Canonical group selectors never guess whether a string is a path or cloud ID.
+/// Path syntax is explicit; bare names always select the default store.
+fn explicit_group_path(selector: &str) -> bool {
+    let path = std::path::Path::new(selector);
+    path.is_absolute()
+        || selector.contains('/')
+        || selector == "."
+        || selector == ".."
+        || (cfg!(windows) && (selector.contains('\\') || selector.as_bytes().get(1) == Some(&b':')))
+}
+
+fn select_group(
+    selector: &str,
+) -> impl std::future::Future<Output = microsandbox::MicrosandboxResult<SnapshotGroup>> + '_ {
+    // Cloud names are never interpreted as paths in the client's filesystem.
+    let local = microsandbox::backend::default_backend()
+        .as_local()
+        .is_some();
+    let pending = (local && explicit_group_path(selector)).then(|| SnapshotGroup::open(selector));
+    async move {
+        match pending {
+            Some(pending) => pending.await,
+            None => SnapshotGroup::get(selector).await,
+        }
+    }
+}
+
+/// Select an immutable member from an explicitly chosen group.
 async fn select_checkpoint(group: &str, member: Option<&str>) -> anyhow::Result<Snapshot> {
-    let group = SnapshotGroup::get(group).await?;
+    let group = select_group(group).await?;
     match member {
         Some(member) => Ok(group.get_checkpoint(member).await?),
         None => group.head().await?.ok_or_else(|| {
@@ -976,7 +1027,7 @@ async fn load(args: SnapshotLoadArgs) -> anyhow::Result<()> {
 }
 
 async fn head(args: SnapshotHeadArgs) -> anyhow::Result<()> {
-    let group = SnapshotGroup::get(&args.selector).await?;
+    let group = select_group(&args.selector).await?;
     let head = group.head().await?;
     if args.format == Some(OutputFormat::Json) {
         println!(
@@ -998,7 +1049,7 @@ async fn head(args: SnapshotHeadArgs) -> anyhow::Result<()> {
 }
 
 async fn modify(args: SnapshotModifyArgs) -> anyhow::Result<()> {
-    let group = SnapshotGroup::get(&args.group).await?;
+    let group = select_group(&args.group).await?;
     let update = match args.set_head {
         Some(member) => group.set_head(member).await?,
         None => group.clear_head().await?,
@@ -1660,5 +1711,30 @@ mod tests {
             ])
             .is_err()
         );
+    }
+    #[test]
+    fn explicit_group_paths_do_not_guess_bare_names() {
+        for name in ["history", "nightly-1", "missing"] {
+            assert!(!explicit_group_path(name));
+        }
+        for path in [
+            "./history",
+            "../history",
+            "exports/history",
+            "/history",
+            ".",
+            "..",
+        ] {
+            assert!(explicit_group_path(path));
+        }
+        #[cfg(windows)]
+        for path in [
+            r"C:\history",
+            r"C:history",
+            r"exports\history",
+            r"\\server\share\history",
+        ] {
+            assert!(explicit_group_path(path));
+        }
     }
 }

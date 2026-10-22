@@ -1526,6 +1526,7 @@ export interface NapiSnapshotCaptureOptions {
 }
 
 export interface NapiSnapshotGroupStatic {
+  open?(path: string): Promise<NapiSnapshotGroup>;
   load(group: string, archives: string[], opts?: NapiLoadOpts): Promise<NapiSnapshotImportResult>;
   get(name: string): Promise<NapiSnapshotGroup>;
   list(): Promise<NapiSnapshotGroup[]>;
