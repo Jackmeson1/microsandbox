@@ -640,11 +640,14 @@ mod tests {
                 .max_memory_mib
                 .is_none()
         );
-        let resolved = ordinary
-            .cpus(1)
-            .memory(128)
-            .max_cpus(4)
-            .max_memory(512)
+        let explicit = ordinary.cpus(1).memory(128).max_cpus(4).max_memory(512);
+        // Inspection keeps caller options sparse until captured-geometry validation.
+        assert_eq!(explicit.inner.config.spec.resources.max_cpus, Some(4));
+        assert_eq!(
+            explicit.inner.config.spec.resources.max_memory_mib,
+            Some(512)
+        );
+        let resolved = explicit
             .inner
             // Source preparation normally supplies the captured image before finish.
             .image("alpine")
@@ -652,10 +655,6 @@ mod tests {
             .unwrap();
         assert_eq!(resolved.spec.resources.max_cpus, 4);
         assert_eq!(resolved.spec.resources.max_memory_mib, 512);
-        // Deferred full-checkpoint admission must distinguish explicit ceilings
-        // from inherited defaults, even when the numbers happen to match.
-        assert!(resolved.restore_overrides.max_cpus);
-        assert!(resolved.restore_overrides.max_memory);
         for builder in [
             Sandbox::restore("saved").name("child").max_cpus(0),
             Sandbox::restore("saved").name("child").max_memory(0),
