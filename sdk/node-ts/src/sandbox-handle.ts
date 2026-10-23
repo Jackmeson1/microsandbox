@@ -11,6 +11,7 @@ import {
 import {
   modificationPlanFromJson,
   modifyOptionsToNapi,
+  requireModifyCapabilities,
   type ModifyOptions,
   type SandboxModificationPlan,
 } from "./modify.js";
@@ -132,6 +133,7 @@ export class SandboxHandle {
    * computed without applying anything.
    */
   async modify(opts?: ModifyOptions): Promise<SandboxModificationPlan> {
+    requireModifyCapabilities(opts);
     const raw = await withMappedErrors(() =>
       this.inner.modify(modifyOptionsToNapi(opts)),
     );

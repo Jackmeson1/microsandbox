@@ -15,7 +15,7 @@ use crate::sandbox::{
 //--------------------------------------------------------------------------------------------------
 
 /// A lightweight handle to a sandbox from the database.
-#[pyclass(name = "SandboxHandle")]
+#[pyclass(from_py_object, name = "SandboxHandle")]
 #[derive(Clone)]
 pub struct PySandboxHandle {
     inner: Arc<microsandbox::sandbox::SandboxHandle>,
@@ -83,7 +83,7 @@ impl PySandboxHandle {
 
     /// Current sandbox lifecycle status.
     #[getter]
-    fn status(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn status(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let guard = &self.inner;
         str_enum_member(
             py,
@@ -107,7 +107,7 @@ impl PySandboxHandle {
     }
 
     /// Parsed sandbox configuration.
-    fn config(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn config(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let guard = &self.inner;
         let value: serde_json::Value =
             serde_json::from_str(guard.config_json()).map_err(|e| to_py_err(e.into()))?;
@@ -224,6 +224,8 @@ impl PySandboxHandle {
         workdir = None,
         secrets = None,
         secrets_rm = None,
+        ports = None,
+        ports_rm = None,
         policy = None,
         dry_run = false,
     ))]
@@ -245,12 +247,14 @@ impl PySandboxHandle {
             std::collections::HashMap<String, std::collections::HashMap<String, Py<PyAny>>>,
         >,
         secrets_rm: Option<Vec<String>>,
+        ports: Option<Py<PyAny>>,
+        ports_rm: Option<Py<PyAny>>,
         policy: Option<Py<PyAny>>,
         dry_run: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         let secrets = crate::sandbox::build_secret_patches(py, secrets)?;
-        let patch = crate::sandbox::build_modify_patch(
+        let mut patch = crate::sandbox::build_modify_patch(
             cpus,
             max_cpus,
             memory,
@@ -264,6 +268,9 @@ impl PySandboxHandle {
             secrets,
             secrets_rm,
         );
+        patch.ports = crate::helpers::modify_ports(ports.as_ref().map(|value| value.bind(py)))?;
+        patch.ports_remove =
+            crate::helpers::modify_ports_remove(ports_rm.as_ref().map(|value| value.bind(py)))?;
         let policy = policy
             .as_ref()
             .map(|value| extract_str_enum(value.bind(py), "ModificationPolicy"))
@@ -700,7 +707,7 @@ impl PySandboxHandle {
 // Functions
 //--------------------------------------------------------------------------------------------------
 
-pub(crate) fn json_value_to_py(py: Python<'_>, value: serde_json::Value) -> PyResult<PyObject> {
+pub(crate) fn json_value_to_py(py: Python<'_>, value: serde_json::Value) -> PyResult<Py<PyAny>> {
     match value {
         serde_json::Value::Null => Ok(py.None()),
         serde_json::Value::Bool(value) => Ok(PyBool::new(py, value).to_owned().unbind().into()),

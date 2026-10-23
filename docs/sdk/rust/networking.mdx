@@ -835,11 +835,11 @@ Configure HTTP denial responses. See [`HttpBuilder`](#httpbuilder).
 <Accordion title="Example">
 
 ```rust
-use microsandbox::Sandbox;
+use microsandbox::{Sandbox, sandbox::HttpDenyResponseFormat};
 
 let sb = Sandbox::builder("agent")
     .image("python")
-    .network(|n| n.http(|h| h.deny_response(true).deny_message("Blocked: {host}")))
+    .network(|n| n.http(|h| h.deny_response(true).deny_response_format(HttpDenyResponseFormat::Json).network_deny_message("Request blocked.")))
     .create()
     .await?;
 ```
@@ -853,6 +853,16 @@ fn strict(self, enabled: bool) -> Self
 ```
 
 Require hostname-based policy allows to use an inspectable request authority. Default: `true`. Plain HTTP exposes that authority in `Host`; HTTPS only exposes it when TLS interception is enabled and not bypassed. Without that visibility, strict mode denies HTTPS that would otherwise be allowed only by a hostname rule.
+
+#### <span className="msb-recv">network.</span><span className="msb-hn">max_inbound_tcp_connections()</span>
+
+```rust
+fn max_inbound_tcp_connections(self, max: usize) -> Self
+```
+
+Limit active inbound TCP connections across published ports; `0` means unlimited. When omitted, the runtime defaults to unlimited in **0.7.9+**, or **256** in older versions. Local-only; unsupported overrides fail with an upgrade-required error.
+
+`RestoreBuilder`, `ForkBuilder`, and `ForkManyBuilder` expose the same setter for the child's published ports.
 
 #### <span className="msb-recv">network.</span><span className="msb-hn">tcp_accept_queue_size()</span>
 
@@ -1176,7 +1186,7 @@ Whether the proxy verifies upstream server certificates only when the upstream S
 fn new() -> Self
 ```
 
-Create HTTP settings with denial responses disabled. [`network.http()`](#network-http) supplies this builder automatically.
+Create HTTP settings with JSON denial responses enabled. [`network.http()`](#network-http) supplies this builder automatically.
 
 #### <span className="msb-recv">http.</span><span className="msb-hn">deny_response()</span>
 
@@ -1186,7 +1196,15 @@ Create HTTP settings with denial responses disabled. [`network.http()`](#network
 fn deny_response(self, enabled: bool) -> Self
 ```
 
-Return `403 Forbidden` for denied HTTP/1.x requests. Default: `false`. HTTPS requires TLS interception. Enabling this requires a supporting local runtime; older runtimes and cloud reject it. See [denied HTTP requests](/networking/overview#what-a-denied-http-request-sees) for supported requests and examples.
+Enable denial responses for supported HTTP/1.x requests. Default: `true`, with JSON responses. Set `false` to close denied connections without a response. HTTPS requires TLS interception. Requires a supporting local runtime; cloud behavior is unchanged. See [HTTP denial responses](/networking/overview#http-denial-responses).
+
+#### <span className="msb-recv">http.</span><span className="msb-hn">deny_response_format()</span>
+
+```rust
+fn deny_response_format(self, format: HttpDenyResponseFormat) -> Self
+```
+
+Choose `HttpDenyResponseFormat::Text` or `Json` (default). JSON mode requires a supporting runtime.
 
 #### <span className="msb-recv">http.</span><span className="msb-hn">deny_message()</span>
 
@@ -1194,7 +1212,23 @@ Return `403 Forbidden` for denied HTTP/1.x requests. Default: `false`. HTTPS req
 fn deny_message(self, message: impl Into<String>) -> Self
 ```
 
-Set the response body, replacing `{host}` with the blocked hostname. Omission uses the built-in message; an empty string sends no body. Requires `deny_response(true)`.
+Deprecated legacy text message with `{host}` substitution. Ignored in JSON mode; use `network_deny_message` there.
+
+#### <span className="msb-recv">http.</span><span className="msb-hn">network_deny_message()</span>
+
+```rust
+fn network_deny_message(self, message: impl Into<String>) -> Self
+```
+
+Set the network-denial JSON `message`. Custom messages are used as-is. Omission uses the default message; an empty string leaves `message` empty. Requires `deny_response(true)` and JSON mode.
+
+#### <span className="msb-recv">http.</span><span className="msb-hn">secret_deny_message()</span>
+
+```rust
+fn secret_deny_message(self, message: impl Into<String>) -> Self
+```
+
+Set the secret-denial JSON `message`. Custom messages are used as-is. Omission uses the default message; an empty string leaves `message` empty. Requires `deny_response(true)` and JSON mode.
 
 #### <span className="msb-recv">http.</span><span className="msb-hn">build()</span>
 
@@ -1203,7 +1237,10 @@ fn build(self) -> HttpConfig
 
 pub struct HttpConfig {
     pub deny_response: bool,
+    pub deny_response_format: HttpDenyResponseFormat,
     pub deny_message: Option<String>,
+    pub network_deny_message: Option<String>,
+    pub secret_deny_message: Option<String>,
 }
 ```
 
@@ -1289,13 +1326,35 @@ Grant a one-time startup burst of extra frames on top of the ops bucket. Require
 
 A single policy rule. The `destination` interpretation is direction-dependent: egress destination, or ingress peer/source. `ports` is always the guest-side port (egress destination port / ingress listening port).
 
-| Field | Type | Description |
-|---|---|---|
-| <span id="ruledirection"></span>`direction` | [`Direction`](#direction) | Which evaluator considers this rule |
-| <span id="ruledestination"></span>`destination` | [`Destination`](#destination) | Target filter |
-| <span id="ruleprotocols"></span>`protocols` | [`Vec<Protocol>`](#protocol) | Set semantics; empty = any protocol |
-| <span id="ruleports"></span>`ports` | [`Vec<PortRange>`](#portrange) | Set semantics; empty = any port |
-| <span id="ruleaction"></span>`action` | [`Action`](#action) | What to do on match |
+#### <span className="msb-recv">Rule::</span><span className="msb-hn">direction</span>
+
+[`Direction`](#direction)
+
+Which evaluator considers this rule
+
+#### <span className="msb-recv">Rule::</span><span className="msb-hn">destination</span>
+
+[`Destination`](#destination)
+
+Target filter
+
+#### <span className="msb-recv">Rule::</span><span className="msb-hn">protocols</span>
+
+[`Vec<Protocol>`](#protocol)
+
+Set semantics; empty = any protocol
+
+#### <span className="msb-recv">Rule::</span><span className="msb-hn">ports</span>
+
+[`Vec<PortRange>`](#portrange)
+
+Set semantics; empty = any port
+
+#### <span className="msb-recv">Rule::</span><span className="msb-hn">action</span>
+
+[`Action`](#action)
+
+What to do on match
 
 Convenience constructors build any-protocol, any-port rules:
 
@@ -1371,10 +1430,17 @@ Deny plain DNS (UDP/53 + TCP/53) to the gateway forwarder; place before profile-
 
 An inclusive port range.
 
-| Field | Type | Description |
-|---|---|---|
-| <span id="portrangestart"></span>`start` | `u16` | Start port (inclusive) |
-| <span id="portrangeend"></span>`end` | `u16` | End port (inclusive) |
+#### <span className="msb-recv">PortRange::</span><span className="msb-hn">start</span>
+
+`u16`
+
+Start port (inclusive)
+
+#### <span className="msb-recv">PortRange::</span><span className="msb-hn">end</span>
+
+`u16`
+
+End port (inclusive)
 
 #### <span className="msb-recv">PortRange::</span><span className="msb-hn">single()</span>
 

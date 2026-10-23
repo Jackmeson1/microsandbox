@@ -55,7 +55,7 @@ msb create python --name isolated --no-net
 ```
 </CodeGroup>
 
-The TypeScript and Rust examples disable the network device. Python `Network.none()`, Go `NetworkPolicy.None()`, and CLI `--no-net` keep the device but deny traffic in both directions.
+The TypeScript and Rust examples disable the network device. Python `Network.none()`, Go `NetworkPolicy.None()`, and CLI `--no-net` retain the device but deny traffic in both directions through policy.
 
 Ruby exposes network disablement, host/port allowlists, proxies, and basic TLS interception. Deployment profiles, policy profiles, NAT64, port publishing, and rate limits require TypeScript, Rust, Python, Go, or the CLI; see the [Ruby networking reference](/sdk/ruby/networking) for its available options.
 
@@ -118,19 +118,17 @@ An operator can set `deployment_profile` in `~/.microsandbox/config.json` or on 
 
 <Accordion title="Connection limits and compatibility">
 
-The per-sandbox `maxTcpConnections` setting optionally limits concurrent TCP connections. `maxConnections` remains a deprecated TCP-only alias. When omitted, `single-tenant` has no connection-count cap and `multi-tenant` defaults to 1,024. An explicit positive value overrides either default; zero explicitly selects unlimited. These are runtime defaults, not operator-enforced ceilings. Services accepting tenant configuration must enforce their own policy on overrides.
+The per-sandbox `maxTcpConnections` setting optionally limits concurrent guest-initiated TCP connections. `maxConnections` remains a deprecated TCP-only alias. When omitted, `single-tenant` has no connection-count cap and `multi-tenant` defaults to 1,024. An explicit positive value overrides either default; zero explicitly selects unlimited. These are runtime defaults, not operator-enforced ceilings. Services accepting tenant configuration must enforce their own policy on overrides.
 
 Legacy v0.6.x launch contracts keep their historical default of 256 TCP connections when the limit is omitted. The current SDK rejects explicit unlimited TCP connections, values above 4,096, or multi-tenant values above 256 when launching an older runtime because those peers cannot preserve the requested meaning. A current runtime also rejects legacy zero TCP limits: old zero meant deny all connections, not unlimited. Current-contract defaults and explicit limits are unchanged.
 
 `maxUdpConnections` independently limits host-side UDP relay sessions. Omission is unlimited in `single-tenant` mode and defaults to 1,024 in `multi-tenant` mode; zero explicitly selects unlimited. At a finite limit, a new session evicts the least recently active session. Sessions expire after 60 seconds of inactivity. Historical runtime launch contracts do not support an explicit UDP limit, including zero; the SDK rejects that override with an upgrade-required error instead of silently ignoring it.
 
-Each tracked TCP socket currently allocates 64 KiB for receiving and 64 KiB for
-sending. A ceiling of 1024 therefore requires up to 128 MiB of socket-buffer
-capacity per sandbox, in addition to other runtime allocations. Reserve that
-capacity on the host when configuring a ceiling. Selecting unlimited does not
-remove memory or operating-system resource constraints. Closing sockets remain tracked
-until their TCP state permits removal. Host file descriptors and shared egress
-source ports impose additional constraints.
+`maxInboundTcpConnections` limits active inbound TCP connections across published ports; `0` means unlimited. Omission uses the runtime default: unlimited in **0.7.9+**, or **256** in older versions. Explicit overrides require runtime support or fail with an upgrade-required error. This local-only limit is separate from the listener queue (`tcpAcceptQueueSize`).
+
+On 0.7.9+, finished connections leave the active budget after response delivery. The runtime retains up to 256 finished sockets in TIME-WAIT, evicting the oldest under pressure and shortening protection against delayed packets. Host writes stalled for 30 seconds are closed; successful writes restart the timer.
+
+Each TCP socket allocates 128 KiB of buffers. An outbound cap of 1,024 allows up to 128 MiB; an inbound cap of 256 plus 256 retained sockets allows up to 64 MiB. The retention pool can use 32 MiB even with a small active cap. These figures exclude relay channels, host socket buffers, and other allocations. Unlimited connections still face memory, file-descriptor, and source-port limits.
 
 </Accordion>
 
@@ -548,28 +546,46 @@ The `--net-ingress-*` flags mirror the egress flags for inbound traffic (`--net-
 
 ## HTTP denial responses
 
-<Tooltip tip="HTTP denial responses are local-only. v0.7.8 supports opt-in text responses for network denials; JSON and secret-policy responses require a newer runtime."><span className="msb-badge-local">Local-only <Icon icon="circle-info" size={11} /></span></Tooltip>
+New local sandboxes return JSON `403 Forbidden` responses for supported denied requests by default, with `code`, `message`, and `domain` fields. Set `deny_response: false` to close denied connections without a response. This requires a supporting runtime; cloud behavior is unchanged.
 
-Supported denied HTTP requests return JSON `403` responses with `code`, `message`, and `domain` fields. Set separate messages for network and secret-policy blocks:
+In JSON mode, `network_deny_message` and `secret_deny_message` customize the respective messages. Messages are used as-is; the destination is in `domain`. Changing a message or format does not override an explicit `deny_response: false`.
+
+Select `deny_response_format: text` for legacy behavior: network denials return plain text, `deny_message` substitutes `{host}`, and secret violations close without a response. The old message setting remains supported but is deprecated for new integrations. Each mode uses only its own message settings. Omitted settings use the runtime defaults: responses enabled with JSON format. Explicit settings take precedence. Cloud accepts the default settings without applying them; enabled custom settings are local-only.
 
 <CodeGroup>
 ```typescript TypeScript
+import { NetworkPolicy, Sandbox } from "microsandbox";
+
 await using sb = await Sandbox.builder("agent")
     .image("python")
-    .network((n) => n.http((h) => h
+    .network((n) => n
+        .policy(NetworkPolicy.builder()
+            .defaultDeny()
+            .egress((e) => e.udp().tcp().port(53).allowHost())
+            .build())
+        .http((h) => h
             .denyResponse(true)
             .denyResponseFormat("json")
             .networkDenyMessage("Ask the user for network access.")
             .secretDenyMessage("Ask the user to review secret access.")))
+    .interceptTls()
     .create();
 ```
 
 ```rust Rust
-use microsandbox::sandbox::HttpDenyResponseFormat;
+use microsandbox::{NetworkPolicy, Sandbox, sandbox::HttpDenyResponseFormat};
+
+let policy = NetworkPolicy::builder()
+    .default_deny()
+    .egress(|e| e.udp().tcp().port(53).allow_host())
+    .build()?;
 
 let sb = Sandbox::builder("agent")
     .image("python")
-    .network(|n| n.http(|h| h
+    .network(|n| n
+        .policy(policy)
+        .tls(|t| t.enabled(true))
+        .http(|h| h
             .deny_response(true)
             .deny_response_format(HttpDenyResponseFormat::Json)
             .network_deny_message("Ask the user for network access.")
@@ -579,12 +595,18 @@ let sb = Sandbox::builder("agent")
 ```
 
 ```python Python
-from microsandbox import HttpConfig, Network, Sandbox
+from microsandbox import Action, HttpConfig, Network, NetworkPolicy, Rule, Sandbox, TlsConfig
 
 sb = await Sandbox.create(
     "agent",
     image="python",
     network=Network(
+        policy=NetworkPolicy(
+            default_egress=Action.DENY,
+            default_ingress=Action.DENY,
+            rules=Rule.allow_dns(),
+        ),
+        tls=TlsConfig(),
         http=HttpConfig(
             deny_response=True,
             deny_response_format="json",
@@ -599,6 +621,9 @@ sb = await Sandbox.create(
 sb, err := m.CreateSandbox(ctx, "agent",
     m.WithImage("python"),
     m.WithNetwork(&m.NetworkConfig{
+        DefaultEgress:   m.PolicyActionDeny,
+        Rules:           []m.PolicyRule{m.Rule.AllowDNS()},
+        TLS:             &m.TLSConfig{},
         HTTP: &m.HTTPConfig{
             DenyResponse: true,
             DenyResponseFormat: m.HTTPDenyResponseJSON,
@@ -613,6 +638,7 @@ sb, err := m.CreateSandbox(ctx, "agent",
 sb = Microsandbox::Sandbox.create(
   "agent",
   image: "python",
+  network: { allowed_hosts: ["example.com"], allowed_ports: [80, 443] },
   http: {
     deny_response: true,
     deny_response_format: "json",
@@ -624,6 +650,8 @@ sb = Microsandbox::Sandbox.create(
 
 ```yaml sandbox.yml
 network:
+  policy: none
+  allow: [github.com]
   http:
     deny_response: true
     deny_response_format: json
@@ -632,13 +660,17 @@ network:
 ```
 </CodeGroup>
 
-Messages are literal; the destination is in `domain`. Check the HTTP status, or use `curl --fail` to make a `403` return a nonzero exit code. Set `deny_response: false` to close denied connections without a response.
+Check the response status, or use `curl --fail` to make a `403` return a nonzero exit code.
 
 <Accordion title="Which requests receive a response?">
 
-- Responses cover HTTP/1.0 and HTTP/1.1. HTTPS needs [TLS interception](/networking/tls) without a host bypass. Network-policy denials never reach the upstream server.
-- Secret-policy denials can respond only to the first request, before any upstream response bytes. Later or pipelined requests, an upstream response (including `100 Continue`), `HEAD`, `CONNECT`, `block-and-terminate`, and unsupported body substitution close the connection instead.
-- DNS denials return `NXDOMAIN`. HTTP/2, other protocols, malformed or incomplete requests, and silent clients close without an HTTP response.
+Responses work for HTTP/1.0 and HTTP/1.1. HTTPS requires [TLS interception](/networking/tls) on the destination port, with no bypass for the host. Network-policy denials never reach the upstream server.
+
+In JSON mode, secret-policy denials can also return a response for the first request on a connection, before any upstream response bytes have reached the guest. The connection may already be open when a placeholder is detected; forwarding stops at the violation.
+
+Secret-policy violations still close the connection for later or pipelined requests, after an upstream response (including `100 Continue`), and for `HEAD`, `CONNECT`, `block-and-terminate`, or unsupported body substitution.
+
+DNS denies still return `NXDOMAIN`. HTTP/2, other protocols, malformed or incomplete requests, and silent clients close without an HTTP response.
 
 </Accordion>
 
@@ -666,7 +698,7 @@ Secret-policy denial:
 }
 ```
 
-Custom messages are JSON-escaped; omitted messages use the defaults. v0.7.8 supports opt-in `text` mode for network denials: `deny_message` expands `{host}`, while secret-policy violations close without a response. JSON mode requires a newer runtime. Changing the message or format does not override `deny_response: false`.
+Both custom messages are JSON-escaped. An omitted message uses the default; an empty string leaves `message` empty (Go treats an empty string as omitted). Text mode works with older runtimes that support denial responses. JSON mode requires the new runtime capability; the SDK returns an upgrade-required error if it is missing.
 
 </Accordion>
 

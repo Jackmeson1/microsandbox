@@ -1,7 +1,9 @@
 package microsandbox
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -913,17 +915,22 @@ func TestFFIWireShape_NetworkConnectionLimits(t *testing.T) {
 	}
 }
 
-func TestFFIWireShape_TCPAcceptQueueSize(t *testing.T) {
+func TestFFIWireShape_PublishedTCPConfiguration(t *testing.T) {
 	omitted := marshalCreateOptions(t, WithNetwork(&NetworkConfig{}))["network"].(map[string]any)
 	if value, present := omitted["tcp_accept_queue_size"]; present {
 		t.Fatalf("unset accept queue size reached the wire as %#v", value)
 	}
 
 	size := uint32(4096)
+	unlimited := uint(0)
 	got := marshalCreateOptions(t, WithNetwork(&NetworkConfig{
-		Ports:              map[uint16]uint16{8080: 80},
-		TCPAcceptQueueSize: &size,
+		Ports:                    map[uint16]uint16{8080: 80},
+		TCPAcceptQueueSize:       &size,
+		MaxInboundTCPConnections: &unlimited,
 	}))["network"].(map[string]any)
+	if got["max_inbound_tcp_connections"] != float64(0) {
+		t.Fatalf("published TCP overrides lost: %#v", got)
+	}
 	if got["tcp_accept_queue_size"] != float64(4096) {
 		t.Fatalf("tcp_accept_queue_size = %#v, want 4096", got["tcp_accept_queue_size"])
 	}
@@ -1135,14 +1142,81 @@ func TestNetworkStrictDefaultsAndOptOut(t *testing.T) {
 	}
 }
 
-func TestHTTPDenyMessageSurvivesFFIConversion(t *testing.T) {
+func TestHTTPNetworkDenyMessageSurvivesFFIConversion(t *testing.T) {
+	implicit := buildFFINetwork(&NetworkConfig{})
+	if implicit.HTTP != nil {
+		t.Fatal("omitted HTTP config must inherit runtime defaults")
+	}
+	optOut := buildFFINetwork(&NetworkConfig{HTTP: &HTTPConfig{DenyResponse: false}})
+	if optOut.HTTP.DenyResponse || optOut.HTTP.DenyResponseFormat != "json" {
+		t.Fatal("explicit opt-out must preserve the JSON default format")
+	}
 	for _, enabled := range []bool{false, true} {
-		config := buildFFINetwork(&NetworkConfig{HTTP: &HTTPConfig{DenyResponse: enabled, DenyMessage: "blocked {host}"}})
+		config := buildFFINetwork(&NetworkConfig{HTTP: &HTTPConfig{DenyResponse: enabled, DenyResponseFormat: HTTPDenyResponseJSON, DenyMessage: "legacy {host}", NetworkDenyMessage: "blocked {host}", SecretDenyMessage: "check secret access"}})
 		if config.HTTP.DenyResponse != enabled {
 			t.Fatalf("HTTP denial response flag lost")
 		}
-		if config.HTTP.DenyMessage != "blocked {host}" {
-			t.Fatalf("HTTP denial message lost: %q", config.HTTP.DenyMessage)
+		if config.HTTP.DenyResponseFormat != "json" || config.HTTP.DenyMessage != "legacy {host}" {
+			t.Fatal("HTTP response format or legacy message lost")
+		}
+		if config.HTTP.NetworkDenyMessage != "blocked {host}" {
+			t.Fatalf("HTTP denial message lost: %q", config.HTTP.NetworkDenyMessage)
+		}
+		if config.HTTP.SecretDenyMessage != "check secret access" {
+			t.Fatalf("secret denial message lost: %q", config.HTTP.SecretDenyMessage)
+		}
+
+	}
+}
+
+func TestInvalidConfigRejectedBeforeCreate(t *testing.T) {
+	missingCA := filepath.Join(t.TempDir(), "missing.pem")
+	cases := []struct {
+		name    string
+		option  SandboxOption
+		message string
+		cause   error
+	}{
+		{"http", func(config *SandboxConfig) {
+			config.Network = &NetworkConfig{HTTP: &HTTPConfig{DenyResponse: true, DenyResponseFormat: "JSON"}}
+		}, "deny_response_format must be text or json", nil},
+		{"owned_mount", func(config *SandboxConfig) {
+			config.Volumes = map[string]MountConfig{"/data": {kind: MountKindOwned, Owned: "disk"}}
+		}, "disk storage requires positive SizeMiB", nil},
+		{"registry_ca", func(config *SandboxConfig) {
+			config.RegistryCACertPaths = []string{missingCA}
+		}, "reading registry CA certs", os.ErrNotExist},
+	}
+	for _, create := range []struct {
+		name string
+		call func(context.Context, string, ...SandboxOption) (*Sandbox, error)
+	}{
+		{"create", CreateSandbox},
+		{"connect_or_create", ConnectOrCreateSandbox},
+		{"progress", func(ctx context.Context, name string, opts ...SandboxOption) (*Sandbox, error) {
+			events, results := CreateSandboxWithProgress(ctx, name, opts...)
+			result := <-results
+			if _, ok := <-results; ok {
+				t.Error("expected exactly one creation result")
+			}
+			if _, ok := <-events; ok {
+				t.Error("invalid config must not emit progress")
+			}
+			return result.Sandbox, result.Err
+		}},
+	} {
+		for _, tc := range cases {
+			t.Run(create.name+"/"+tc.name, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_, err := create.call(ctx, "invalid-config", tc.option)
+				if !IsKind(err, ErrInvalidConfig) || !strings.Contains(err.Error(), tc.message) {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if tc.cause != nil && !errors.Is(err, tc.cause) {
+					t.Fatalf("lost underlying error: %v", err)
+				}
+			})
 		}
 	}
 }

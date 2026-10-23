@@ -1581,6 +1581,22 @@ class DnsConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class PortEndpoint:
+    """Published host endpoint to remove through modify(ports_rm=...)."""
+
+    host_port: int
+    bind: str = "127.0.0.1"
+    protocol: PortProtocol = PortProtocol.TCP
+
+    def _to_dict(self) -> dict:
+        return {
+            "host_port": self.host_port,
+            "bind": self.bind,
+            "protocol": _enum_value(self.protocol, PortProtocol, "PortEndpoint.protocol"),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class PortBinding:
     """Published host-to-guest port with an optional host bind address."""
 
@@ -1775,16 +1791,25 @@ class VsockRoute:
 
 @dataclass(frozen=True, slots=True)
 class HttpConfig:
-    """HTTP denial response settings. ``{host}`` names the blocked host."""
+    """HTTP denial settings. Text preserves legacy behavior; JSON uses literal messages."""
 
-    deny_response: bool = False
-    """Enable readable HTTP denial responses. Disabled by default."""
+    deny_response: bool = True
+    """Enable readable HTTP denial responses. Enabled by default locally."""
 
     deny_message: str | None = None
-    """Body used when deny_response is enabled.
+    """Deprecated legacy text message with {host} substitution. Ignored in JSON mode."""
 
-    ``None`` uses the built-in message; an empty string sends no body.
+    deny_response_format: Literal["text", "json"] = field(default="json", kw_only=True)
+    """Response format. JSON requires a supporting runtime."""
+
+    network_deny_message: str | None = field(default=None, kw_only=True)
+    """Literal network-denial message. Requires deny_response and JSON mode.
+
+    ``None`` uses the default; an empty string leaves ``message`` empty.
     """
+
+    secret_deny_message: str | None = field(default=None, kw_only=True)
+    """Literal secret-denial message for JSON mode. None uses the default; empty stays empty."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1821,6 +1846,8 @@ class Network:
     max_udp_connections: int | None = field(default=None, kw_only=True)
     """UDP session limit. Defaults to unlimited for single-tenant and 1024 for
     multi-tenant; zero means unlimited."""
+    max_inbound_tcp_connections: int | None = field(default=None, kw_only=True)
+    """Active inbound TCP cap; zero is unlimited. None uses the runtime default."""
     tcp_accept_queue_size: int | None = field(default=None, kw_only=True)
     """Accept-queue depth for published TCP port listeners, 1 to 2147483647.
     Defaults to 1024; the host kernel clamps it to its own ``somaxconn``."""
@@ -1895,6 +1922,8 @@ class Network:
             d["max_tcp_connections"] = self.max_tcp_connections
         if self.max_udp_connections is not None:
             d["max_udp_connections"] = self.max_udp_connections
+        if self.max_inbound_tcp_connections is not None:
+            d["max_inbound_tcp_connections"] = self.max_inbound_tcp_connections
         if self.tcp_accept_queue_size is not None:
             d["tcp_accept_queue_size"] = self.tcp_accept_queue_size
         if self.rate_limiter is not None:
@@ -1913,11 +1942,24 @@ class Network:
                 raise TypeError("Network.http must be HttpConfig or None")
             if not isinstance(self.http.deny_response, bool):
                 raise TypeError("HttpConfig.deny_response must be a bool")
-            d["http"] = {"deny_response": self.http.deny_response}
+            if self.http.deny_response_format not in ("text", "json"):
+                raise ValueError("HttpConfig.deny_response_format must be text or json")
+            d["http"] = {
+                "deny_response": self.http.deny_response,
+                "deny_response_format": self.http.deny_response_format,
+            }
             if self.http.deny_message is not None:
                 if not isinstance(self.http.deny_message, str):
                     raise TypeError("HttpConfig.deny_message must be a str or None")
                 d["http"]["deny_message"] = self.http.deny_message
+            if self.http.network_deny_message is not None:
+                if not isinstance(self.http.network_deny_message, str):
+                    raise TypeError("HttpConfig.network_deny_message must be a str or None")
+                d["http"]["network_deny_message"] = self.http.network_deny_message
+            if self.http.secret_deny_message is not None:
+                if not isinstance(self.http.secret_deny_message, str):
+                    raise TypeError("HttpConfig.secret_deny_message must be a str or None")
+                d["http"]["secret_deny_message"] = self.http.secret_deny_message
         return d
 
 

@@ -253,6 +253,7 @@ pub(super) async fn index_write(
         .unwrap_or_else(|_| Utc::now().naive_utc());
     let indexed_at = Utc::now().naive_utc();
 
+    let requested_path = artifact_path.display().to_string();
     let artifact_path = canonical_path(artifact_path);
     let artifact_path_str = artifact_path.display().to_string();
     let group_path = super::group::group_path(&artifact_path);
@@ -272,7 +273,10 @@ pub(super) async fn index_write(
     // Portable identities may occur in multiple groups. Replace only this local address,
     // never another copy that happens to share descriptor bytes, identity, or member name.
     let mut supersede = sea_orm::Condition::any()
-        .add(snapshot_entity::Column::ArtifactPath.eq(artifact_path_str.clone()));
+        .add(snapshot_entity::Column::ArtifactPath.eq(artifact_path_str.clone()))
+        // Recovery can arrive through an older noncanonical reservation. Replace that
+        // exact address in the same transaction as its canonical row, never by digest.
+        .add(snapshot_entity::Column::ArtifactPath.eq(requested_path));
     if let (Some(group), Some(name)) = (&group_path, &artifact_name)
         && availability == "ready"
     {
@@ -1318,6 +1322,13 @@ mod tests {
             .await
             .unwrap();
         let parent = local.snapshots_dir();
+        #[cfg(unix)]
+        let parent = {
+            std::fs::create_dir_all(&parent).unwrap();
+            let alias = home.path().join("snapshot-alias");
+            std::os::unix::fs::symlink(&parent, &alias).unwrap();
+            alias
+        };
         let artifact = parent.join("flat");
         let snapshot = manifest(78, None);
         std::fs::create_dir_all(&artifact).unwrap();
@@ -1326,12 +1337,26 @@ mod tests {
             snapshot.to_canonical_bytes().unwrap(),
         )
         .unwrap();
+        let indexed_artifact_path = artifact.canonicalize().unwrap();
         let opened = open_snapshot(&local, artifact.to_str().unwrap())
             .await
             .unwrap();
         index_upsert(&local, &artifact, opened.digest(), opened.manifest())
             .await
             .unwrap();
+        #[cfg(unix)]
+        {
+            let row = indexed_path(&local, &indexed_artifact_path)
+                .await
+                .unwrap()
+                .unwrap();
+            let mut legacy: snapshot_entity::ActiveModel = row.into();
+            legacy.artifact_path = Set(artifact.display().to_string());
+            snapshot_entity::Entity::insert(legacy)
+                .exec(local.db().await.unwrap().write())
+                .await
+                .unwrap();
+        }
         let lease = StorageLease::try_exclusive(&artifact).unwrap().unwrap();
         super::super::deletion::quarantine(&artifact).unwrap();
         drop(lease);
@@ -1339,6 +1364,12 @@ mod tests {
         super::super::deletion::recover_parent(&local, &parent)
             .await
             .unwrap();
+        assert!(
+            indexed_path(&local, &indexed_artifact_path)
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert!(indexed_path(&local, &artifact).await.unwrap().is_none());
 
         std::fs::create_dir(&artifact).unwrap();
@@ -1361,7 +1392,12 @@ mod tests {
         super::super::deletion::recover_parent(&local, &parent)
             .await
             .unwrap();
-        assert!(indexed_path(&local, &artifact).await.unwrap().is_some());
+        assert!(
+            indexed_path(&local, &indexed_artifact_path)
+                .await
+                .unwrap()
+                .is_some()
+        );
         assert!(artifact.join(DESCRIPTOR_FILENAME).exists());
     }
 

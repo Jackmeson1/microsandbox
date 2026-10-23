@@ -135,6 +135,8 @@ export interface NetworkConfig {
   readonly maxUdpConnections?: number | null;
   /** Accept-queue depth for published TCP port listeners. Absent means the default, 1024. */
   readonly tcpAcceptQueueSize?: number | null;
+  /** Set the active inbound TCP cap; zero is unlimited. Omitted uses the runtime default. */
+  readonly maxInboundTcpConnections?: number | null;
   readonly strict: boolean;
   readonly rateLimiter: NetworkRateLimiterConfig | null;
   readonly interface?: {
@@ -150,8 +152,8 @@ export interface NetworkConfig {
   /** Canonical proxy configuration for outbound connections. */
   readonly outboundProxy: OutboundProxy | null;
   /**
-   * HTTP denial responses are disabled by default. When enabled, denyMessage
-   * overrides the built-in body; `{host}` names the blocked hostname.
+   * Local HTTP denial responses use JSON by default. In JSON mode, networkDenyMessage and secretDenyMessage
+   * override their respective JSON messages without interpolation.
    */
-  readonly http: { readonly denyResponse: boolean; readonly denyMessage?: string | null };
+  readonly http: { readonly denyResponse: boolean; readonly denyResponseFormat: "text" | "json"; readonly denyMessage?: string | null; readonly networkDenyMessage?: string | null; readonly secretDenyMessage?: string | null };
 }

@@ -972,6 +972,7 @@ struct NetworkOpts {
     port_bindings: Vec<PortBindingOpts>,
     /// Accept-queue depth for published TCP port listeners.
     tcp_accept_queue_size: Option<u32>,
+    max_inbound_tcp_connections: Option<usize>,
     /// IPv4 pool used to derive per-sandbox /30 guest subnets.
     ipv4_pool: Option<String>,
     /// IPv6 pool used to derive per-sandbox /64 guest prefixes.
@@ -989,7 +990,7 @@ struct NetworkOpts {
     secret_violation_action: Option<String>,
     /// Trust the host's extra CA certificates inside the guest.
     trust_host_cas: Option<bool>,
-    /// Body returned to HTTP/HTTPS clients when egress is denied.
+    /// HTTP denial response settings.
     http: Option<microsandbox_network::config::HttpConfig>,
 }
 
@@ -1522,6 +1523,9 @@ fn apply_network(
     if let Some(max) = net.max_udp_connections {
         builder = builder.network(move |n| n.max_udp_connections(max));
     }
+    if let Some(value) = net.max_inbound_tcp_connections {
+        builder = builder.network(move |n| n.max_inbound_tcp_connections(value));
+    }
     if let Some(size) = net.tcp_accept_queue_size {
         builder = builder.network(move |n| n.tcp_accept_queue_size(size));
     }
@@ -1553,12 +1557,22 @@ fn apply_network(
         builder = builder.network(move |n| n.trust_host_cas(trust));
     }
 
-    // Body returned to HTTP/HTTPS clients when egress is denied.
+    // HTTP denial response settings.
     if let Some(http) = net.http.as_ref() {
         builder = builder.network(|n| n.http(|h| h.deny_response(http.deny_response)));
+        builder =
+            builder.network(|n| n.http(|h| h.deny_response_format(http.deny_response_format)));
         if let Some(message) = http.deny_message.as_ref() {
             let message = message.clone();
             builder = builder.network(move |n| n.http(|h| h.deny_message(message)));
+        }
+        if let Some(message) = http.network_deny_message.as_ref() {
+            let message = message.clone();
+            builder = builder.network(move |n| n.http(|h| h.network_deny_message(message)));
+        }
+        if let Some(message) = http.secret_deny_message.as_ref() {
+            let message = message.clone();
+            builder = builder.network(move |n| n.http(|h| h.secret_deny_message(message)));
         }
     }
 
@@ -2722,6 +2736,18 @@ struct SandboxModifyOpts {
     policy: Option<String>,
     #[serde(default)]
     dry_run: bool,
+}
+
+/// Capability marker for published-port modification in the Go bindings.
+#[unsafe(no_mangle)]
+pub extern "C" fn msb_supports_port_modification() -> bool {
+    true
+}
+
+/// Capability marker for secret policy modification in the Go bindings.
+#[unsafe(no_mangle)]
+pub extern "C" fn msb_supports_secret_policy_modification() -> bool {
+    true
 }
 
 fn parse_sandbox_modify_opts(raw: &str) -> Result<SandboxModifyOpts, FfiError> {
@@ -6170,7 +6196,7 @@ pub unsafe extern "C" fn msb_default_backend_info(
     buf_len: usize,
 ) -> *mut c_char {
     run(buf, buf_len, || {
-        serde_json::to_string(&microsandbox::default_backend_info())
+        serde_json::to_string(&microsandbox::default_backend_info()?)
             .map_err(|error| FfiError::internal(format!("serialize backend info: {error}")))
     })
 }
@@ -7816,7 +7842,8 @@ mod tests {
         assert_eq!(omitted.tcp_accept_queue_size, None);
 
         let net: super::NetworkOpts = serde_json::from_value(serde_json::json!({
-            "ports": {"8080": 80}, "tcp_accept_queue_size": 4096
+            "ports": {"8080": 80}, "tcp_accept_queue_size": 4096,
+            "max_inbound_tcp_connections": 0
         }))
         .unwrap();
         let builder = microsandbox::Sandbox::builder("accept-queue").image("alpine");
@@ -7825,6 +7852,7 @@ mod tests {
         };
         let config = builder.build().await.unwrap();
         assert_eq!(config.spec.network.tcp_accept_queue_size, Some(4096));
+        assert_eq!(config.spec.network.max_inbound_tcp_connections, Some(0));
     }
 
     #[tokio::test]

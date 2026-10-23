@@ -160,7 +160,7 @@ pub(crate) fn extract_str_enum(value: &Bound<'_, PyAny>, enum_name: &str) -> PyR
 }
 
 /// Construct a public Python `StrEnum` member from a trusted wire value.
-pub(crate) fn str_enum_member(py: Python<'_>, enum_name: &str, value: &str) -> PyResult<PyObject> {
+pub(crate) fn str_enum_member(py: Python<'_>, enum_name: &str, value: &str) -> PyResult<Py<PyAny>> {
     let enum_class = PyModule::import(py, "microsandbox.types")?.getattr(enum_name)?;
     Ok(enum_class.call1((value,))?.unbind())
 }
@@ -219,6 +219,7 @@ pub(crate) fn restore_builder_from_args(
             "captured_volumes",
             "ports",
             "tcp_accept_queue_size",
+            "max_inbound_tcp_connections",
             "vsock",
             "external_mount_policy",
             "dangerously_inherit_resources",
@@ -361,6 +362,9 @@ pub(crate) fn restore_builder_from_args(
     if let Some(ports) = kwargs.get_item("ports")?.filter(|v| !v.is_none()) {
         builder = apply_ports(builder, &ports, PortBindingSource::PublicConfig)?;
     }
+    if let Some(value) = extract_opt::<usize>(kwargs, "max_inbound_tcp_connections")? {
+        builder = builder.max_inbound_tcp_connections(value);
+    }
     if let Some(size) = extract_opt::<u32>(kwargs, "tcp_accept_queue_size")? {
         builder = builder.tcp_accept_queue_size(size);
     }
@@ -415,6 +419,7 @@ pub fn sandbox_builder_from_args(
         ));
     }
     let mut builder = microsandbox::Sandbox::builder(name);
+
     {
         let image_obj = kwargs.get_item("image")?.unwrap();
         // Accept an open image reference/path or the concrete ImageSource
@@ -839,7 +844,7 @@ fn parse_init_kwarg(obj: &Bound<'_, PyAny>) -> PyResult<ParsedInit> {
         let returned = obj.call_method0("_to_dict")?;
         Some(
             returned
-                .downcast::<PyDict>()
+                .cast::<PyDict>()
                 .map_err(|_| {
                     pyo3::exceptions::PyTypeError::new_err(
                         "InitConfig._to_dict() must return a dict",
@@ -1043,7 +1048,7 @@ pub(crate) fn apply_fork_volumes<B: ResourceBuilder>(
     mut builder: B,
     volumes: &[(String, Py<PyDict>)],
 ) -> PyResult<B> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         for (guest, mount) in volumes {
             builder = apply_mount(builder, guest.clone(), mount.bind(py))?;
         }
@@ -1437,7 +1442,7 @@ fn parse_network_policy(net: &Bound<'_, PyDict>) -> PyResult<Option<NetworkPolic
     if let Some(custom) = net.get_item("custom_policy")?
         && !custom.is_none()
     {
-        let cp_dict: Bound<'_, PyDict> = custom.downcast::<PyDict>()?.clone();
+        let cp_dict: Bound<'_, PyDict> = custom.cast::<PyDict>()?.clone();
         let parse_action_field = |field: &str,
                                   default: microsandbox_network::policy::Action|
          -> PyResult<microsandbox_network::policy::Action> {
@@ -1467,9 +1472,9 @@ fn parse_network_policy(net: &Bound<'_, PyDict>) -> PyResult<Option<NetworkPolic
         if let Some(rules_obj) = cp_dict.get_item("rules")?
             && !rules_obj.is_none()
         {
-            let rules_list: &Bound<'_, PyList> = rules_obj.downcast()?;
+            let rules_list: &Bound<'_, PyList> = rules_obj.cast()?;
             for rule_obj in rules_list.iter() {
-                let rd: Bound<'_, PyDict> = rule_obj.downcast::<PyDict>()?.clone();
+                let rd: Bound<'_, PyDict> = rule_obj.cast::<PyDict>()?.clone();
                 let action_str: String = extract_required(&rd, "action")?;
                 let action = match action_str.as_str() {
                     "allow" => microsandbox_network::policy::Action::Allow,
@@ -1578,7 +1583,7 @@ fn apply_network(
     if let Some(dns) = net.get_item("dns")?
         && !dns.is_none()
     {
-        let dns: Bound<'_, PyDict> = dns.downcast::<PyDict>()?.clone();
+        let dns: Bound<'_, PyDict> = dns.cast::<PyDict>()?.clone();
 
         let rebind = extract_opt::<bool>(&dns, "rebind_protection")?;
         let nameservers_raw = extract_opt::<Vec<String>>(&dns, "nameservers")?;
@@ -1621,6 +1626,9 @@ fn apply_network(
     if let Some(max) = extract_opt::<usize>(net, "max_udp_connections")? {
         builder = builder.network(|n| n.max_udp_connections(max));
     }
+    if let Some(value) = extract_opt::<usize>(net, "max_inbound_tcp_connections")? {
+        builder = builder.network(|n| n.max_inbound_tcp_connections(value));
+    }
     if let Some(size) = extract_opt::<u32>(net, "tcp_accept_queue_size")? {
         builder = builder.network(|n| n.tcp_accept_queue_size(size));
     }
@@ -1634,7 +1642,7 @@ fn apply_network(
     if let Some(rate_limiter) = net.get_item("rate_limiter")?
         && !rate_limiter.is_none()
     {
-        let rate_limiter: Bound<'_, PyDict> = rate_limiter.downcast::<PyDict>()?.clone();
+        let rate_limiter: Bound<'_, PyDict> = rate_limiter.cast::<PyDict>()?.clone();
         let egress = parse_rate_limiter(&rate_limiter, "egress")?;
         let ingress = parse_rate_limiter(&rate_limiter, "ingress")?;
         builder = builder.network(move |n| {
@@ -1677,16 +1685,34 @@ fn apply_network(
         builder = builder.network(move |n| n.trust_host_cas(trust));
     }
 
-    // Body returned to HTTP/HTTPS clients when egress is denied.
+    // HTTP denial response settings.
     if let Some(http) = net.get_item("http")?
         && !http.is_none()
     {
-        let http = http.downcast::<PyDict>()?;
+        let http = http.cast::<PyDict>()?;
         if let Some(enabled) = extract_opt::<bool>(http, "deny_response")? {
             builder = builder.network(move |n| n.http(|h| h.deny_response(enabled)));
         }
+        if let Some(format) = extract_opt::<String>(http, "deny_response_format")? {
+            let format = match format.as_str() {
+                "text" => microsandbox::sandbox::HttpDenyResponseFormat::Text,
+                "json" => microsandbox::sandbox::HttpDenyResponseFormat::Json,
+                _ => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "deny_response_format must be text or json",
+                    ));
+                }
+            };
+            builder = builder.network(move |n| n.http(|h| h.deny_response_format(format)));
+        }
         if let Some(message) = extract_opt::<String>(http, "deny_message")? {
             builder = builder.network(move |n| n.http(|h| h.deny_message(message)));
+        }
+        if let Some(message) = extract_opt::<String>(http, "network_deny_message")? {
+            builder = builder.network(move |n| n.http(|h| h.network_deny_message(message)));
+        }
+        if let Some(message) = extract_opt::<String>(http, "secret_deny_message")? {
+            builder = builder.network(move |n| n.http(|h| h.secret_deny_message(message)));
         }
     }
 
@@ -1702,7 +1728,7 @@ fn apply_network(
     if let Some(tls) = net.get_item("tls")?
         && !tls.is_none()
     {
-        let tls_dict: Bound<'_, PyDict> = tls.downcast::<PyDict>()?.clone();
+        let tls_dict: Bound<'_, PyDict> = tls.cast::<PyDict>()?.clone();
         let bypass: Vec<String> = extract_opt(&tls_dict, "bypass")?.unwrap_or_default();
         let verify_upstream: Option<bool> = extract_opt(&tls_dict, "verify_upstream")?;
         let intercepted_ports: Option<Vec<u16>> = extract_opt(&tls_dict, "intercepted_ports")?;
@@ -1785,7 +1811,7 @@ fn apply_ports<B: ResourceBuilder>(
         let port = match source {
             PortBindingSource::PublicConfig => config_dict(&item, "PortBinding")?,
             PortBindingSource::SerializedNetwork => {
-                item.downcast::<PyDict>().cloned().map_err(|_| {
+                item.cast::<PyDict>().cloned().map_err(|_| {
                     pyo3::exceptions::PyTypeError::new_err(
                         "Network._to_dict() ports must contain dictionaries",
                     )
@@ -1813,6 +1839,71 @@ fn apply_ports<B: ResourceBuilder>(
     Ok(builder)
 }
 
+/// Parse modify's public PortBinding values through the same typed config boundary as create.
+pub(crate) fn modify_ports(
+    value: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Vec<microsandbox::sandbox::PublishedPortSpec>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    if let Some(mapping) = mapping_to_dict(value)? {
+        return mapping
+            .iter()
+            .map(|(host, guest)| {
+                Ok(microsandbox::sandbox::PublishedPortSpec {
+                    host_port: host.extract()?,
+                    guest_port: guest.extract()?,
+                    ..Default::default()
+                })
+            })
+            .collect();
+    }
+    value
+        .try_iter()?
+        .map(|item| {
+            let item = item?;
+            let dict = config_dict(&item, "PortBinding")?;
+            Ok(microsandbox::sandbox::PublishedPortSpec {
+                host_port: extract_required(&dict, "host_port")?,
+                guest_port: extract_required(&dict, "guest_port")?,
+                host_bind: extract_required(&dict, "bind")?,
+                protocol: modify_port_protocol(&dict)?,
+            })
+        })
+        .collect()
+}
+
+/// Parse published host endpoints to remove.
+pub(crate) fn modify_ports_remove(
+    value: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Vec<microsandbox::sandbox::PublishedPortKey>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    value
+        .try_iter()?
+        .map(|item| {
+            let item = item?;
+            let dict = config_dict(&item, "PortEndpoint")?;
+            Ok(microsandbox::sandbox::PublishedPortKey {
+                host_port: extract_required(&dict, "host_port")?,
+                host_bind: extract_required(&dict, "bind")?,
+                protocol: modify_port_protocol(&dict)?,
+            })
+        })
+        .collect()
+}
+
+fn modify_port_protocol(dict: &Bound<'_, PyDict>) -> PyResult<microsandbox::sandbox::PortProtocol> {
+    match extract_required::<String>(dict, "protocol")?.as_str() {
+        "tcp" => Ok(microsandbox::sandbox::PortProtocol::Tcp),
+        "udp" => Ok(microsandbox::sandbox::PortProtocol::Udp),
+        value => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "invalid port protocol: {value}"
+        ))),
+    }
+}
+
 /// Token bucket values from a Python `TokenBucket` dict.
 struct TokenBucketOpts {
     size: u64,
@@ -1833,7 +1924,7 @@ fn parse_rate_limiter(net: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<Rat
     if obj.is_none() {
         return Ok(None);
     }
-    let limiter: Bound<'_, PyDict> = obj.downcast::<PyDict>()?.clone();
+    let limiter: Bound<'_, PyDict> = obj.cast::<PyDict>()?.clone();
     Ok(Some(RateLimiterOpts {
         bandwidth: parse_token_bucket(&limiter, "bandwidth")?,
         ops: parse_token_bucket(&limiter, "ops")?,
@@ -1847,7 +1938,7 @@ fn parse_token_bucket(limiter: &Bound<'_, PyDict>, key: &str) -> PyResult<Option
     if obj.is_none() {
         return Ok(None);
     }
-    let bucket: Bound<'_, PyDict> = obj.downcast::<PyDict>()?.clone();
+    let bucket: Bound<'_, PyDict> = obj.cast::<PyDict>()?.clone();
     Ok(Some(TokenBucketOpts {
         size: extract_required(&bucket, "size")?,
         refill_time_ms: extract_required(&bucket, "refill_time_ms")?,
@@ -1950,7 +2041,7 @@ fn apply_secret(
 
     let (substitute_headers, substitute_header_fields, substitute_query, substitute_body) =
         if let Some(substitution_obj) = secret.get_item("substitution")? {
-            let substitution: Bound<'_, PyDict> = substitution_obj.downcast::<PyDict>()?.clone();
+            let substitution: Bound<'_, PyDict> = substitution_obj.cast::<PyDict>()?.clone();
             (
                 extract_opt::<bool>(&substitution, "headers")?,
                 extract_opt::<Vec<String>>(&substitution, "header_fields")?,
@@ -2050,7 +2141,7 @@ fn mapping_to_dict<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Option<Bound<'py, P
     }
     let dict_class = PyModule::import(obj.py(), "builtins")?.getattr("dict")?;
     let converted = dict_class.call1((obj,))?;
-    Ok(Some(converted.downcast::<PyDict>()?.clone()))
+    Ok(Some(converted.cast::<PyDict>()?.clone()))
 }
 
 /// Copy a required documented Mapping into a concrete dictionary.
@@ -2076,7 +2167,7 @@ fn config_dict<'py>(obj: &Bound<'py, PyAny>, type_name: &str) -> PyResult<Bound<
         )));
     }
     let result = obj.call_method0("_to_dict")?;
-    result.downcast::<PyDict>().cloned().map_err(|_| {
+    result.cast::<PyDict>().cloned().map_err(|_| {
         pyo3::exceptions::PyTypeError::new_err(format!("{type_name}._to_dict() must return a dict"))
     })
 }
@@ -2114,14 +2205,14 @@ fn parse_registry_ca_certs(kwargs: &Bound<'_, PyDict>) -> PyResult<Vec<Vec<u8>>>
         return Ok(Vec::new());
     }
 
-    let entries: &Bound<'_, PyList> = obj.downcast()?;
+    let entries: &Bound<'_, PyList> = obj.cast()?;
     let mut certs = Vec::with_capacity(entries.len());
     for (index, entry) in entries.iter().enumerate() {
         // Check for bytes first: `os.fspath` also accepts bytes paths, so
         // probing for a path up front would read inline PEM data as a filename.
-        if let Ok(data) = entry.downcast::<PyBytes>() {
+        if let Ok(data) = entry.cast::<PyBytes>() {
             certs.push(data.as_bytes().to_vec());
-        } else if let Ok(data) = entry.downcast::<PyByteArray>() {
+        } else if let Ok(data) = entry.cast::<PyByteArray>() {
             certs.push(data.to_vec());
         } else if let Ok(path) = entry.extract::<std::path::PathBuf>() {
             let data = std::fs::read(&path).map_err(|e| {
@@ -2151,10 +2242,10 @@ fn parse_scoped_upstream_ca_certs(
         return Ok(Vec::new());
     }
 
-    let entries: &Bound<'_, PyList> = obj.downcast()?;
+    let entries: &Bound<'_, PyList> = obj.cast()?;
     let mut scoped = Vec::with_capacity(entries.len());
     for entry in entries.iter() {
-        let entry_dict: Bound<'_, PyDict> = entry.downcast::<PyDict>()?.clone();
+        let entry_dict: Bound<'_, PyDict> = entry.cast::<PyDict>()?.clone();
         scoped.push((
             extract_required(&entry_dict, "pattern")?,
             extract_required(&entry_dict, "path")?,
@@ -2174,10 +2265,10 @@ fn parse_scoped_verify_upstream(
         return Ok(Vec::new());
     }
 
-    let entries: &Bound<'_, PyList> = obj.downcast()?;
+    let entries: &Bound<'_, PyList> = obj.cast()?;
     let mut scoped = Vec::with_capacity(entries.len());
     for entry in entries.iter() {
-        let entry_dict: Bound<'_, PyDict> = entry.downcast::<PyDict>()?.clone();
+        let entry_dict: Bound<'_, PyDict> = entry.cast::<PyDict>()?.clone();
         scoped.push((
             extract_required(&entry_dict, "pattern")?,
             extract_required(&entry_dict, "verify")?,
@@ -2333,7 +2424,7 @@ fn parse_serialized_violation_action(
     parse_violation_action(&s)
 }
 
-fn extract_opt<'py, T: FromPyObject<'py>>(
+fn extract_opt<'py, T: for<'a> FromPyObject<'a, 'py, Error = PyErr>>(
     dict: &Bound<'py, PyDict>,
     key: &str,
 ) -> PyResult<Option<T>> {
@@ -2343,7 +2434,7 @@ fn extract_opt<'py, T: FromPyObject<'py>>(
     }
 }
 
-fn extract_required<'py, T: FromPyObject<'py>>(
+fn extract_required<'py, T: for<'a> FromPyObject<'a, 'py, Error = PyErr>>(
     dict: &Bound<'py, PyDict>,
     key: &str,
 ) -> PyResult<T> {
@@ -2417,7 +2508,7 @@ pub(crate) mod tests {
         );
         let globals = PyDict::new(py);
         py.run(&CString::new(code)?, Some(&globals), None)?;
-        Ok(globals.get_item("volumes")?.unwrap().downcast_into()?)
+        Ok(globals.get_item("volumes")?.unwrap().cast_into()?)
     }
 
     fn disk_of(py: Python<'_>, prepared: &[(String, Py<PyDict>)]) -> String {
@@ -2434,8 +2525,8 @@ pub(crate) mod tests {
     #[test]
     fn fork_volumes_are_copied_and_anchored_for_a_local_backend() {
         let _guard = PYTHON_TYPES_LOCK.lock().unwrap();
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let mapping = volumes(py).unwrap();
             let local = prepare_fork_volumes(Some(mapping.as_any()), true).unwrap();
             let remote = prepare_fork_volumes(Some(mapping.as_any()), false).unwrap();
@@ -2450,8 +2541,8 @@ pub(crate) mod tests {
 
     #[test]
     fn policy_ports_preserve_ranges_and_reject_invalid_filters() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             for (value, start, end) in [
                 ("443", 443, 443),
                 ("8000-9000", 8000, 9000),
@@ -2476,8 +2567,8 @@ pub(crate) mod tests {
 
     #[test]
     fn creation_rejects_invalid_time_limits_before_startup() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             for name in ["replace_with_timeout", "max_duration", "idle_timeout"] {
                 for value in [f64::NAN, f64::INFINITY, -1.0, f64::MAX] {
                     let kwargs = PyDict::new(py);
@@ -2494,8 +2585,8 @@ pub(crate) mod tests {
 
     #[test]
     fn creation_and_restore_lifetime_validation_rounds_up() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let kwargs = PyDict::new(py);
             for name in ["max_duration", "idle_timeout"] {
                 for (value, expected) in [(0.0, 0), (0.5, 1), (1.1, 2), (2.0, 2)] {

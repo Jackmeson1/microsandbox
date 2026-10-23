@@ -83,6 +83,7 @@ Common flags:
 | `--mount-named` | Create or reuse a named volume: `NAME:DEST[:OPTIONS]`. See [kind, size, and quota options](/cli/volume-commands#using-volumes-with-sandboxes) |
 | `-p`, `--port` | Publish a port, such as `8000:8000` for loopback-only or `0.0.0.0:8000:8000` for all host interfaces |
 | `--tcp-accept-queue-size` | Accept-queue depth for published TCP ports, `1` to `2147483647` (default: `1024`). See [Published ports](#published-ports) |
+| `--max-inbound-tcp-connections` | Active inbound TCP limit; `0` means unlimited. See [defaults and compatibility](#published-ports). |
 | `--vsock` | Expose local host IPC at host CID 2 using `HOST_PATH:PORT[/stream\|/dgram]`; Unix sockets and local Windows named pipes are supported, the flag is repeatable, and stream is the default |
 | `-e`, `--env` | Set an environment variable |
 | `--label` | Attach a label for metric attribution (`KEY=VALUE`, or bare `KEY`). Repeatable |
@@ -149,6 +150,8 @@ The second mapping forwards host ports 8000, 8001, and 8002 to guest ports 80, 8
 <Accordion title="Port-range resource use">
 
 Ranges expand into individual mappings. The UDP example opens 1,025 host sockets; large ranges require enough host socket/file-descriptor capacity and consume resources per port. A range does not reserve ports as one atomic block; existing per-port listener startup and error reporting apply.
+
+`--max-inbound-tcp-connections` limits active connections across published TCP ports; `0` means unlimited. Omission uses the runtime default: unlimited in **0.7.9+**, or **256** in older versions. Unsupported overrides fail with an upgrade-required error. This limit is separate from the listener queue. See [connection limits](/networking/overview#deployment-profiles).
 
 </Accordion>
 
@@ -313,6 +316,7 @@ msb snap restore ./saved.msb --name disk-copy --disk-only
 | `--mount-disk` | Mount a disk image: `SOURCE:DEST[:OPTIONS]`, as in `msb create`; it wins over `-v` at the same guest path. A full restore accepts a disk only at a guest path captured in the snapshot, and the image must hold that disk's contents; use `--disk-only` to attach one at a new path |
 | `-p`, `--port` | Publish `[BIND:]HOST:GUEST[/tcp\|udp]` |
 | `--tcp-accept-queue-size` | Accept-queue depth for the child's published TCP ports (default: `1024`) |
+| `--max-inbound-tcp-connections` | Active inbound TCP limit; `0` means unlimited. See [defaults and compatibility](#published-ports). |
 | `--vsock` | Bind `HOST_PATH:PORT[/stream\|/dgram]` |
 | `--external-mount-policy` | Validate supplied mappings: `strict` (default) or `relaxed` |
 | `--dangerously-inherit-resources` | Inherit unspecified host bindings; may share host resources |
@@ -605,7 +609,7 @@ Env and workdir changes on a running sandbox apply to future execs only; running
 
 <Accordion title="Secret updates, substitution, and passthrough">
 
-`--secret` reads the same-named host environment variable; inline values are rejected. Options are `query`, `body`, `no-headers`, `headers=[FIELD,...]` (substitute only in those header fields; `headers=*` restores all headers, `*` cannot be combined with named fields, and `headers=` cannot be combined with `no-headers`), and `passthrough=HOST` or `passthrough=[HOST,...]`. Restrict `headers` to the credential header the API reads, since substituting in every header lets a reflecting endpoint return the secret to the guest. Repeated declarations merge. See [secret updates](/sandboxes/secrets#update-secrets).
+`--secret` reads the same-named host environment variable; inline values are rejected. Options are `query`, `body`, `no-headers`, `headers=[FIELD,...]` (substitute only in those header fields; `headers=*` restores all headers, `*` cannot be combined with named fields, and `headers=` cannot be combined with `no-headers`), and `passthrough=HOST` or `passthrough=[HOST,...]`. Restrict `headers` to the credential header the API reads, since substituting in every header lets a reflecting endpoint return the secret to the guest. Without `query`, `body`, `no-headers`, or `headers=`, modify keeps the secret's current substitution rule. Any of them replaces the whole rule, and unstated locations reset to defaults, so `query` alone re-enables every header. Repeated declarations merge. See [secret updates](/sandboxes/secrets#update-secrets).
 
 </Accordion>
 
@@ -620,6 +624,8 @@ Env and workdir changes on a running sandbox apply to future execs only; running
 | `--workdir` | Working directory for future execs |
 | `--secret`, `--secret-rm` | Add or rotate a secret (`NAME[:OPTIONS]@HOST[,HOST...]`), or remove one |
 | `--secret-violation-action` | Set the sandbox-wide blocking action for placeholder violations |
+| `-p`, `--port` | Add or update `[BIND_ADDR:]HOST[-END]:GUEST[-END][/tcp\|udp]`; ranges must have equal lengths and other mappings stay unchanged |
+| `--port-rm` | Remove `[BIND_ADDR:]HOST[/tcp\|udp]`; defaults to loopback TCP |
 | `--dry-run` | Show the plan without applying anything |
 | `--next-start` | Save changes for the next start without mutating a running VM |
 | `--restart` | Restart if needed so restart-required changes become active now |

@@ -17,6 +17,7 @@ use microsandbox::sandbox::{
     SecretsConfigPatch, TlsConfigPatch,
 };
 use microsandbox_image::RegistryAuth;
+use microsandbox_types::HttpDenyResponseFormat;
 use microsandbox_types_macros::ConfigPatch;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -404,6 +405,7 @@ struct NetworkConfigInput {
     max_tcp_connections: Option<usize>,
     max_udp_connections: Option<usize>,
     tcp_accept_queue_size: Option<u32>,
+    max_inbound_tcp_connections: Option<usize>,
     #[config_patch(nested)]
     http: Option<HttpInput>,
 }
@@ -412,7 +414,10 @@ struct NetworkConfigInput {
 #[serde(default, deny_unknown_fields)]
 struct HttpInput {
     deny_response: Option<bool>,
+    deny_response_format: Option<HttpDenyResponseFormat>,
     deny_message: Option<String>,
+    network_deny_message: Option<String>,
+    secret_deny_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, ConfigPatch)]
@@ -1753,6 +1758,9 @@ fn materialize_network_patch(
     if let Some(max) = input.max_udp_connections {
         patch = patch.max_udp_connections(max);
     }
+    if let Some(value) = input.max_inbound_tcp_connections {
+        patch = patch.max_inbound_tcp_connections(value);
+    }
     if let Some(size) = input.tcp_accept_queue_size {
         // Refuse here rather than at launch, where the runtime would reject the whole network.
         microsandbox_network::config::TcpAcceptQueueSize::try_from(size)?;
@@ -1763,8 +1771,17 @@ fn materialize_network_patch(
         if let Some(enabled) = http.deny_response {
             value = value.deny_response(enabled);
         }
+        if let Some(format) = http.deny_response_format {
+            value = value.deny_response_format(format);
+        }
         if let Some(message) = http.deny_message {
             value = value.deny_message(message);
+        }
+        if let Some(message) = http.network_deny_message {
+            value = value.network_deny_message(message);
+        }
+        if let Some(message) = http.secret_deny_message {
+            value = value.secret_deny_message(message);
         }
         patch = patch.http(value);
     }
@@ -1863,6 +1880,20 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[cfg(feature = "net")]
+    #[test]
+    fn published_tcp_overrides_survive_cli_config_materialization() {
+        let input: NetworkInput = serde_json::from_value(serde_json::json!({
+            "max_inbound_tcp_connections": 0
+        }))
+        .unwrap();
+        let mut network = microsandbox_types::NetworkSpec::default();
+        materialize_network_patch(Some(&input), None, None)
+            .unwrap()
+            .apply_to(&mut network);
+        assert_eq!(network.max_inbound_tcp_connections, Some(0));
     }
 
     #[cfg(feature = "net")]
@@ -2661,6 +2692,21 @@ mounts:
     }
 
     #[test]
+    fn commented_yaml_loads_sandbox_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(
+            dir.path(),
+            "commented.yaml",
+            "# sandbox image\nimage: alpine # pinned by the caller\nmemory: 1G\n",
+        );
+
+        let input = load_root(&path).unwrap();
+
+        assert!(matches!(input.image, Some(ImageInput::String(image)) if image == "alpine"));
+        assert_eq!(input.memory.as_deref(), Some("1G"));
+    }
+
+    #[test]
     fn interpolation_supports_only_braced_environment_names() {
         assert_eq!(interpolate_string("plain").unwrap(), "plain");
         assert_eq!(interpolate_string("$PATH").unwrap(), "$PATH");
@@ -2727,7 +2773,10 @@ network:
   max_tcp_connections: 64
   http:
     deny_response: true
-    deny_message: "Blocked: {host}"
+    deny_response_format: json
+    deny_message: "legacy {host}"
+    network_deny_message: "Blocked: {host}"
+    secret_deny_message: "Check secret access."
 secrets:
   TOKEN:
     value: "literal-test-value"
@@ -2762,8 +2811,20 @@ secrets:
         assert_eq!(config.spec.network.max_tcp_connections, Some(64));
         assert!(config.spec.network.http.deny_response);
         assert_eq!(
+            config.spec.network.http.deny_response_format,
+            microsandbox_types::HttpDenyResponseFormat::Json
+        );
+        assert_eq!(
             config.spec.network.http.deny_message.as_deref(),
+            Some("legacy {host}")
+        );
+        assert_eq!(
+            config.spec.network.http.network_deny_message.as_deref(),
             Some("Blocked: {host}")
+        );
+        assert_eq!(
+            config.spec.network.http.secret_deny_message.as_deref(),
+            Some("Check secret access.")
         );
         assert!(config.spec.network.strict);
         assert_eq!(config.spec.network.ports.len(), 0);

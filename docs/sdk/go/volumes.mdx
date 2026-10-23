@@ -765,6 +765,16 @@ Mount a host disk image as a virtio-blk device. Supports raw, qcow2, and vmdk fo
   </div>
 </div>
 
+#### <span className="msb-recv">Mount.</span><span className="msb-hn">Owned()</span>
+
+```go
+func (mountFactory) Owned(opts OwnedVolumeOptions) MountConfig
+```
+
+Use `Mount.Owned(OwnedVolumeOptions)` for local storage allocated for one sandbox. It starts empty, survives stop/start and reboot, and is deleted with the sandbox. Owned mounts do not appear in `ListVolumes()` and cannot be shared or removed independently. Cloud rejects owned mounts.
+
+`OwnedVolumeOptions.Kind` defaults to `VolumeKindDir`; `QuotaMiB` applies only to directories. `VolumeKindDisk` creates raw ext4 and requires positive `SizeMiB`. Common flags are `Readonly`, `Noexec`, `Nosuid`, and `Nodev`. `StatVirtualization`, `HostPermissions`, and `Owner` apply only to directories. No host path or volume name is accepted. Mounting over an existing image directory hides its contents without copying them.
+
 ## MountConfig
 
 Mount configuration produced by the [`Mount`](#options) factory.
@@ -1029,3 +1039,23 @@ Tuning struct for [`Mount.Disk`](#mount-disk).
 | `Noexec` | `bool` | Prevent direct execution from the mount |
 | `Nosuid` | `bool` | Ignore setuid and setgid privilege elevation from files on the mount |
 | `Nodev` | `bool` | Ignore device files on the mount |
+
+### OwnedVolumeOptions
+
+```go
+type OwnedVolumeOptions struct {
+	Kind     VolumeKind
+	SizeMiB  uint32 // Required positive capacity for disk storage.
+	QuotaMiB uint32 // Directory quota; zero leaves the quota unset.
+	Readonly bool
+	Noexec   bool
+	Nosuid   bool
+	Nodev    bool
+	// Metadata policies and Owner apply only to directory storage.
+	StatVirtualization StatVirtualization
+	HostPermissions    HostPermissions
+	Owner              *MountOwner
+}
+```
+
+Options for [`Mount.Owned()`](#mount-owned). `Kind` defaults to `VolumeKindDir`; directory quota `0` means no quota. Disk storage requires positive `SizeMiB`.

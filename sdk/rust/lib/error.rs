@@ -217,11 +217,11 @@ pub enum MicrosandboxError {
     #[error("control client error: {0}")]
     ControlClient(#[source] std::sync::Arc<microsandbox_control_client::ControlClientError>),
 
-    /// The run or active configuration changed after a live control operation.
-    /// The live operation may have applied; callers must inspect fresh state
-    /// before deciding whether to submit a new modification.
+    /// The run or active configuration changed while saving a modification.
+    /// Earlier live operations may have applied; callers must inspect fresh
+    /// state before deciding whether to retry.
     #[error(
-        "runtime or active configuration changed while recording a live control result; the live change may already have applied"
+        "sandbox state changed while saving a modification; inspect its current state before retrying because earlier live changes may have applied"
     )]
     ControlStateChanged,
 
@@ -450,6 +450,8 @@ pub enum Operation {
     SandboxHandleConnect,
     /// `SandboxHandle::metrics`.
     SandboxHandleMetrics,
+    /// Read the retained local runtime exit.
+    SandboxHandleTerminalExit,
     /// `SandboxHandle::remove`.
     SandboxHandleRemove,
     /// `SandboxHandle::snapshot`.
@@ -601,6 +603,7 @@ impl Operation {
             Operation::SandboxHandleConfig => "SandboxHandle::config",
             Operation::SandboxHandleConnect => "SandboxHandle::connect",
             Operation::SandboxHandleMetrics => "SandboxHandle::metrics",
+            Operation::SandboxHandleTerminalExit => "SandboxHandle::terminal_exit",
             Operation::SandboxHandleRemove => "SandboxHandle::remove",
             Operation::SandboxHandleSnapshot => "SandboxHandle::snapshot",
             Operation::SandboxHandleSnapshotTo => "SandboxHandle::snapshot_to",

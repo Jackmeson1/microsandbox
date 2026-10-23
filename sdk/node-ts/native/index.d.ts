@@ -230,10 +230,16 @@ export type JsFsWriteSink = FsWriteSink
 export declare class HttpBuilder {
   /** Create default HTTP settings. */
   constructor()
-  /** Enable readable HTTP denial responses. Disabled by default. */
+  /** Enable readable HTTP denial responses. Enabled by default locally. */
   denyResponse(enabled: boolean): this
-  /** Set the body used when denyResponse is enabled, substituting `{host}`. */
+  /** Choose text or json (default). JSON requires a supporting runtime. */
+  denyResponseFormat(format: 'text' | 'json'): this
+  /** Deprecated: legacy text message with {host} substitution. Ignored in JSON mode. */
   denyMessage(message: string): this
+  /** Set the network-denial JSON message in JSON mode without interpolation. Requires denyResponse. */
+  networkDenyMessage(message: string): this
+  /** Set the literal secret-denial JSON message. Requires denyResponse and JSON mode. */
+  secretDenyMessage(message: string): this
 }
 export type JsHttpBuilder = HttpBuilder
 
@@ -564,6 +570,8 @@ export declare class NetworkBuilder {
    * 1024; the host kernel clamps it to its own somaxconn.
    */
   tcpAcceptQueueSize(size: number): this
+  /** Set the active inbound TCP cap; zero is unlimited. Omitted uses the runtime default. */
+  maxInboundTcpConnections(value: number): this
   /** Require hostname-based policy allows to use inspectable application authority. */
   strict(enabled: boolean): this
   /** Set the IPv4 pool used for per-sandbox /30 guest subnets. */
@@ -846,6 +854,8 @@ export declare class RestoreBuilder {
   portUdpBind(bind: string, hostPort: number, guestPort: number): this
   /** Set the accept-queue depth for the child's published TCP listeners, 1..=2147483647. */
   tcpAcceptQueueSize(size: number): this
+  /** Set the active inbound TCP cap; zero is unlimited. Omitted uses the runtime default. */
+  maxInboundTcpConnections(value: number): this
   /** Expose a host Unix stream socket or local Windows named pipe on a guest-to-host vsock port. */
   vsock(hostPath: string, port: number): this
   /** Expose a host Unix datagram socket on a guest-to-host vsock port. */
@@ -2356,6 +2366,21 @@ export interface MemoryCacheReportJs {
   truncated: boolean
 }
 
+/** Published port to add or update. Defaults to loopback TCP. */
+export interface ModifyPort {
+  hostPort: number
+  guestPort: number
+  hostBind?: string
+  protocol?: string
+}
+
+/** Published host endpoint to remove. Defaults to loopback TCP. */
+export interface ModifyPortEndpoint {
+  hostPort: number
+  hostBind?: string
+  protocol?: string
+}
+
 export interface NetworkPolicy {
   defaultEgress: string
   defaultIngress: string
@@ -2571,6 +2596,8 @@ export interface SandboxModifyOptions {
   workdir?: string
   secrets?: Record<string, SecretModifySpec>
   secretsRemove?: Array<string>
+  ports?: Array<ModifyPort>
+  portsRemove?: Array<ModifyPortEndpoint>
   policy?: string
   dryRun?: boolean
 }
@@ -2659,6 +2686,9 @@ export interface SecretEntry {
  * secret name. `env` / `value` / `store` are mutually exclusive ways to
  * provide the secret material; setting more than one is rejected at the
  * boundary. Only `value` may carry raw secret material.
+ *
+ * Omitted policy fields keep the stored setting; a supplied `substitution`
+ * replaces the whole rule.
  */
 export interface SecretModifySpec {
   env?: string
@@ -2666,6 +2696,21 @@ export interface SecretModifySpec {
   store?: string
   placeholder?: string
   allowedHosts?: Array<string>
+  substitution?: SecretModifySubstitution
+  violationAction?: string
+  requireTlsIdentity?: boolean
+  allowPlaceholderFor?: Array<string>
+}
+
+/**
+ * Substitution locations in `SecretModifySpec.substitution`. Omitted fields
+ * take the create defaults.
+ */
+export interface SecretModifySubstitution {
+  headers?: boolean
+  headerFields?: Array<string>
+  query?: boolean
+  body?: boolean
 }
 
 /** Host-side source for secret material. */
@@ -2871,6 +2916,12 @@ export interface StreamOpenResult {
   /** Opaque stream handle. Pass to `streamNext()` and `streamClose()`. */
   handle: bigint
 }
+
+/** Whether this native library understands published-port modification. */
+export declare function supportsPortModification(): boolean
+
+/** Whether this native library applies secret policy fields in modify specs. */
+export declare function supportsSecretPolicyModification(): boolean
 
 /** TLS interception configuration produced by `TlsBuilder.build()`. */
 export interface TlsConfig {

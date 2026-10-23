@@ -55,23 +55,38 @@ pub const PARENT_WATCH_DETACH: u8 = 1;
 pub struct LaunchCapabilities {
     /// Supported wire generations: 1 is the v0.6.17 boot contract; 2 adds explicit intent.
     pub protocols: Vec<u32>,
+
     /// Relaxed captured-object checks can independently require destination backing.
     /// Older probes omit this feature; ordinary protocol-2 launches are unchanged.
     #[serde(default)]
     pub required_restore_backing: bool,
+
     /// Published-port listeners honor `network.tcp_accept_queue_size`. Older runtimes omit this
     /// feature and would silently ignore the field, so the SDK refuses to send it to them.
     #[serde(default)]
     pub tcp_accept_queue_size: bool,
 
-    /// Readable HTTP denial responses and custom bodies are supported by the runtime.
-    /// Older runtimes omit this capability.
+    /// Inbound TCP connection limits are supported. Older runtimes omit this capability.
+    #[serde(default)]
+    pub max_inbound_tcp_connections: bool,
+
+    /// Legacy plain-text HTTP denials are supported.
     #[serde(default)]
     pub http_deny_message: bool,
+
+    /// JSON HTTP denials with separate network and secret messages are supported.
+    /// Older runtimes omit this capability.
+    #[serde(default)]
+    pub http_deny_json: bool,
 
     /// HTTP CONNECT outbound proxies are supported. Older runtimes omit this capability.
     #[serde(default)]
     pub http_connect_proxy: bool,
+
+    /// HTTP CONNECT outbound proxy credentials are supported. Older runtimes omit
+    /// this capability and would silently connect without authentication.
+    #[serde(default)]
+    pub http_connect_proxy_auth: bool,
 
     /// The launch field `guest_clock` is honored by the runtime.
     /// Older runtimes omit this capability.
@@ -82,6 +97,10 @@ pub struct LaunchCapabilities {
     /// Older runtimes omit this capability.
     #[serde(default)]
     pub fs_state_limit: bool,
+
+    /// Sandbox-owned execution policy is installed and enforced by the runtime.
+    #[serde(default)]
+    pub exec_limits: bool,
 }
 
 /// Hidden CLI handoff describing the metrics slot the host reserved for this sandbox.

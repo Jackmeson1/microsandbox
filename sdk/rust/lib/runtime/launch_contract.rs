@@ -18,6 +18,8 @@ use std::{
 use microsandbox_network::policy::{Action, Destination, Direction};
 use microsandbox_protocol::bootstrap::*;
 use microsandbox_runtime::launch::{LaunchCapabilities, LaunchConfig};
+#[cfg(feature = "net")]
+use microsandbox_types::HttpDenyResponseFormat;
 use microsandbox_types::compat as types_compat;
 use microsandbox_types::{
     CpuPlacement, RootDisk, RootfsSource, TransparentHugePagePolicy, VolumeMount,
@@ -84,6 +86,15 @@ impl LaunchContract {
         msb_path: &Path,
         network: &microsandbox_network::config::NetworkConfig,
     ) -> MicrosandboxResult<()> {
+        if self.machine && network.max_inbound_tcp_connections.is_some() {
+            require_capability(
+                msb_path,
+                |capabilities| capabilities.max_inbound_tcp_connections,
+                "inbound tcp connection limits",
+            )
+            .await?;
+        }
+
         if self.machine && network.tcp_accept_queue_size.is_some() {
             require_tcp_accept_queue_size(msb_path).await?;
         }
@@ -98,6 +109,23 @@ impl LaunchContract {
                 msb_path,
                 |capabilities| capabilities.http_connect_proxy,
                 "HTTP CONNECT outbound proxies",
+            )
+            .await?;
+        }
+
+        if self.machine
+            && matches!(
+                network.outbound_proxy,
+                Some(microsandbox_network::OutboundProxy::HttpConnect {
+                    credentials: Some(_),
+                    ..
+                })
+            )
+        {
+            require_capability(
+                msb_path,
+                |capabilities| capabilities.http_connect_proxy_auth,
+                "HTTP CONNECT proxy authentication",
             )
             .await?;
         }
@@ -131,6 +159,9 @@ impl LaunchContract {
 
         if network.max_udp_connections.is_some() {
             return unsupported("UDP connection limits");
+        }
+        if network.max_inbound_tcp_connections.is_some() {
+            return unsupported("inbound tcp connection limits");
         }
         if network.tcp_accept_queue_size.is_some() {
             return unsupported("TCP accept queue size");
@@ -560,6 +591,7 @@ pub(crate) async fn validate_runtime_config(
     contract
         .require_network_capabilities(&runtime.msb_path, &network)
         .await?;
+    validate_exec_limits(&runtime.msb_path, config).await?;
     validate_guest_clock(&runtime.msb_path, config).await?;
     validate_fs_state_limit(&runtime.msb_path, global).await?;
     Ok(())
@@ -641,14 +673,19 @@ pub(crate) async fn validate_http_deny_response(
     path: &Path,
     config: &SandboxConfig,
 ) -> MicrosandboxResult<()> {
-    if !config.spec.network.http.deny_response {
+    if !config.spec.network.enabled || !config.spec.network.http.deny_response {
         return Ok(());
     }
     let supported = bounded_probe(path, "__launch-protocol")
         .await
         .ok()
         .and_then(|output| serde_json::from_slice::<LaunchCapabilities>(&output).ok())
-        .is_some_and(|capabilities| capabilities.http_deny_message);
+        .is_some_and(
+            |capabilities| match config.spec.network.http.deny_response_format {
+                HttpDenyResponseFormat::Text => capabilities.http_deny_message,
+                HttpDenyResponseFormat::Json => capabilities.http_deny_json,
+            },
+        );
     if !supported {
         return Err(MicrosandboxError::unsupported(
             crate::error::Operation::SandboxStart,
@@ -658,6 +695,22 @@ pub(crate) async fn validate_http_deny_response(
         ));
     }
     Ok(())
+}
+
+/// A memory snapshot with a captured execution policy needs a runtime that can honor it.
+pub(crate) async fn validate_exec_limits(
+    path: &Path,
+    config: &SandboxConfig,
+) -> MicrosandboxResult<()> {
+    let captured_policy = config
+        .restore_resources
+        .agent_ready
+        .as_ref()
+        .and_then(|ready| ready.exec_limits);
+    if captured_policy.is_none() {
+        return Ok(());
+    }
+    require_capability(path, |capabilities| capabilities.exec_limits, "exec").await
 }
 
 /// Probe guest clock support only when the caller turns host synchronization off.
@@ -939,6 +992,58 @@ mod tests {
         );
     }
 
+    /// Explicit published-port overrides require support; omission leaves runtime defaults alone.
+    #[cfg(all(unix, feature = "net"))]
+    #[tokio::test]
+    async fn published_tcp_overrides_require_advertised_support() {
+        use microsandbox_network::config::NetworkConfig;
+        let dir = tempfile::tempdir().unwrap();
+        let old = script(dir.path(), "old", "printf '%s' '{\"protocols\":[2,1]}'");
+        let machine = LaunchContract {
+            patch: 18,
+            machine: true,
+        };
+        machine
+            .require_network_capabilities(&dir.path().join("absent"), &NetworkConfig::default())
+            .await
+            .unwrap();
+        for (key, value) in [
+            ("max_inbound_tcp_connections", 0),
+            ("max_inbound_tcp_connections", 512),
+        ] {
+            let network: NetworkConfig = serde_json::from_value(json!({key: value})).unwrap();
+            let error = machine
+                .require_network_capabilities(&old, &network)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("upgrade msb"), "{error}");
+            let new = script(
+                dir.path(),
+                "supported",
+                &format!("printf '%s' '{}'", json!({"protocols": [2,1], key: true})),
+            );
+            machine
+                .require_network_capabilities(&new, &network)
+                .await
+                .unwrap();
+            for patch in 0..=18 {
+                let legacy = LaunchContract {
+                    patch,
+                    machine: false,
+                };
+                assert!(
+                    legacy
+                        .validate_network(
+                            &network,
+                            microsandbox_types::DeploymentProfile::SingleTenant
+                        )
+                        .is_err()
+                );
+            }
+        }
+    }
+
     /// The check create runs before `replace` touches its target: refuse a v0.7.x-shaped
     /// runtime, and do not probe at all when the key is unset or the contract predates `machine`.
     #[cfg(all(unix, feature = "net"))]
@@ -978,6 +1083,69 @@ mod tests {
             .unwrap();
         legacy
             .require_network_capabilities(&absent, &tuned)
+            .await
+            .unwrap();
+    }
+
+    #[cfg(all(unix, feature = "net"))]
+    #[tokio::test]
+    async fn http_connect_credentials_require_runtime_support_before_launch() {
+        use microsandbox_network::config::NetworkConfig;
+
+        let dir = tempfile::tempdir().unwrap();
+        let network: NetworkConfig = serde_json::from_value(json!({
+            "outbound_proxy": {
+                "protocol": "http_connect",
+                "address": "127.0.0.1:3128",
+                "credentials": {
+                    "username": "proxy-user",
+                    "password": {"kind": "env", "var": "HTTP_CONNECT_PASSWORD"}
+                }
+            }
+        }))
+        .unwrap();
+        let machine = LaunchContract {
+            patch: 18,
+            machine: true,
+        };
+
+        // A runtime that supports HTTP CONNECT but not its credentials would drop
+        // them and connect unauthenticated, so the launch must be refused.
+        for response in [
+            r#"printf '%s' '{"protocols":[2,1],"http_connect_proxy":true}'"#,
+            r#"printf '%s' '{"protocols":[2,1],"http_connect_proxy":true,"http_connect_proxy_auth":false}'"#,
+        ] {
+            let old = script(dir.path(), "unsupported-http-connect-auth", response);
+            let error = machine
+                .require_network_capabilities(&old, &network)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("HTTP CONNECT"), "{error}");
+            assert!(error.to_string().contains("upgrade msb"), "{error}");
+        }
+
+        let supported = script(
+            dir.path(),
+            "supported-http-connect-auth",
+            r#"printf '%s' '{"protocols":[2,1],"http_connect_proxy":true,"http_connect_proxy_auth":true}'"#,
+        );
+        machine
+            .require_network_capabilities(&supported, &network)
+            .await
+            .unwrap();
+
+        // An unauthenticated HTTP CONNECT proxy must not require the auth capability.
+        let plain: NetworkConfig = serde_json::from_value(json!({
+            "outbound_proxy": {"protocol": "http_connect", "address": "127.0.0.1:3128"}
+        }))
+        .unwrap();
+        let without_auth = script(
+            dir.path(),
+            "http-connect-without-auth",
+            r#"printf '%s' '{"protocols":[2,1],"http_connect_proxy":true}'"#,
+        );
+        machine
+            .require_network_capabilities(&without_auth, &plain)
             .await
             .unwrap();
     }
@@ -1055,24 +1223,46 @@ mod tests {
             "../db/fixtures/config-0.6.18.json"
         ))
         .unwrap();
+        // A disabled network needs no response capability, even with the new defaults.
+        config.spec.network.enabled = false;
+        config.spec.network.http = Default::default();
+        validate_http_deny_response(&dir.path().join("no-probe"), &config)
+            .await
+            .unwrap();
+        config.spec.network.enabled = true;
+        config.spec.network.http.deny_response = false;
+        config.spec.network.http.deny_response_format =
+            microsandbox_types::HttpDenyResponseFormat::Text;
         // Disabled responses must avoid probing, including on an old runtime.
         validate_http_deny_response(&dir.path().join("no-probe"), &config)
             .await
             .unwrap();
-        config.spec.network.http.deny_message = Some("dormant custom message".into());
+        config.spec.network.http.network_deny_message = Some("dormant custom message".into());
+        config.spec.network.http.secret_deny_message = Some("dormant secret message".into());
         validate_http_deny_response(&dir.path().join("no-probe"), &config)
             .await
             .unwrap();
         config.spec.network.http.deny_response = true;
+        let legacy = script(
+            dir.path(),
+            "legacy-denial",
+            r#"printf '%s' '{"protocols":[2,1],"http_deny_message":true}'"#,
+        );
+        // New SDKs retain the old runtime contract in text mode.
+        config.spec.network.http.deny_message = Some("blocked {host}".into());
+        validate_http_deny_response(&legacy, &config).await.unwrap();
+        config.spec.network.http.deny_response_format =
+            microsandbox_types::HttpDenyResponseFormat::Json;
         for response in [
             "exit 1",
             r#"printf '%s' '{"protocols":[2,1]}'"#,
-            r#"printf '%s' '{"protocols":[2,1],"http_deny_message":false}'"#,
-            r#"printf '%s' '{"protocols":[2,1],"http_deny_message":"true"}'"#,
+            r#"printf '%s' '{"protocols":[2,1],"http_deny_message":true}'"#,
+            r#"printf '%s' '{"protocols":[2,1],"http_deny_json":false}'"#,
+            r#"printf '%s' '{"protocols":[2,1],"http_deny_json":"true"}'"#,
         ] {
             let path = script(dir.path(), "unsupported-denial", response);
             for message in [None, Some(""), Some("blocked {host}")] {
-                config.spec.network.http.deny_message = message.map(str::to_owned);
+                config.spec.network.http.network_deny_message = message.map(str::to_owned);
                 let error = validate_http_deny_response(&path, &config)
                     .await
                     .unwrap_err();
@@ -1083,9 +1273,62 @@ mod tests {
         let path = script(
             dir.path(),
             "supports-denial",
-            r#"printf '%s' '{"protocols":[2,1],"http_deny_message":true}'"#,
+            r#"printf '%s' '{"protocols":[2,1],"http_deny_message":true,"http_deny_json":true}'"#,
         );
         validate_http_deny_response(&path, &config).await.unwrap();
+        config.spec.network.http.deny_response_format =
+            microsandbox_types::HttpDenyResponseFormat::Text;
+        validate_http_deny_response(&path, &config).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn captured_execution_policy_requires_a_capable_runtime() {
+        use crate::config::layers::BackendConfig;
+        use crate::sandbox::SandboxBuilder;
+        use microsandbox_protocol::core::Ready;
+        use microsandbox_types::ExecLimits;
+
+        let sources = BackendConfig::new(Default::default(), Default::default())
+            .prepare_for_local_backend(Default::default())
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let old = script(
+            dir.path(),
+            "old-exec",
+            r#"printf '%s' '{"protocols":[2,1]}'"#,
+        );
+        let current = script(
+            dir.path(),
+            "current-exec",
+            r#"printf '%s' '{"protocols":[2,1],"exec_limits":true}'"#,
+        );
+
+        let mut config = SandboxBuilder::new("compatibility")
+            .image("alpine")
+            .finish(Some(&sources), None)
+            .unwrap();
+
+        // A cold boot carries only built-in defaults; any released runtime accepts it.
+        validate_exec_limits(&old, &config).await.unwrap();
+        validate_exec_limits(&current, &config).await.unwrap();
+
+        // A memory restore with a captured policy needs a runtime that can honor it.
+        config.restore_resources.agent_ready = Some(Ready {
+            exec_limits: Some(ExecLimits::default()),
+            ..Default::default()
+        });
+        let result = validate_exec_limits(&old, &config).await;
+        assert!(result.is_err());
+        if let Err(error) = result {
+            assert!(error.to_string().contains("exec"));
+            assert!(error.to_string().contains("upgrade"));
+        }
+        validate_exec_limits(&current, &config).await.unwrap();
+
+        // A captured guest without an advertised policy keeps the legacy path.
+        config.restore_resources.agent_ready = Some(Ready::default());
+        validate_exec_limits(&old, &config).await.unwrap();
     }
 
     #[cfg(unix)]
@@ -1106,7 +1349,7 @@ mod tests {
         config.spec.runtime.guest_clock = Some(microsandbox_types::GuestClockPolicy::Off);
         for response in [
             "exit 1",
-            r#"printf '%s' '{"protocols":[2,1],"http_deny_message":true}'"#,
+            r#"printf '%s' '{"protocols":[2,1],"http_deny_json":true}'"#,
             r#"printf '%s' '{"protocols":[2,1],"guest_clock":false}'"#,
             r#"printf '%s' '{"protocols":[2,1],"guest_clock":"true"}'"#,
         ] {
@@ -1798,6 +2041,9 @@ mod encoding {
             }],
             default_cwd: Some("/work".into()),
             security_profile: BootstrapSecurityProfile::Restricted,
+            // Real launches always carry the built-in limits; the legacy
+            // grammar must encode such a bootstrap by omitting them.
+            exec_limits: Some(microsandbox_types::ExecLimits::default()),
             ..Default::default()
         };
         for patch in [0, 4, 8, 9] {
