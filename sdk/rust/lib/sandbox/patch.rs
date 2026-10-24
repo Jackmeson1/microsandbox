@@ -29,7 +29,6 @@ use tokio::io::AsyncReadExt;
 
 use super::types::{Patch, RootfsSource};
 use crate::MicrosandboxResult;
-use crate::backend::local::creation;
 
 //--------------------------------------------------------------------------------------------------
 // Constants
@@ -737,7 +736,7 @@ pub(crate) async fn apply_patches(
     validate_bind_patches(patches)?;
 
     let root =
-        creation::spawn_blocking(move || RootedPatchFs::open(&target_dir, follow_root_symlinks))
+        tokio::task::spawn_blocking(move || RootedPatchFs::open(&target_dir, follow_root_symlinks))
             .await
             .map_err(|err| {
                 crate::MicrosandboxError::PatchFailed(format!("bind-root open task failed: {err}"))
@@ -750,7 +749,7 @@ pub(crate) async fn apply_patches(
     for patch in patches {
         let root = Arc::clone(&root);
         let patch = patch.clone();
-        creation::spawn_blocking(move || apply_one_to_bind(&root, &patch))
+        tokio::task::spawn_blocking(move || apply_one_to_bind(&root, &patch))
             .await
             .map_err(|err| {
                 crate::MicrosandboxError::PatchFailed(format!("bind-root patch task failed: {err}"))

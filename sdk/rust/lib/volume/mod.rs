@@ -31,8 +31,6 @@ use sea_orm::ConnectionTrait;
 #[cfg(feature = "local")]
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
 
-#[cfg(feature = "local")]
-use crate::backend::local::creation;
 use crate::backend::{
     Backend, BackendKind, VolumeCloudState, VolumeHandleCloudState, VolumeHandleInner,
     VolumeHandleLocalState, VolumeInner, VolumeLocalState,
@@ -667,8 +665,6 @@ pub(crate) async fn get_local(
         .await?
         .ok_or_else(|| MicrosandboxError::VolumeNotFound(name.into()))?;
 
-    crate::backend::local::creation::require_volume_available(db, model.id, None).await?;
-
     let handle = VolumeHandle::from_local_model(backend.clone(), model);
     Ok(handle)
 }
@@ -711,8 +707,6 @@ pub(crate) async fn remove_local(backend: Arc<dyn Backend>, name: &str) -> Micro
         .one(pools.read())
         .await?
         .ok_or_else(|| MicrosandboxError::VolumeNotFound(name.into()))?;
-    crate::backend::local::creation::require_volume_available(pools.read(), model.id, None).await?;
-
     let handle = VolumeHandle::from_local_model(backend.clone(), model);
     let _disk_lock = lock_disk_volume_for_remove(&handle)?;
     ensure_volume_not_referenced_by_active_sandbox(pools.read(), name).await?;
@@ -748,7 +742,7 @@ pub(crate) async fn materialize_volume_path(
         ))
     })?;
 
-    std::fs::create_dir_all(parent)?;
+    tokio::fs::create_dir_all(parent).await?;
     if path.exists() {
         return Err(MicrosandboxError::VolumeAlreadyExists(config.name.clone()));
     }
@@ -757,7 +751,7 @@ pub(crate) async fn materialize_volume_path(
         .prefix(&format!(".{}.", config.name))
         .tempdir_in(parent)?;
     provision_volume_path(config, temp.path()).await?;
-    std::fs::rename(temp.path(), path)?;
+    tokio::fs::rename(temp.path(), path).await?;
     let _ = temp.keep();
     Ok(())
 }
@@ -767,7 +761,7 @@ pub(crate) async fn provision_volume_path(
     config: &VolumeConfig,
     path: &Path,
 ) -> MicrosandboxResult<()> {
-    std::fs::create_dir_all(path)?;
+    tokio::fs::create_dir_all(path).await?;
 
     match config.kind {
         VolumeKind::Directory => Ok(()),
@@ -782,7 +776,7 @@ pub(crate) async fn provision_volume_path(
                 size_bytes: u64::from(capacity_mib) * 1024 * 1024,
                 ..Default::default()
             };
-            creation::spawn_blocking(move || ext4::format_ext4(&disk_path, &options))
+            tokio::task::spawn_blocking(move || ext4::format_ext4(&disk_path, &options))
                 .await
                 .map_err(|e| MicrosandboxError::Custom(format!("ext4 format task failed: {e}")))?
                 .map_err(|e| {

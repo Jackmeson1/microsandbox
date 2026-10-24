@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use microsandbox_image::ext4::{Ext4FormatOptions, format_ext4};
 use microsandbox_types::{OwnedVolumeStorage, VolumeMount};
 
-use crate::backend::local::creation;
 use crate::{MicrosandboxError, MicrosandboxResult};
 
 //--------------------------------------------------------------------------------------------------
@@ -60,14 +59,14 @@ pub(crate) async fn prepare(
             destination.display()
         )));
     }
-    std::fs::create_dir_all(sandbox_dir)?;
+    tokio::fs::create_dir_all(sandbox_dir).await?;
     let parent = sandbox_dir
         .parent()
         .ok_or_else(|| MicrosandboxError::InvalidConfig("sandbox directory has no parent".into()))?
         .to_path_buf();
     // The blocking worker owns its operation-unique directory. Cancellation cannot
     // leave a late formatter writing into a replacement sandbox's name.
-    let stage = creation::spawn_blocking(move || -> MicrosandboxResult<tempfile::TempDir> {
+    let stage = tokio::task::spawn_blocking(move || -> MicrosandboxResult<tempfile::TempDir> {
         let stage = tempfile::Builder::new()
             .prefix(".owned-volume-create-")
             .tempdir_in(parent)?;

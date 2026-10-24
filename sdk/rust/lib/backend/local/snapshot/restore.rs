@@ -12,7 +12,6 @@ use microsandbox_image::checkpoint::{CheckpointClosure, ObjectId};
 use microsandbox_image::snapshot::SnapshotRootDisk;
 use microsandbox_runtime::launch::{CheckpointRestoreConfig, RootfsUpperLayerConfig};
 
-use crate::backend::local::creation;
 use crate::{MicrosandboxError, MicrosandboxResult, Operation, UnsupportedReason};
 
 use super::create::{copy_checkpoint_file, stage_checkpoint_closure};
@@ -58,12 +57,12 @@ pub(crate) async fn materialize_checkpoint_for_child(
 ) -> MicrosandboxResult<CheckpointChildMaterialization> {
     // Validate once after obtaining child-owned files. Validating the source first neither
     // protects against a later source mutation nor substitutes for validation of the child.
-    std::fs::create_dir_all(child_stage)?;
+    tokio::fs::create_dir_all(child_stage).await?;
     let closure_destination = child_stage.join(CHILD_CHECKPOINT_DIRECTORY);
     let source_path = source.closure.clone();
     let destination_for_copy = closure_destination.clone();
     let pin = super::lease::pin_source(&source_path)?;
-    creation::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let _lease = pin;
         stage_checkpoint_closure(&source_path, &destination_for_copy)
     })
@@ -100,7 +99,7 @@ pub(crate) async fn materialize_checkpoint_disk_for_child(
             .map_err(|error| MicrosandboxError::SnapshotIntegrity(error.to_string()))?;
     validate_checkpoint_identity(&source_closure, &source.checkpoint_id)?;
     validate_root_disk_closure(&source_closure, root_disk, true)?;
-    std::fs::create_dir_all(child_stage)?;
+    tokio::fs::create_dir_all(child_stage).await?;
     let upper_layers =
         materialize_checkpoint_disk_layers(&source_closure, child_stage, root_disk).await?;
     let disk_mounts =
@@ -196,7 +195,7 @@ pub(crate) async fn materialize_file_snapshot_for_child(
             "file snapshot has no restorable disk closure".into(),
         ));
     }
-    std::fs::create_dir_all(child_stage)?;
+    tokio::fs::create_dir_all(child_stage).await?;
     let mut layers = Vec::with_capacity(sources.len() + 1);
     for (index, source) in sources.iter().enumerate() {
         let target = checkpoint_layer_target(child_stage, root_disk, index, &source.format)?;
@@ -206,7 +205,7 @@ pub(crate) async fn materialize_file_snapshot_for_child(
             .last()
             .map(|layer: &RootfsUpperLayerConfig| layer.path.clone());
         let pin = super::lease::pin_source(&source_path)?;
-        creation::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let _lease = pin;
             copy_child_disk_layer(&source_path, &target_for_copy, predecessor.as_deref())
         })
@@ -278,13 +277,13 @@ pub(crate) async fn adopt_local_branch_for_child(
                 == Some(backing_names[index - 1].as_str())
         });
         if unchanged_header {
-            std::fs::hard_link(&source.path, &target)?;
+            tokio::fs::hard_link(&source.path, &target).await?;
         } else {
             // Old/imported names may conflict with the fixed cold-boot base or another owned
             // filename. Relocate only that layer; never mutate a shared captured inode.
             let source_path = source.path.clone();
             let target_path = target.clone();
-            creation::spawn_blocking(move || {
+            tokio::task::spawn_blocking(move || {
                 copy_child_disk_layer(&source_path, &target_path, previous.as_deref())
             })
             .await
@@ -415,7 +414,7 @@ async fn materialize_checkpoint_disk_layers(
             .last()
             .map(|layer: &RootfsUpperLayerConfig| layer.path.clone());
         let pin = super::lease::pin_source(&source_for_copy)?;
-        creation::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let _pin = pin;
             copy_child_disk_layer(&source_for_copy, &target_for_copy, predecessor.as_deref())
         })
@@ -461,7 +460,7 @@ async fn append_private_writable_head(
     let writable_head_for_create = writable_head.clone();
     let sealed_path = sealed_head.path.clone();
     let sealed_format = sealed_head.format.clone();
-    creation::spawn_blocking(move || -> MicrosandboxResult<()> {
+    tokio::task::spawn_blocking(move || -> MicrosandboxResult<()> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;

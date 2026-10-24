@@ -6,7 +6,6 @@ use std::time::Instant;
 use microsandbox_types::FlatClone;
 use microsandbox_utils::copy::FastCopyStrategy;
 
-use crate::backend::local::creation;
 use crate::{MicrosandboxError, MicrosandboxResult};
 
 //--------------------------------------------------------------------------------------------------
@@ -48,7 +47,7 @@ pub(crate) async fn create_private_flat_rootfs(
         )));
     }
 
-    creation::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         create_private_flat_rootfs_sync(&base, &destination, target_bytes, clone)
     })
     .await
@@ -76,7 +75,7 @@ pub(crate) async fn grow_private_flat_rootfs(
         return Ok(());
     }
 
-    creation::spawn_blocking(move || microsandbox_image::ext4::grow_image(&path, target_bytes))
+    tokio::task::spawn_blocking(move || microsandbox_image::ext4::grow_image(&path, target_bytes))
         .await
         .map_err(|error| {
             MicrosandboxError::Runtime(format!("flat rootfs grow task failed: {error}"))
@@ -91,7 +90,7 @@ pub(crate) async fn create_patched_flat_rootfs(
     tree: microsandbox_image::tree::FileTree,
     requested_mib: Option<u32>,
 ) -> MicrosandboxResult<u32> {
-    creation::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         if destination.exists() {
             return Err(MicrosandboxError::Custom(format!(
                 "flat rootfs already exists at {}",
