@@ -377,7 +377,7 @@ Force-terminate the sandbox and wait up to `timeoutMs` for stopped-state observa
 <div className="msb-params">
   <div className="msb-param">
     <div className="msb-param-key"><code>timeoutMs</code><span className="msb-type">number</span></div>
-    <div className="msb-param-desc">Milliseconds to wait for the stopped state to be observed.</div>
+    <div className="msb-param-desc">Milliseconds to wait for the stopped state to be observed. Must be an integer from 0 to 4294967295, inclusive; other values reject with <code>RangeError</code> before calling native.</div>
   </div>
 </div>
 
@@ -2538,7 +2538,7 @@ Connect to a running sandbox without taking ownership. Returns an error if it do
 connectWithTimeout(timeoutMs)
 ```
 
-Same as `connect()` with an explicit timeout in milliseconds
+Same as `connect()` with an explicit timeout in milliseconds. `timeoutMs` must be an integer from 0 to 4294967295, inclusive; other values reject with `RangeError` before calling native.
 
 <p className="msb-label">Returns</p>
 
@@ -2638,7 +2638,7 @@ Force terminate and wait until stopped state is observed
 killWithTimeout(timeoutMs)
 ```
 
-Same as `kill()` with an explicit observation timeout
+Same as `kill()` with an explicit observation timeout in milliseconds. `timeoutMs` must be an integer from 0 to 4294967295, inclusive; other values reject with `RangeError` before calling native.
 
 <p className="msb-label">Returns</p>
 
