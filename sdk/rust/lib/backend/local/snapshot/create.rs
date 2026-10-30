@@ -895,6 +895,7 @@ async fn capture_full_snapshot(
             UnsupportedReason::NotAvailable("full snapshots require a running sandbox".into()),
         ));
     }
+    crate::runtime::protected_state::require_running(local, source_sandbox)?;
     let sandbox_config: SandboxConfig = serde_json::from_str(&model.config)?;
     LocalBackend::validate_completed_restore(&sandbox_config)?;
     let manifest_digest = sandbox_config.manifest_digest.clone().ok_or_else(|| {
@@ -1396,6 +1397,14 @@ async fn capture_disk_source(
         let lifecycle_guard = lifecycle_guard.ok_or_else(|| {
             MicrosandboxError::Runtime("stopped disk capture requires lifecycle ownership".into())
         })?;
+        let model = sandbox_entity::Entity::find_by_id(source_id)
+            .one(local.db().await?.read())
+            .await?
+            .ok_or_else(|| MicrosandboxError::SandboxNotFound(source.into()))?;
+        let config =
+            SandboxConfig::from_stored(&model.config, model.caller_config_overrides.as_deref())?;
+        let storage = crate::backend::local::creation::CreationStorage::acquire(local, source)?;
+        crate::runtime::protected_state::prepare(local, &config, &storage).await?;
         let sandbox_dir = sandbox_dir.to_path_buf();
         let root_disk = root_disk.clone();
         let mounts = mounts.to_vec();
@@ -1403,6 +1412,7 @@ async fn capture_disk_source(
             // These synchronous helpers own a current-thread runtime. Run the whole cut away
             // from Tokio's async executor, and retain ownership even if its await is canceled.
             let _lifecycle_guard = lifecycle_guard;
+            let _storage = storage;
             let mut disk = snapshot_disk_closure(&sandbox_dir, &root_disk)?;
             if mounts
                 .iter()
@@ -1424,13 +1434,14 @@ async fn capture_disk_source(
             MicrosandboxError::Runtime(format!("stopped disk capture task: {error}"))
         })?;
     }
+    crate::runtime::protected_state::require_running(local, source)?;
     let id = format!("disk_{:032x}", rand::random::<u128>());
     let captured = local
         .require_control_session(source)
         .await?
         .create_disk_checkpoint(id.clone(), guest_flush)
         .await?;
-    let expected_path = sandbox_dir.join("runtime").join("checkpoints").join(&id);
+    let expected_path = sandbox_dir.join("checkpoints").join(&id);
     let expected_device = match root_disk {
         SnapshotRootDisk::Flat => "vda",
         SnapshotRootDisk::Managed => "vdb",
@@ -2882,6 +2893,23 @@ mod tests {
         .collect()
     }
 
+    async fn register_stopped_capture(local: &LocalBackend, mounts: &[VolumeMount]) {
+        let mut config = SandboxConfig::default();
+        config.spec.name = "box".into();
+        config.spec.image = RootfsSource::oci("alpine:3.21");
+        config.spec.mounts = mounts.to_vec();
+        sandbox_entity::ActiveModel {
+            name: Set(config.spec.name.clone()),
+            config: Set(serde_json::to_string(&config).unwrap()),
+            status: Set(SandboxStatus::Stopped),
+            ephemeral: Set(false),
+            ..Default::default()
+        }
+        .insert(local.db().await.unwrap().write())
+        .await
+        .unwrap();
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn stopped_capture_dispatches_owned_chains_off_the_async_executor() {
         let temp = tempfile::tempdir().unwrap();
@@ -2889,8 +2917,9 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let sandbox = temp.path().join("sandbox");
+        let sandbox = local.sandboxes_dir().join("box");
         let mounts = stopped_async_capture_fixture(&sandbox);
+        register_stopped_capture(&local, &mounts).await;
         let run = temp.path().join("run");
         let guard = Arc::new(
             microsandbox_runtime::ipc::try_acquire_lifecycle_guard(&run, "box")
@@ -2969,8 +2998,9 @@ mod tests {
                     .build()
                     .await
                     .unwrap();
-                let sandbox = temp.path().join("sandbox");
+                let sandbox = local.sandboxes_dir().join("box");
                 let mounts = stopped_async_capture_fixture(&sandbox);
+                register_stopped_capture(&local, &mounts).await;
                 let run = temp.path().join("run");
                 let guard = Arc::new(
                     microsandbox_runtime::ipc::try_acquire_lifecycle_guard(&run, "box")
@@ -2997,7 +3027,10 @@ mod tests {
                     Some(Arc::clone(&guard)),
                     microsandbox_types::GuestFlush::Auto,
                 ));
-                assert!(futures::poll!(capture.as_mut()).is_pending());
+                while !sandbox.join("state-layout.json").exists() {
+                    assert!(futures::poll!(capture.as_mut()).is_pending());
+                    tokio::task::yield_now().await;
+                }
                 drop(capture);
                 drop(guard);
                 assert!(

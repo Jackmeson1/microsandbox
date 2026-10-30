@@ -16,6 +16,7 @@ pub(crate) mod ownership;
 mod sockets;
 // The pure identity helpers stay compiled (and unit-tested) on every platform;
 // only Windows has call sites outside the tests.
+pub(crate) mod protected_state;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod reap;
 pub(crate) mod spawn;

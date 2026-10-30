@@ -106,6 +106,7 @@ impl DiskCompactionBuilder {
         crate::LocalBackend::validate_completed_restore(&config)?;
         validate_root_selection(&config, &target)?;
         if model.status == SandboxStatus::Running {
+            crate::runtime::protected_state::require_running(local, &self.name)?;
             return local
                 .require_control_session(&self.name)
                 .await?
@@ -149,6 +150,7 @@ impl DiskCompactionBuilder {
         let runtime_dir = storage.join("runtime");
         let current_config: SandboxConfig = serde_json::from_str(&current.config)?;
         crate::LocalBackend::validate_completed_restore(&current_config)?;
+        crate::runtime::protected_state::prepare(local, &current_config, &storage).await?;
         // The configuration can change before ownership is acquired. Classify the root from
         // this fresh row, not a stale pre-lock view or a journal's incidental presence.
         let root_eligible = validate_root_selection(&current_config, &target)?;
@@ -275,6 +277,7 @@ mod tests {
                 "INSERT INTO sandbox (name, config, status, ephemeral) VALUES ('complete', ?, 'Stopped', 0)",
                 [serde_json::to_string(&config).unwrap().into()],
             )).await.unwrap();
+            std::fs::create_dir_all(local.sandboxes_dir().join("complete")).unwrap();
             let compaction = DiskCompactionBuilder::new(local.clone(), "complete".into());
 
             let resizing = CreationStorage::acquire(&local, "complete").unwrap();
@@ -306,6 +309,12 @@ mod tests {
                 }
             }).await.expect("compaction must reserve storage before queueing disk work");
 
+            // Admission now awaits catalog protection before queuing the blocking worker.
+            // Wait for its durable marker so cancellation still targets the queued disk work.
+            while !local.sandboxes_dir().join("complete/state-layout.json").exists() {
+                assert!(!pending.is_finished(), "compaction ended during admission");
+                tokio::task::yield_now().await;
+            }
             pending.abort();
             assert!(pending.await.unwrap_err().is_cancelled());
             assert!(CreationStorage::acquire(&local, "complete").is_err(),

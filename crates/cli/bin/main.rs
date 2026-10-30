@@ -298,6 +298,7 @@ fn main() {
             println!(
                 "{}",
                 serde_json::to_string(&microsandbox_runtime::launch::LaunchCapabilities {
+                    protected_guest_state: true,
                     protocols: vec![2, 1],
                     required_restore_backing: true,
                     tcp_accept_queue_size: true,

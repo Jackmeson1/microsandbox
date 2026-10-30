@@ -382,6 +382,15 @@ impl SandboxModificationBuilder {
             ports::preflight(&config, active.as_ref(), &self.patch, status)?;
         }
         let restart_required = plan_requires_restart(&plan) && running_status(status);
+        if running_status(status)
+            && !restart_required
+            && self.policy == ModificationPolicy::NoRestart
+            && root_disk_grow_target(&plan, &self.patch, &config).is_some()
+            && let Some(local) = self.backend.as_local()
+        {
+            // Refuse before any earlier CPU, memory, network, or persisted changes in this plan.
+            crate::runtime::protected_state::require_running(local, &self.name)?;
+        }
 
         if handle.local().is_some() {
             // Validate configuration serialization before stopping a VM,
@@ -529,7 +538,17 @@ impl SandboxModificationBuilder {
         if let Some(target_mib) = root_disk_grow_target(&plan, &self.patch, &config)
             && (stopped_status(status) || restart_required)
         {
-            grow_root_disk_now(&self.backend, &self.name, &config, target_mib).await?;
+            grow_root_disk_now(
+                &self.backend,
+                &self.name,
+                handle
+                    .local()
+                    .ok_or_else(|| MicrosandboxError::local_only(Operation::SandboxModify))?
+                    .db_id,
+                &config,
+                target_mib,
+            )
+            .await?;
         }
         if !plan.changes.is_empty() {
             config.apply_modification(&self.patch);
@@ -1010,6 +1029,7 @@ fn root_disk_grow_target(
 async fn grow_root_disk_now(
     backend: &Arc<dyn Backend>,
     name: &str,
+    expected_id: i32,
     config: &SandboxConfig,
     target_mib: u32,
 ) -> MicrosandboxResult<()> {
@@ -1019,40 +1039,75 @@ async fn grow_root_disk_now(
             UnsupportedReason::LocalOnly,
         )
     })?;
+    // Planning does not own the VM namespace: another caller may have started or replaced it.
+    // Revalidate under runtime ownership before migrating or changing any disk bytes.
+    let guard = crate::runtime::acquire_sandbox_lifecycle_guard(
+        &local_backend.config().run_dir(),
+        name,
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+    let current = sandbox_entity::Entity::find()
+        .filter(sandbox_entity::Column::Name.eq(name))
+        .one(local_backend.db().await?.read())
+        .await?
+        .ok_or_else(|| MicrosandboxError::SandboxNotFound(name.into()))?;
+    let current_config =
+        SandboxConfig::from_stored(&current.config, current.caller_config_overrides.as_deref())?;
+    if current.id != expected_id
+        || !stopped_status(current.status)
+        || serde_json::to_value(&current_config)? != serde_json::to_value(config)?
+    {
+        return Err(MicrosandboxError::InvalidConfig(
+            "sandbox changed while acquiring disk ownership; retry growth".into(),
+        ));
+    }
+    creation::require_complete(local_backend.db().await?.read(), current.id, name).await?;
     let sandbox_dir = CreationStorage::acquire(local_backend, name)?;
-    let worker_storage = sandbox_dir.clone();
+    crate::runtime::protected_state::prepare(local_backend, config, &sandbox_dir).await?;
+    let config = config.clone();
     let runtime_dir = sandbox_dir.join("runtime");
-    let handled = tokio::task::spawn_blocking(move || {
-        let _storage = worker_storage;
-        microsandbox_runtime::checkpoint::grow_stopped_root(
+    tokio::task::spawn_blocking(move || {
+        // Keep ownership in the worker, including across the asynchronous fallback helpers.
+        // Canceling the caller or shutting down its executor must not release a live writer's lock.
+        let _guard = guard;
+        let handled = microsandbox_runtime::checkpoint::grow_stopped_root(
             &runtime_dir,
             u64::from(target_mib) * 1024 * 1024,
         )
-    })
-    .await
-    .map_err(|e| crate::MicrosandboxError::Runtime(e.to_string()))?
-    .map_err(crate::MicrosandboxError::Runtime)?;
-    if handled {
-        return Ok(());
-    }
-    if !config.snapshot_upper_layers.is_empty() {
-        return Err(crate::MicrosandboxError::Runtime(
+        .map_err(MicrosandboxError::Runtime)?;
+        if handled {
+            return Ok(());
+        }
+        if !config.snapshot_upper_layers.is_empty() {
+            return Err(crate::MicrosandboxError::Runtime(
             "start this restored sandbox once to initialize its owned root chain before resizing"
                 .into(),
         ));
-    }
-    if matches!(
-        &config.spec.image,
-        RootfsSource::Oci(oci) if matches!(&oci.root_disk, Some(RootDisk::Flat { .. }))
-    ) {
-        return super::flat_rootfs::grow_private_flat_rootfs(
-            &sandbox_dir.at(sandbox_dir.join(super::flat_rootfs::FLAT_ROOTFS_FILENAME)),
-            target_mib,
-        )
-        .await;
-    }
-    super::upper::grow_upper_to_mib(&sandbox_dir.at(sandbox_dir.join("upper.ext4")), target_mib)
-        .await
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            if matches!(
+                &config.spec.image,
+                RootfsSource::Oci(oci) if matches!(&oci.root_disk, Some(RootDisk::Flat { .. }))
+            ) {
+                return super::flat_rootfs::grow_private_flat_rootfs(
+                    &sandbox_dir.at(sandbox_dir.join(super::flat_rootfs::FLAT_ROOTFS_FILENAME)),
+                    target_mib,
+                )
+                .await;
+            }
+            super::upper::grow_upper_to_mib(
+                &sandbox_dir.at(sandbox_dir.join("upper.ext4")),
+                target_mib,
+            )
+            .await
+        })
+    })
+    .await
+    .map_err(|error| MicrosandboxError::Runtime(format!("disk growth task failed: {error}")))?
 }
 
 /// Discover which live-control operations the running sandbox serves.
@@ -2852,6 +2907,162 @@ mod tests {
     use crate::db::entity::run;
     use crate::size::SizeExt;
 
+    async fn stopped_growth_fixture() -> (tempfile::TempDir, Arc<LocalBackend>, SandboxConfig, i32)
+    {
+        let home = tempdir().unwrap();
+        let local = Arc::new(
+            crate::test_support::local_backend_builder(home.path())
+                .build()
+                .await
+                .unwrap(),
+        );
+        let mut config = SandboxConfig::default();
+        config.spec.name = "growth".into();
+        config.spec.image = RootfsSource::oci("alpine:3.21");
+        let model = sandbox_entity::ActiveModel {
+            name: Set(config.spec.name.clone()),
+            config: Set(serde_json::to_string(&config).unwrap()),
+            status: Set(SandboxStatus::Stopped),
+            ephemeral: Set(false),
+            ..Default::default()
+        }
+        .insert(local.db().await.unwrap().write())
+        .await
+        .unwrap();
+        let sandbox = local.sandboxes_dir().join("growth");
+        std::fs::create_dir_all(sandbox.join("runtime")).unwrap();
+        std::fs::File::create(sandbox.join("upper.ext4"))
+            .unwrap()
+            .set_len(1024 * 1024)
+            .unwrap();
+        (home, local, config, model.id)
+    }
+
+    #[tokio::test]
+    async fn stopped_growth_rechecks_state_after_waiting_for_lifecycle_ownership() {
+        for change in ["status", "identity", "config"] {
+            let (_home, local, config, id) = stopped_growth_fixture().await;
+            let run_dir = local.config().run_dir();
+            let owner = microsandbox_runtime::ipc::try_acquire_lifecycle_guard(&run_dir, "growth")
+                .unwrap()
+                .unwrap();
+            let backend: Arc<dyn Backend> = local.clone();
+            let expected_id = if change == "identity" { id + 1 } else { id };
+            let mut growth = Box::pin(grow_root_disk_now(
+                &backend,
+                "growth",
+                expected_id,
+                &config,
+                2,
+            ));
+            assert!(futures::poll!(growth.as_mut()).is_pending());
+            // Simulate another start or configuration update completing after planning.
+            if change == "status" {
+                local
+                    .db()
+                    .await
+                    .unwrap()
+                    .write()
+                    .execute_unprepared("UPDATE sandbox SET status='Running' WHERE name='growth'")
+                    .await
+                    .unwrap();
+            } else if change == "config" {
+                let mut changed = config.clone();
+                changed.spec.resources.memory_mib += 1;
+                local
+                    .db()
+                    .await
+                    .unwrap()
+                    .write()
+                    .execute_raw(Statement::from_sql_and_values(
+                        DatabaseBackend::Sqlite,
+                        "UPDATE sandbox SET config=? WHERE name='growth'",
+                        [serde_json::to_string(&changed).unwrap().into()],
+                    ))
+                    .await
+                    .unwrap();
+            }
+            drop(owner);
+            let error = growth.await.unwrap_err();
+            assert!(
+                error.to_string().contains("retry growth"),
+                "{change}: {error}"
+            );
+            let sandbox = local.sandboxes_dir().join("growth");
+            assert!(!sandbox.join("state-layout.json").exists());
+            assert!(!sandbox.join("root-disk.json").exists());
+            assert_eq!(
+                std::fs::metadata(sandbox.join("upper.ext4")).unwrap().len(),
+                1024 * 1024
+            );
+        }
+    }
+
+    #[test]
+    fn cancelled_stopped_growth_keeps_lifecycle_and_storage_until_worker_finishes() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (_home, local, config, id) = stopped_growth_fixture().await;
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (release, blocked) = std::sync::mpsc::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = started.send(());
+                let _ = blocked.recv();
+            });
+            ready.await.unwrap();
+            let backend: Arc<dyn Backend> = local.clone();
+            let pending = tokio::spawn(async move {
+                grow_root_disk_now(&backend, "growth", id, &config, 1).await
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !local
+                    .sandboxes_dir()
+                    .join("growth/state-layout.json")
+                    .exists()
+                {
+                    assert!(!pending.is_finished(), "growth ended before disk admission");
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            pending.abort();
+            assert!(pending.await.unwrap_err().is_cancelled());
+            assert!(CreationStorage::acquire(&local, "growth").is_err());
+            assert!(
+                microsandbox_runtime::ipc::try_acquire_lifecycle_guard(
+                    &local.config().run_dir(),
+                    "growth"
+                )
+                .unwrap()
+                .is_none()
+            );
+            release.send(()).unwrap();
+            blocker.await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if let Some(owner) = microsandbox_runtime::ipc::try_acquire_lifecycle_guard(
+                        &local.config().run_dir(),
+                        "growth",
+                    )
+                    .unwrap()
+                    {
+                        drop(owner);
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            CreationStorage::acquire(&local, "growth").unwrap();
+        });
+    }
+
     #[test]
     fn guest_flush_capability_never_silently_weakens_capture() {
         use microsandbox_types::GuestFlush::{Auto, Required, Skip};
@@ -4379,7 +4590,7 @@ mod tests {
             ]
         });
         std::fs::write(
-            runtime.join("root-disk.json"),
+            runtime.parent().unwrap().join("root-disk.json"),
             serde_json::to_vec(&state).unwrap(),
         )
         .unwrap();
@@ -4397,7 +4608,7 @@ mod tests {
         assert_eq!(std::fs::read(&base).unwrap(), vec![0; 4096]);
         assert_eq!(std::fs::read(&head).unwrap(), head_before);
         assert_eq!(
-            std::fs::read(runtime.join("root-disk.json")).unwrap(),
+            std::fs::read(runtime.parent().unwrap().join("root-disk.json")).unwrap(),
             serde_json::to_vec(&state).unwrap()
         );
     }
@@ -5851,18 +6062,11 @@ mod tests {
             "the durable network configuration must be unchanged"
         );
 
-        // Both refusals must happen before stopping or persisting the change.
-        // Historical Linux x86 runtimes also cannot enforce nesting off; other
-        // hosts reach the legacy proxy gate. Proxy capability checks have their
-        // own launch-contract coverage.
+        // The security-capability refusal must happen before stopping or persisting changes.
         let error = result.expect_err("an unsupported runtime must refuse the restart");
-        let expected = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-            "nested virtualization policy"
-        } else {
-            "HTTP CONNECT outbound proxies"
-        };
         assert!(
-            error.to_string().contains(expected) && error.to_string().contains("upgrade msb"),
+            error.to_string().contains("upgrade required")
+                && error.to_string().contains("protected sandbox state"),
             "unexpected error: {error}"
         );
     }

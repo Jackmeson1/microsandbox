@@ -11,6 +11,7 @@ mod coordinator;
 mod disk;
 mod execution;
 mod external_mounts;
+pub mod layout;
 mod local;
 #[cfg(feature = "runner")]
 mod local_disk;

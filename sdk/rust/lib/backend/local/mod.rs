@@ -1101,6 +1101,7 @@ mod tests {
             "manifest",
             "manifest_layer",
             "memory_allocation_node",
+            "protected_sandbox_state",
             "run",
             "sandbox",
             "sandbox_labels",

@@ -47,7 +47,7 @@ pub(crate) async fn materialize_owned_volumes(
                 let mount_id = volume.mount_id.clone();
                 let readonly = volume.mount.options.readonly;
                 let pin = super::super::lease::pin_source(&source)?;
-                let journal = child.join("runtime/owned-disks").join(&volume.mount_id);
+                let journal = child.join("owned-disks").join(&volume.mount_id);
                 let staging = {
                     let worker_storage = child.clone();
                     tokio::task::spawn_blocking(move || {
@@ -71,10 +71,7 @@ pub(crate) async fn materialize_owned_volumes(
                     &directory,
                 )?;
                 std::fs::rename(
-                    staging
-                        .path()
-                        .join("runtime/owned-disks")
-                        .join(&volume.mount_id),
+                    staging.path().join("owned-disks").join(&volume.mount_id),
                     &journal,
                 )?;
             }
@@ -389,7 +386,7 @@ mod tests {
                     !child.join("owned-volumes").exists(),
                     "invalid backing was published"
                 );
-                assert!(!child.join("runtime/owned-disks").exists());
+                assert!(!child.join("owned-disks").exists());
                 assert_eq!(std::fs::read(child.join("sentinel")).unwrap(), b"existing");
             } else {
                 result.unwrap();
@@ -418,7 +415,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            !child.join("owned-volumes").exists() && !child.join("runtime/owned-disks").exists(),
+            !child.join("owned-volumes").exists() && !child.join("owned-disks").exists(),
             "a rejected disk must not publish backing or its journal"
         );
         assert_eq!(std::fs::read(child.join("sentinel")).unwrap(), b"existing");

@@ -378,14 +378,9 @@ mod tests {
         Arc::new(backend)
     }
 
-    // Historical Linux x86 runtimes cannot enforce nesting off, so admission must
-    // reject them before inspecting their archive launch contract.
-    fn historical_admission_reason(archive_reason: &str) -> &str {
-        if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-            "does not support nested virtualization policy"
-        } else {
-            archive_reason
-        }
+    // Security capability admission now precedes all archive/runtime compatibility checks.
+    fn historical_admission_reason(_archive_reason: &str) -> &str {
+        "upgrade required"
     }
 
     fn backend_without_runtime(root: &Path) -> Arc<LocalBackend> {

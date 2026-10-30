@@ -479,6 +479,7 @@ pub(crate) async fn capture_child(
     source: &super::identity::BranchSource,
     child: &CreationStorage,
 ) -> MicrosandboxResult<Arc<microsandbox_runtime::checkpoint::LocalMemoryPin>> {
+    crate::runtime::protected_state::require_running(local, &source.name)?;
     if let Some(capture) = source.batch.as_ref().and_then(|batch| batch.get()) {
         let closure = child.join(".branch-restore");
         // Only local hardlinks and small directory metadata; no background copier may

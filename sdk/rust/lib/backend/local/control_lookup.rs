@@ -184,6 +184,10 @@ mod tests {
     #[tokio::test]
     async fn branch_refuses_a_restarted_source_before_writing_handoff_state() {
         let (home, backend) = fixture().await;
+        // Keep this fixture eligible for storage operations so the test reaches run identity validation.
+        let runtime = backend.sandboxes_dir().join("source/runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        microsandbox_runtime::checkpoint::layout::initialize_new(&runtime).unwrap();
         let selected = backend.control_run_identity("source", 1).await.unwrap();
         let writer = backend.db().await.unwrap().write();
         writer

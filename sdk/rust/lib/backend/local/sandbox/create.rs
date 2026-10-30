@@ -2743,7 +2743,7 @@ mod tests {
             r#"#!/bin/sh
 case "$1" in
 --version) printf 'msb 0.6.18';;
-__launch-protocol) printf '%s' '{"protocols":[2,1],"nested_virt":false}';;
+__launch-protocol) printf '%s' '{"protocols":[2,1],"protected_guest_state":true,"nested_virt":false}';;
 *) exit 1;;
 esac
 "#,

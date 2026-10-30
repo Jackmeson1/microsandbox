@@ -193,13 +193,30 @@ impl LocalBackend {
             ));
         }
 
+        // Unlike offline configuration validation, a start must select a real runtime before
+        // layout admission. Preserve first-use installation for bundled SDKs.
+        #[cfg(feature = "embed-binaries")]
+        crate::setup::ensure_runtime(
+            self.config(),
+            crate::setup::InstallOptions {
+                source: crate::setup::InstallSource::EmbeddedArchive,
+                ..Default::default()
+            },
+        )
+        .await?;
+        #[cfg(not(feature = "embed-binaries"))]
+        crate::setup::resolve_runtime(self.config())?;
         launch_contract::validate_runtime_config(config, self.config()).await?;
+        super::protected_state::prepare(self, config, storage).await?;
         let runtime_storage = storage.clone();
         let scripts = config.spec.runtime.scripts.clone();
 
         tokio::task::spawn_blocking(move || {
             let runtime_dir = runtime_storage.join("runtime");
-            let scripts_dir = runtime_dir.join("scripts");
+            let guest_dir =
+                microsandbox_runtime::checkpoint::layout::reset_guest_files(&runtime_dir)
+                    .map_err(MicrosandboxError::Runtime)?;
+            let scripts_dir = guest_dir.join("scripts");
 
             std::fs::create_dir_all(runtime_storage.join("logs"))?;
             std::fs::create_dir_all(&scripts_dir)?;
@@ -214,7 +231,7 @@ impl LocalBackend {
                 std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
                 #[cfg(windows)]
                 microsandbox_filesystem::PassthroughFs::set_path_virtual_permissions(
-                    &runtime_dir,
+                    &guest_dir,
                     &script_path,
                     0,
                     0,
@@ -298,6 +315,7 @@ impl LocalBackend {
         #[cfg(not(feature = "embed-binaries"))]
         let resolved_runtime = crate::setup::resolve_runtime(global)?;
         ensure_sigchld_handler_uses_alt_stack_before_spawn().await?;
+        launch_contract::require_protected_guest_state(&resolved_runtime.msb_path).await?;
         let launch_contract = launch_contract::resolve(&resolved_runtime.msb_path).await?;
         // A stopped sandbox may have been edited without a runtime installed, or
         // the selected executable may have changed since creation. Validate its
@@ -1249,7 +1267,11 @@ async fn prepare_oci_upper(
                     &runtime_dir,
                     u64::from(desired) * 1024 * 1024,
                 ),
-                None => Ok(runtime_dir.join("root-disk.json").exists()),
+                None => Ok(
+                    microsandbox_runtime::checkpoint::layout::host_root(&runtime_dir)?
+                        .join("root-disk.json")
+                        .exists(),
+                ),
             }
         })
     }
@@ -2242,6 +2264,7 @@ fn machine_cli_args(
     }
 
     let mut launch = LaunchConfig {
+        protected_guest_state: true,
         owned_volumes: config
             .spec
             .mounts
@@ -4465,7 +4488,7 @@ mod tests {
             ]
         });
         std::fs::write(
-            runtime.join("root-disk.json"),
+            runtime.parent().unwrap().join("root-disk.json"),
             serde_json::to_vec(&state).unwrap(),
         )
         .unwrap();
@@ -4497,7 +4520,7 @@ mod tests {
         assert_eq!(std::fs::read(&base).unwrap(), vec![0; 4096]);
         assert_eq!(std::fs::read(&head).unwrap(), head_before);
         assert_eq!(
-            std::fs::read(runtime.join("root-disk.json")).unwrap(),
+            std::fs::read(runtime.parent().unwrap().join("root-disk.json")).unwrap(),
             serde_json::to_vec(&state).unwrap()
         );
     }
